@@ -1,0 +1,51 @@
+# Large data files - CRITICAL!
+*.csv
+*.dat
+*.h5
+*.hdf5
+*.mat
+*.nc
+data/
+test_elements_*.csv
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+.conda/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Documentation builds
+docs/_build/
+docs/.doctrees/
+
+# Don't ignore these
+!.gitignore
+!.vscode/settings.json
