@@ -350,6 +350,8 @@ class System:
             self._compile_integrator()
         # Get integrator
         ta = self._cached_integrator
+        # Assert for type checker (should always be true after compile)
+        assert ta is not None, "Integrator should be compiled"
         
         # Handle satellite parameters
         if satellite_params is not None:

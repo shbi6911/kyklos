@@ -1,12 +1,10 @@
 {
     "python.defaultInterpreterPath": "C:\\Users\\calda\\miniconda3\\envs\\kyklos\\python.exe",
-    
-    "python.analysis.typeCheckingMode": "basic",
+    "python.analysis.typeCheckingMode": "off",
     "python.linting.enabled": true,
     "python.linting.pylintEnabled": false,
     "python.linting.flake8Enabled": true,
     "python.formatting.provider": "black",
-    
     "files.exclude": {
         "**/__pycache__": true,
         "**/*.pyc": true,
@@ -14,10 +12,10 @@
         "**/.mypy_cache": true,
         "**/*.egg-info": true
     },
-    
     "editor.formatOnSave": true,
-    "editor.rulers": [88],
-    
+    "editor.rulers": [
+        88
+    ],
     "[python]": {
         "editor.tabSize": 4,
         "editor.insertSpaces": true

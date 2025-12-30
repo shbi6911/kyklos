@@ -31,7 +31,8 @@ ENV/
 .conda/
 
 # IDE
-.vscode/
+.vscode/*
+!.vscode/settings.json
 .idea/
 *.swp
 *.swo
@@ -45,7 +46,3 @@ ENV/
 # Documentation builds
 docs/_build/
 docs/.doctrees/
-
-# Don't ignore these
-!.gitignore
-!.vscode/settings.json
