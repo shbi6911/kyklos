@@ -8,8 +8,9 @@ from enum import Enum
 # define an enumerated list of element types
 class OEType(Enum):
     CARTESIAN = 'cart'      # [x;y;z;vx;vy;vz]
-    KEPLERIAN = 'kep'       # [a;e;i;RAAN;omega;nu]
+    KEPLERIAN = 'kep'       # [a;e;i;Omega;w;nu]
     EQUINOCTIAL = 'equi'    # [p;f;g;h;k;L]
+    CR3BP = 'cr3bp'         # [x_nd;y_nd;z_nd;vx_nd;vy_nd;vz_nd]
 
 #define basic orbital element class
 class OrbitalElements:
@@ -30,18 +31,53 @@ class OrbitalElements:
     DEFAULT_MU = 398600.435507  # km³/s²
     
     # ========== CONSTRUCTION ==========
-    def __init__(self, elements, element_type, validate=True):
+    def __init__(self, elements=None, element_type=None, validate=True, **kwargs):
         """
-        Create orbital elements
+        Create orbital elements.
         
-        Args:
-            elements: 6-element array of orbit elements
-            element_type: string specifying type ('cart', 'kep', 'equi', etc.)
-            validate: run validator or not (leave True for user input)
+        Can be called in two ways:
+        
+        1. Array-based (fast for propagation):
+           OrbitalElements([7000, 0.01, 0.5, 0, 0, 0], 'kep')
+        
+        2. Named parameters (readable for setup):
+           OrbitalElements(a=7000, e=0.01, i=0.5, omega=0, w=0, nu=0)
+           OrbitalElements(x=-6045, y=-3490, z=2500, vx=-3.457, vy=6.618, vz=2.533)
+        
+        Parameters
+        ----------
+        elements : array-like, optional
+            6-element array of orbital elements
+        element_type : OEType or str, optional
+            Type of elements ('cart', 'kep') - required if using elements array
+        validate : bool, optional
+            Whether to validate elements (default True)
+        **kwargs : dict
+            Named parameters for apprpriate orbital element set
+            Keplerian (a, e, i, omega, w, nu)
+            Cartesian (x, y, z, vx, vy, vz)
+            Equinoctial (p, f, g, h, k, L)
+            CR3BP (x_nd, y_nd, z_nd, vx_nd, vy_nd, vz_nd)
         """
-        self.elements = np.array(elements)
-        # Accept either ElementType enum or string
-        self.element_type = self._parse_element_type(element_type)
+        # Determine construction method
+        if elements is not None:
+            # Array-based construction
+            self.elements = np.array(elements)
+            self.element_type = self._parse_element_type(element_type)
+        
+        elif kwargs:
+            # Named parameter construction - auto-detect type
+            self.elements, self.element_type = self._from_named_params(kwargs)
+        
+        else:
+            raise ValueError(
+                "Must provide either:\n"
+                "  - elements array and element_type, or named parameters: \n"
+                "  - (a, e, i, omega, w, nu) for Keplerian, or\n"
+                "  - (x, y, z, vx, vy, vz) for Cartesian, or\n"
+                "  - (p, f, g, h, k, L) for Equinoctial, or\n"
+                "  - (x_nd, y_nd, z_nd, vx_nd, vy_nd, vz_nd) for CR3BP"
+            )
         if validate:
             self._validate()
     
@@ -75,6 +111,8 @@ class OrbitalElements:
             self._validate_cartesian()
         elif self.element_type == OEType.EQUINOCTIAL:
             self._validate_equinoctial()
+        elif self.element_type == OEType.CR3BP:
+            self._validate_cr3bp()
     
     def _validate_keplerian(self):
         a, e, i, omega, w, nu = self.elements
@@ -103,6 +141,19 @@ class OrbitalElements:
         # Basic sanity checks for position/velocity
         pos = np.linalg.norm(self.elements[:3])
         vel = np.linalg.norm(self.elements[3:])
+        if pos < 10 * vel:
+            raise ValueError(
+                f"Position magnitude ({pos:.2f}) should be at least "
+                f"an order of magnitude greater than velocity magnitude ({vel:.2f})"
+            )
+    
+    def _validate_cr3bp(self):
+        # Basic sanity checks for position/velocity
+        pos = np.linalg.norm(self.elements[:3])
+        vel = np.linalg.norm(self.elements[3:])
+        if pos > 10:
+            raise ValueError(
+                f"Position magnitude is > 10 nondimensional units, check units.")
         if pos < 10 * vel:
             raise ValueError(
                 f"Position magnitude ({pos:.2f}) should be at least "
@@ -340,7 +391,8 @@ class OrbitalElements:
     def a(self):
         """Semi-major axis (only for Keplerian elements)"""
         if self.element_type != OEType.KEPLERIAN:
-            raise AttributeError("Semi-major axis only available for Keplerian elements")
+            raise AttributeError(
+                "Semi-major axis only available for Keplerian elements")
         return self.elements[0]
 
     @property
@@ -352,21 +404,30 @@ class OrbitalElements:
             f, g = self.elements[1], self.elements[2]
             return np.sqrt(f**2 + g**2)
         elif self.element_type == OEType.CARTESIAN:
-            raise NotImplementedError("Computing eccentricity from Cartesian requires conversion")
+            raise NotImplementedError(
+                "Computing eccentricity from Cartesian requires conversion")
 
     @property
     def position(self):
-        """Position vector (only for Cartesian)"""
-        if self.element_type != OEType.CARTESIAN:
-            raise AttributeError("Position only directly available for Cartesian elements")
-        return self.elements[:3]
+        """Position vector (only for Cartesian and CR3BP)"""
+        if self.element_type == OEType.CARTESIAN:
+            return self.elements[:3]
+        elif self.element_type == OEType.CR3BP:
+            return self.elements[:3]
+        else:
+            raise AttributeError(
+                "Position only directly available for Cartesian & CR3BP elements")
 
     @property
     def velocity(self):
-        """Velocity vector (only for Cartesian)"""
-        if self.element_type != OEType.CARTESIAN:
-            raise AttributeError("Velocity only directly available for Cartesian elements")
-        return self.elements[3:]
+        """Velocity vector (only for Cartesian and CR3BP)"""
+        if self.element_type == OEType.CARTESIAN:
+            return self.elements[3:]
+        elif self.element_type == OEType.CR3BP:
+            return self.elements[3:]
+        else:
+            raise AttributeError(
+                "Velocity only directly available for Cartesian & CR3BP elements")
     
     # ========== ORBITAL PROPERTIES ==========
     def orbital_period(self, mu=DEFAULT_MU):
@@ -375,7 +436,10 @@ class OrbitalElements:
         
         Returns period in seconds (only for elliptic orbits)
         """
-        if self.element_type == OEType.KEPLERIAN:
+        if self.element_type == OEType.CR3BP:
+            raise ValueError(
+                "Orbital Period not available for CR3BP elements, use a Trajectory")
+        elif self.element_type == OEType.KEPLERIAN:
             a = self.elements[0]
             e = self.elements[1]
         elif self.element_type == OEType.EQUINOCTIAL:
@@ -396,7 +460,9 @@ class OrbitalElements:
 
     def specific_energy(self, mu=DEFAULT_MU):
         """Calculate specific orbital energy (energy per unit mass)"""
-        if self.element_type == OEType.CARTESIAN:
+        if self.element_type == OEType.CR3BP:
+            raise ValueError("Specific Energy not applicable for CR3BP trajectories")
+        elif self.element_type == OEType.CARTESIAN:
             r = self.elements[:3]
             v = self.elements[3:]
             r_mag = np.linalg.norm(r)
@@ -416,7 +482,10 @@ class OrbitalElements:
         
         Returns h = |cross(position,velocity)|
         """
-        if self.element_type == OEType.CARTESIAN:
+        if self.element_type == OEType.CR3BP:
+            raise ValueError(
+                "Specific Angular Momentum not relevant for CR3BP trajectories")
+        elif self.element_type == OEType.CARTESIAN:
             r = self.elements[:3]
             v = self.elements[3:]
             return np.linalg.norm(np.cross(r, v))
@@ -428,6 +497,18 @@ class OrbitalElements:
         elif self.element_type == OEType.EQUINOCTIAL:
             p = self.elements[0]
             return np.sqrt(mu * p)
+        
+    def jacobi_const(self,mu1=3.986004418e5,mu2=4.9048695e3):
+        """Calculate Jacobi constant (only for CR3BP elements)"""
+        if self.element_type != OEType.CR3BP:
+            raise ValueError("Jacobi constant not defined except for CR3BP systems")
+        else:
+            x, y, z, vx, vy, vz = self.elements
+            mu = mu2 / (mu1 + mu2)
+            r1 = np.sqrt((x + mu)**2 + y**2 + z**2)
+            r2 = np.sqrt((x - 1 + mu)**2 + y**2 + z**2)
+            return ((x**2 + y**2) + ((2 * (1 - mu)) / r1) + 
+                    ((2 * mu) / r2) - (vx**2 + vy**2 + vz**2))
 
     # ========== UTILITY METHODS ==========
 
@@ -480,6 +561,13 @@ class OrbitalElements:
                     f"  h = {h:12.6f}\n"
                     f"  k = {k:12.6f}\n"
                     f"  L = {np.degrees(L):12.4f}°")
+        
+        elif self.element_type == OEType.CR3BP:
+            r = self.elements[:3]
+            v = self.elements[3:]
+            return (f"CR3BP Nondimensional Elements:\n"
+                    f"  r = [{r[0]:4.12f}, {r[1]:4.12f}, {r[2]:4.12f}] nd\n"
+                    f"  v = [{v[0]:4.12f}, {v[1]:4.12f}, {v[2]:4.12f}] nd")
     
     def __eq__(self, other):
         #Check equality with tolerance
@@ -518,7 +606,10 @@ class OrbitalElements:
                 'keplerian' : OEType.KEPLERIAN,
                 'eq': OEType.EQUINOCTIAL,
                 'equi': OEType.EQUINOCTIAL,
-                'equinoctial' : OEType.EQUINOCTIAL
+                'equinoctial' : OEType.EQUINOCTIAL,
+                'cr3bp' : OEType.CR3BP,
+                'CR3BP' : OEType.CR3BP,
+                '3body' : OEType.CR3BP
             }
             if element_type in type_map:
                 return type_map[element_type]
@@ -526,5 +617,51 @@ class OrbitalElements:
                 raise ValueError(f"Unknown element type '{element_type}'. "
                            f"Use: {list(type_map.keys())}")
         else:
-            raise TypeError(f"element_type must be OEType or str, got {type(element_type)}")
+            raise TypeError(f"element_type must be OEType or str, "
+                            f"got {type(element_type)}")
         
+    @staticmethod
+    def _from_named_params(kwargs):
+        """
+        Convert named parameters to elements array and detect type.
+        
+        Returns
+        -------
+        elements : np.ndarray
+            6-element array
+        element_type : OEType
+            Detected element type
+        """
+        # Check for Keplerian parameters
+        kep_params = ['a', 'e', 'i', 'omega', 'w', 'nu']
+        if all(k in kwargs for k in kep_params):
+            elements = np.array([kwargs[k] for k in kep_params])
+            return elements, OEType.KEPLERIAN
+        
+        # Check for Cartesian parameters
+        cart_params = ['x', 'y', 'z', 'vx', 'vy', 'vz']
+        if all(k in kwargs for k in cart_params):
+            elements = np.array([kwargs[k] for k in cart_params])
+            return elements, OEType.CARTESIAN
+        
+        # Check for Equinoctial parameters
+        equi_params = ['p', 'f', 'g', 'h', 'k', 'L']
+        if all(k in kwargs for k in equi_params):
+            elements = np.array([kwargs[k] for k in equi_params])
+            return elements, OEType.EQUINOCTIAL
+        
+        # Check for CR3BP parameters
+        cr3bp_params = ['x_nd', 'y_nd', 'z_nd', 'vx_nd', 'vy_nd', 'vz_nd']
+        if all(k in kwargs for k in cr3bp_params):
+            elements = np.array([kwargs[k] for k in cr3bp_params])
+            return elements, OEType.CR3BP
+        
+        # Error: couldn't determine type
+        provided = list(kwargs.keys())
+        raise ValueError(
+            f"Could not determine element type from parameters: {provided}\n"
+            f"Keplerian requires: {kep_params}\n"
+            f"Cartesian requires: {cart_params}\n"
+            f"Equinoctial requires: {equi_params}\n"
+            f"CR3BP requires: {cr3bp_params}"
+        )
