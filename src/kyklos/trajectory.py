@@ -4,12 +4,11 @@ created with the assistance of Claude Sonnet 4.5 by Anthropic'''
 
 import numpy as np
 import pandas as pd
-#import warnings
-#from dataclasses import dataclass
 from typing import Union, Optional, Dict, List, Tuple, Any
-#from enum import Enum
 import heyoka as hy
 import plotly.graph_objects as go
+from .system import System
+from .orbital_elements import OrbitalElements
 
 class Trajectory:
     """

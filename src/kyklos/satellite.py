@@ -128,7 +128,7 @@ class Satellite:
     
     def __hash__(self) -> int:
         # Round to tolerance for hashing (similar to OrbitalElements)
-        mass_rounded = round(self.mass / self._HASH_DECIMALS = 10)
+        mass_rounded = round(self.mass / self._HASH_DECIMALS)
         cd_rounded = round(self.drag_coeff / self._HASH_DECIMALS)
         area_rounded = round(self.cross_section / self._HASH_DECIMALS)
         inertia_rounded = tuple(round(x/self._HASH_DECIMALS) for x in self.inertia.flat)

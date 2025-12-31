@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kyklos"
+version = "0.1.0"
+description = "Python package for orbital mechanics and satellite mission design"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [
+    {name = "Shane Billingsley"},
+]
+dependencies = [
+    "numpy>=1.20",
+    "pandas>=2.0",
+    "plotly>=6.0",
+    # heyoka.py must be installed via conda:
+    #   conda install -c conda-forge heyoka.py
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov",
+    "jupyter",
+    "matplotlib",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
