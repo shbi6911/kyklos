@@ -4,6 +4,7 @@ created with the assistance of Claude Sonnet 4.5 by Anthropic'''
 
 import numpy as np
 from enum import Enum
+from .system import SysType
 
 # define an enumerated list of element types
 class OEType(Enum):
@@ -31,18 +32,20 @@ class OrbitalElements:
     DEFAULT_MU = 398600.435507  # km³/s²
     
     # ========== CONSTRUCTION ==========
-    def __init__(self, elements=None, element_type=None, validate=True, **kwargs):
+    def __init__(self, elements=None, element_type=None, validate=True, 
+             system=None, mu=None, **kwargs):
         """
         Create orbital elements.
         
         Can be called in two ways:
         
         1. Array-based (fast for propagation):
-           OrbitalElements([7000, 0.01, 0.5, 0, 0, 0], 'kep')
+        OrbitalElements([7000, 0.01, 0.5, 0, 0, 0], 'kep', mu=398600.4418)
         
         2. Named parameters (readable for setup):
-           OrbitalElements(a=7000, e=0.01, i=0.5, omega=0, w=0, nu=0)
-           OrbitalElements(x=-6045, y=-3490, z=2500, vx=-3.457, vy=6.618, vz=2.533)
+        OrbitalElements(a=7000, e=0.01, i=0.5, omega=0, w=0, nu=0, mu=398600.4418)
+        OrbitalElements(x=-6045, y=-3490, z=2500, vx=-3.457, vy=6.618, vz=2.533, 
+                        system=EARTH)
         
         Parameters
         ----------
@@ -52,13 +55,35 @@ class OrbitalElements:
             Type of elements ('cart', 'kep') - required if using elements array
         validate : bool, optional
             Whether to validate elements (default True)
+        system : System, optional
+            System object containing gravitational parameters
+        mu : float, optional
+            Gravitational parameter (km³/s²) if system not provided
+            Defaults to Earth's GM if neither system nor mu provided
         **kwargs : dict
-            Named parameters for apprpriate orbital element set
+            Named parameters for appropriate orbital element set
             Keplerian (a, e, i, omega, w, nu)
             Cartesian (x, y, z, vx, vy, vz)
             Equinoctial (p, f, g, h, k, L)
             CR3BP (x_nd, y_nd, z_nd, vx_nd, vy_nd, vz_nd)
         """
+       # Store system or mu
+        self._system = system
+        if system is not None:
+            # Extract mu from system
+            if system.base_type == SysType.CR3BP:
+                # For CR3BP, use mass ratio instead of gravitational parameter
+                self._mu = system.mass_ratio
+            elif hasattr(system, 'primary_body'):
+                self._mu = system.primary_body.mu
+            else:
+                raise ValueError("System object must have primary_body attribute")
+        elif mu is not None:
+            self._mu = mu
+        else:
+            # Use default (Earth)
+            self._mu = self.DEFAULT_MU
+
         # Determine construction method
         if elements is not None:
             # Array-based construction
@@ -81,18 +106,50 @@ class OrbitalElements:
         if validate:
             self._validate()
     
-    # define alternate constructors to bypass validation (for fast propagation)
     @classmethod
-    def cartesian(cls, elements):
-        return cls(elements, OEType.CARTESIAN, validate=False)
+    def cartesian(cls, elements, system=None, mu=None):
+        """
+        Create Cartesian orbital elements without validation (for automated processes)
+        
+        Args:
+            elements: 6-element array [x, y, z, vx, vy, vz]
+            system: System object (optional)
+            mu: Gravitational parameter (optional, defaults to Earth)
+        
+        Returns:
+            OrbitalElements instance
+        """
+        return cls(elements, OEType.CARTESIAN, validate=False, system=system, mu=mu)
 
     @classmethod
-    def keplerian(cls, elements):
-        return cls(elements, OEType.KEPLERIAN, validate=False)
+    def keplerian(cls, elements, system=None, mu=None):
+        """
+        Create Keplerian orbital elements without validation (for automated processes)
+        
+        Args:
+            elements: 6-element array [a, e, i, Ω, ω, ν]
+            system: System object (optional)
+            mu: Gravitational parameter (optional, defaults to Earth) 
+        
+        Returns:
+            OrbitalElements instance
+        """
+        return cls(elements, OEType.KEPLERIAN, validate=False, system=system, mu=mu)
 
     @classmethod
-    def equinoctial(cls, elements):
-        return cls(elements, OEType.EQUINOCTIAL, validate=False)
+    def equinoctial(cls, elements, system=None, mu=None):
+        """
+        Create Equinoctial orbital elements without validation (for automated processes)
+        
+        Args:
+            elements: 6-element array [p, f, g, h, k, L]
+            system: System object (optional)
+            mu: Gravitational parameter (optional, defaults to Earth)
+        
+        Returns:
+            OrbitalElements instance
+        """
+        return cls(elements, OEType.EQUINOCTIAL, validate=False, system=system, mu=mu)
     
     # ========== VALIDATION ==========
     def _validate(self):
@@ -160,8 +217,77 @@ class OrbitalElements:
                 f"an order of magnitude greater than velocity magnitude ({vel:.2f})"
             )
     
+    # ========== FACTORY METHODS ==========
+    @classmethod
+    def from_numpy(cls, array, element_type, validate=True, system=None, mu=None):
+        """
+        Create list of OrbitalElements from NumPy array.
+        
+        Parameters
+        ----------
+        array : np.ndarray
+            Array of shape (n_orbits, 6)
+        element_type : OEType or str
+        validate: bool, optional, defaults to True
+        system : System, optional
+        mu : float, optional
+        
+        Returns
+        -------
+        list of OrbitalElements
+        """
+        if array.ndim != 2 or array.shape[1] != 6:
+            raise ValueError(f"Array must have shape (n, 6), got {array.shape}")
+        
+        return [cls(row, element_type, validate=validate, 
+                   system=system, mu=mu) for row in array]
+    
+    @classmethod
+    def from_dataframe(cls, df, element_type=None, validate=True, system=None, mu=None):
+        """
+        Create list of OrbitalElements from pandas DataFrame.
+        
+        Parameters
+        ----------
+        df : pd.DataFrame
+            DataFrame with 6 columns of orbital elements
+        element_type : OEType or str, optional
+            If None, inferred from column names
+        validate : bool, optional, defaults to True
+        system : System, optional
+        mu : float, optional
+        
+        Returns
+        -------
+        list of OrbitalElements
+        """
+        try:
+            import pandas as pd
+        except ImportError:
+            raise ImportError("pandas required for from_dataframe()")
+        
+        if element_type is None:
+            # Infer from column names
+            cols = set(df.columns)
+            if cols == {'a', 'e', 'i', 'RAAN', 'omega', 'nu'}:
+                element_type = OEType.KEPLERIAN
+            elif cols == {'x', 'y', 'z', 'vx', 'vy', 'vz'}:
+                element_type = OEType.CARTESIAN
+            elif cols == {'p', 'f', 'g', 'h', 'k', 'L'}:
+                element_type = OEType.EQUINOCTIAL
+            elif cols == {'x_nd', 'y_nd', 'z_nd', 'vx_nd', 'vy_nd', 'vz_nd'}:
+                element_type = OEType.CR3BP
+            else:
+                raise ValueError(
+                    "Could not infer element type from columns. "
+                    "Provide element_type explicitly."
+                )
+        
+        return [cls(row.values, element_type, validate=validate,
+                   system=system, mu=mu) for _, row in df.iterrows()]
+    
     # ========== ELEMENT TYPE CONVERSIONS ==========
-    def convert_to(self, target_type, mu=DEFAULT_MU):
+    def convert_to(self, target_type):
         """
         Convert orbital elements to a different representation.
         
@@ -187,34 +313,35 @@ class OrbitalElements:
         
         if self.element_type == OEType.KEPLERIAN and target_type == OEType.CARTESIAN:
             # Convert Keplerian to Cartesian
-            converted_elements = self._keplerian_to_cartesian(mu)
+            converted_elements = self._keplerian_to_cartesian()
         
         elif self.element_type == OEType.KEPLERIAN and target_type == OEType.EQUINOCTIAL:
             # Convert Keplerian to Modified Equinoctial
-            converted_elements = self._keplerian_to_equinoctial(mu)
+            converted_elements = self._keplerian_to_equinoctial()
             
         elif self.element_type == OEType.CARTESIAN and target_type == OEType.KEPLERIAN:
             # Convert Cartesian to Keplerian
-            converted_elements = self._cartesian_to_keplerian(mu)
+            converted_elements = self._cartesian_to_keplerian()
         
         elif self.element_type == OEType.CARTESIAN and target_type == OEType.EQUINOCTIAL:
             # Convert Cartesian to Modified Equinoctial
-            converted_elements = self._cartesian_to_equinoctial(mu)
+            converted_elements = self._cartesian_to_equinoctial()
         
         elif self.element_type == OEType.EQUINOCTIAL and target_type == OEType.KEPLERIAN:
             # Convert Modified Equinoctial to Keplerian
-            converted_elements = self._equinoctial_to_keplerian(mu)
+            converted_elements = self._equinoctial_to_keplerian()
         
         elif self.element_type == OEType.EQUINOCTIAL and target_type == OEType.CARTESIAN:
             # Convert Modified Equinoctial to Cartesian
-            converted_elements = self._equinoctial_to_cartesian(mu)
+            converted_elements = self._equinoctial_to_cartesian()
         else:
             raise ValueError(f"Conversion from {self.element_type.value} "
                              f"to {target_type.value} not implemented")
         
-        return OrbitalElements(converted_elements, target_type, validate=False)
+        return OrbitalElements(converted_elements, target_type, 
+                         validate=False, system=self._system, mu=self._mu)
     
-    def _keplerian_to_cartesian(self, mu):
+    def _keplerian_to_cartesian(self):
         """Convert Keplerian elements to Cartesian state vector."""
         a, e, i, omega, w, nu = self.elements
         # find semi-latus rectum
@@ -223,8 +350,8 @@ class OrbitalElements:
         r_mag = p / (1 + e*np.cos(nu))
         rvec = np.array([r_mag*np.cos(nu), r_mag*np.sin(nu), 0])
         # find velocity in perifocal frame
-        vvec = np.array([-np.sqrt(mu/p) * np.sin(nu),
-                         np.sqrt(mu/p) * (e + np.cos(nu)), 0])
+        vvec = np.array([-np.sqrt(self._mu/p) * np.sin(nu),
+                     np.sqrt(self._mu/p) * (e + np.cos(nu)),0])
         # rotate from perifocal frame to inertial frame using DCM
         # rotation about z-axis by RAAN
         R3_omega = np.array([
@@ -250,7 +377,7 @@ class OrbitalElements:
         V = DCM @ vvec
         return np.concatenate([R,V])
     
-    def _keplerian_to_equinoctial(self, mu):
+    def _keplerian_to_equinoctial(self):
         """Convert Keplerian elements to Modified Equinoctial elements"""
         a, e, i, omega, w, nu = self.elements
         # define elements according to Walker et al, Celestial Mechanics, v.36,pp.409
@@ -262,7 +389,7 @@ class OrbitalElements:
         L = w + omega + nu
         return np.array([p,f,g,h,k,L])
     
-    def _cartesian_to_keplerian(self, mu):
+    def _cartesian_to_keplerian(self):
         """Convert Cartesian state vector to Keplerian elements.
         Uses algorithm from Flores & Fantino, Advances in Space Research, v.75,pp.4910
         """
@@ -280,9 +407,9 @@ class OrbitalElements:
         # define an intermediate vector b in the orbit plane
         bhat = np.cross(hvec/np.linalg.norm(hvec),nhat)
         # find semimajor axis from energy equation
-        a = ((2/np.linalg.norm(rvec)) - (np.dot(vvec,vvec)/mu))**(-1)
+        a = ((2/np.linalg.norm(rvec)) - (np.dot(vvec,vvec)/self._mu))**(-1)
         # find eccentricity vector
-        evec = np.cross(vvec,hvec)/mu - rvec/np.linalg.norm(rvec)
+        evec = np.cross(vvec,hvec)/self._mu - rvec/np.linalg.norm(rvec)
         # find argument of periapsis and true anomaly
         w = np.arctan2(np.dot(evec,bhat),np.dot(evec,nhat))
         nu = np.arctan2(np.dot(rvec,bhat),np.dot(rvec,nhat)) - w
@@ -290,7 +417,7 @@ class OrbitalElements:
         e = np.linalg.norm(evec)
         return np.array([a,e,i,omega,w,nu])
     
-    def _cartesian_to_equinoctial(self, mu):
+    def _cartesian_to_equinoctial(self):
         """
         Convert Cartesian state vector to Modified Equinoctial elements.
         Uses the prograde formulation (singularity at i = 180°).
@@ -306,13 +433,13 @@ class OrbitalElements:
         h_mag = np.linalg.norm(h_vec)
         h_hat = h_vec / h_mag
         # Semi-latus rectum
-        p = h_mag**2 / mu
+        p = h_mag**2 / self._mu
         # Node vector components (h, k)
         # h = -h_y / (1 + h_z), k = h_x / (1 + h_z)
         h_elem = -h_hat[1] / (1 + h_hat[2])
         k_elem = h_hat[0] / (1 + h_hat[2])
         # Eccentricity vector: e_vec = (v × h)/mu - r_hat
-        ecc_vec = np.cross(vvec, h_vec) / mu - r_hat
+        evec = np.cross(vvec, h_vec) / self._mu - r_hat
         # Construct f_hat and g_hat basis vectors
         h_sq = h_elem**2
         k_sq = k_elem**2
@@ -321,8 +448,8 @@ class OrbitalElements:
         f_hat = np.array([1 - k_sq + h_sq,tkh,-2 * k_elem]) / s2
         g_hat = np.array([tkh,1 + k_sq - h_sq,2 * h_elem]) / s2
         # Eccentricity components (f, g)
-        f_elem = np.dot(ecc_vec, f_hat)
-        g_elem = np.dot(ecc_vec, g_hat)
+        f_elem = np.dot(evec, f_hat)
+        g_elem = np.dot(evec, g_hat)
         # For true longitude L, we need position projected onto f_hat and g_hat
         # r·v gives us information about where we are in the orbit
         rdv = np.dot(rvec, vvec)
@@ -337,7 +464,7 @@ class OrbitalElements:
         L = np.arctan2(y, x) % (2 * np.pi)
         return np.array([p, f_elem, g_elem, h_elem, k_elem, L])
     
-    def _equinoctial_to_keplerian(self, mu):
+    def _equinoctial_to_keplerian(self):
         """
         Convert Modified Equinoctial elements to Keplerian elements.
         Uses the prograde formulation (singularity at i = 180°).
@@ -351,7 +478,7 @@ class OrbitalElements:
         nu = L - (w+RAAN)
         return np.array([a,e,i,RAAN,w,nu])
     
-    def _equinoctial_to_cartesian(self, mu):
+    def _equinoctial_to_cartesian(self):
         """
         Convert Modified Equinoctial elements to Cartesian state vector.
         Uses the prograde formulation (singularity at i = 180°).
@@ -366,27 +493,37 @@ class OrbitalElements:
         r1 = (r/ssqr)*(np.cos(L) + asqr*np.cos(L) + 2*h*k*np.sin(L))
         r2 = (r/ssqr)*(np.sin(L) - asqr*np.sin(L) + 2*h*k*np.cos(L))
         r3 = ((2*r)/ssqr)*(h*np.sin(L) - k*np.cos(L))
-        v1 = (-(1/ssqr)*np.sqrt(mu/p)*(np.sin(L) + asqr*np.sin(L) - 
+        v1 = (-(1/ssqr)*np.sqrt(self._mu/p)*(np.sin(L) + asqr*np.sin(L) - 
                     2*h*k*np.cos(L) + g - 2*f*h*k + asqr*g))
-        v2 = (-(1/ssqr)*np.sqrt(mu/p)*(-np.cos(L) + asqr*np.cos(L) + 
+        v2 = (-(1/ssqr)*np.sqrt(self._mu/p)*(-np.cos(L) + asqr*np.cos(L) + 
                     2*h*k*np.sin(L) - f + 2*g*h*k + asqr*f))
-        v3 = (2/ssqr)*np.sqrt(mu/p)*(h*np.cos(L) + k*np.sin(L) + f*h + g*k)
+        v3 = (2/ssqr)*np.sqrt(self._mu/p)*(h*np.cos(L) + k*np.sin(L) + f*h + g*k)
         return np.array([r1,r2,r3,v1,v2,v3])
     
     # conversion shortcuts for convenience
-    def to_cartesian(self, mu=DEFAULT_MU):
+    def to_cartesian(self):
         """Shortcut for convert_to('cart')"""
-        return self.convert_to(OEType.CARTESIAN, mu)
+        return self.convert_to(OEType.CARTESIAN)
 
-    def to_keplerian(self, mu=DEFAULT_MU):
+    def to_keplerian(self):
         """Shortcut for convert_to('kep')"""
-        return self.convert_to(OEType.KEPLERIAN, mu)
+        return self.convert_to(OEType.KEPLERIAN)
 
-    def to_equinoctial(self, mu=DEFAULT_MU):
+    def to_equinoctial(self):
         """Shortcut for convert_to('equi')"""
-        return self.convert_to(OEType.EQUINOCTIAL, mu)
+        return self.convert_to(OEType.EQUINOCTIAL)
 
     # ========== PROPERTY ACCESS ==========
+    @property
+    def system(self):
+        """System object (if provided)"""
+        return self._system
+
+    @property
+    def mu(self):
+        """Gravitational parameter [km³/s²]"""
+        return self._mu
+    
     @property
     def a(self):
         """Semi-major axis (only for Keplerian elements)"""
@@ -430,7 +567,7 @@ class OrbitalElements:
                 "Velocity only directly available for Cartesian & CR3BP elements")
     
     # ========== ORBITAL PROPERTIES ==========
-    def orbital_period(self, mu=DEFAULT_MU):
+    def orbital_period(self):
         """
         Calculate orbital period
         
@@ -449,16 +586,16 @@ class OrbitalElements:
             a = p / (1 - e**2)
         else:
             # Convert to Keplerian first
-            kep = self.to_keplerian(mu)
+            kep = self.to_keplerian()
             a = kep.elements[0]
             e = kep.elements[1]
         
         if e >= 1:
             raise ValueError("Orbital period undefined for parabolic/hyperbolic orbits")
         
-        return 2 * np.pi * np.sqrt(a**3 / mu)
+        return 2 * np.pi * np.sqrt(a**3 / self._mu)
 
-    def specific_energy(self, mu=DEFAULT_MU):
+    def specific_energy(self):
         """Calculate specific orbital energy (energy per unit mass)"""
         if self.element_type == OEType.CR3BP:
             raise ValueError("Specific Energy not applicable for CR3BP trajectories")
@@ -467,16 +604,16 @@ class OrbitalElements:
             v = self.elements[3:]
             r_mag = np.linalg.norm(r)
             v_mag = np.linalg.norm(v)
-            return v_mag**2 / 2 - mu / r_mag
+            return v_mag**2 / 2 - self._mu / r_mag
         elif self.element_type == OEType.KEPLERIAN:
             a = self.elements[0]
-            return -mu / (2 * a)
+            return -self._mu / (2 * a)
         else:
             # Convert to Cartesian
-            cart = self.to_cartesian(mu)
-            return cart.specific_energy(mu)
+            cart = self.to_cartesian()
+            return cart.specific_energy()
 
-    def specific_angular_momentum(self, mu=DEFAULT_MU):
+    def specific_angular_momentum(self):
         """
         Calculate specific angular momentum magnitude
         
@@ -493,28 +630,238 @@ class OrbitalElements:
             a = self.elements[0]
             e = self.elements[1]
             p = a * (1 - e**2)
-            return np.sqrt(mu * p)
+            return np.sqrt(self._mu * p)
         elif self.element_type == OEType.EQUINOCTIAL:
             p = self.elements[0]
-            return np.sqrt(mu * p)
+            return np.sqrt(self._mu * p)
+    
+    def mean_motion(self):
+        """
+        Calculate mean motion (n = √(μ/a³))
         
-    def jacobi_const(self,mu1=3.986004418e5,mu2=4.9048695e3):
+        Returns
+        -------
+        float
+            Mean motion [rad/s]
+        
+        Raises
+        ------
+        ValueError
+            If called on CR3BP elements or parabolic/hyperbolic orbit
+        """
+        if self.element_type == OEType.CR3BP:
+            raise ValueError(
+                "Mean motion not applicable for CR3BP elements (use nondim time)")
+        
+        # Get semi-major axis
+        if self.element_type == OEType.KEPLERIAN:
+            a = self.elements[0]
+            e = self.elements[1]
+        elif self.element_type == OEType.EQUINOCTIAL:
+            p = self.elements[0]
+            f, g = self.elements[1], self.elements[2]
+            e = np.sqrt(f**2 + g**2)
+            a = p / (1 - e**2)
+        else:  # CARTESIAN
+            # Convert to Keplerian first
+            kep = self.to_keplerian()
+            a = kep.elements[0]
+            e = kep.elements[1]
+    
+        # Check for elliptic orbit
+        if e >= 1:
+            raise ValueError("Mean motion undefined for parabolic/hyperbolic orbits")
+        
+        return np.sqrt(self._mu / a**3)
+        
+    def jacobi_const(self):
         """Calculate Jacobi constant (only for CR3BP elements)"""
         if self.element_type != OEType.CR3BP:
             raise ValueError("Jacobi constant not defined except for CR3BP systems")
         else:
             x, y, z, vx, vy, vz = self.elements
-            mu = mu2 / (mu1 + mu2)
-            r1 = np.sqrt((x + mu)**2 + y**2 + z**2)
-            r2 = np.sqrt((x - 1 + mu)**2 + y**2 + z**2)
-            return ((x**2 + y**2) + ((2 * (1 - mu)) / r1) + 
-                    ((2 * mu) / r2) - (vx**2 + vy**2 + vz**2))
+            r1 = np.sqrt((x + self._mu)**2 + y**2 + z**2)
+            r2 = np.sqrt((x - 1 + self._mu)**2 + y**2 + z**2)
+            return ((x**2 + y**2) + ((2 * (1 - self._mu)) / r1) + 
+                    ((2 * self._mu) / r2) - (vx**2 + vy**2 + vz**2))
 
     # ========== UTILITY METHODS ==========
 
     def copy(self):
         """Create a deep copy of the orbital elements"""
-        return OrbitalElements(self.elements.copy(), self.element_type, validate=False)
+        return OrbitalElements(self.elements.copy(), self.element_type, 
+                               validate=False, system=self._system, mu=self._mu)
+    
+    # ========== BATCH OPERATIONS ==========
+    class Batch:
+        """
+        Batch operations on collections of OrbitalElements.
+        
+        All methods accept a list of OrbitalElements and return
+        a list of OrbitalElements or computed values.
+        """
+        @staticmethod
+        def copy(orbits, target_type):
+            """Convert multiple orbits to target type"""
+            return [o.copy() for o in orbits]
+        
+        @staticmethod
+        def convert_to(orbits, target_type):
+            """Convert multiple orbits to target type"""
+            return [o.convert_to(target_type) for o in orbits]
+        
+        @staticmethod
+        def to_cartesian(orbits):
+            """Convert multiple orbits to Cartesian"""
+            return [o.to_cartesian() for o in orbits]
+        
+        @staticmethod
+        def to_keplerian(orbits):
+            """Convert multiple orbits to Keplerian"""
+            return [o.to_keplerian() for o in orbits]
+        
+        @staticmethod
+        def to_equinoctial(orbits):
+            """Convert multiple orbits to Equinoctial"""
+            return [o.to_equinoctial() for o in orbits]
+        
+        @staticmethod
+        def a(orbits):
+            """Get semi-major axis for multiple orbits"""
+            return np.array([o.a() for o in orbits])
+        
+        @staticmethod
+        def e(orbits):
+            """Get eccentricity for multiple orbits"""
+            return np.array([o.e() for o in orbits])
+
+        @staticmethod
+        def pos(orbits):
+            """Get position for multiple orbits"""
+            return np.array([o.pos() for o in orbits])
+        
+        @staticmethod
+        def vel(orbits):
+            """Get velocity for multiple orbits"""
+            return np.array([o.vel() for o in orbits])
+        
+        @staticmethod
+        def orbital_period(orbits):
+            """Get orbital periods for multiple orbits"""
+            return np.array([o.orbital_period() for o in orbits])
+        
+        @staticmethod
+        def mean_motion(orbits):
+            """Get mean motions for multiple orbits"""
+            return np.array([o.mean_motion() for o in orbits])
+        
+        @staticmethod
+        def specific_energy(orbits):
+            """Get specific energy for multiple orbits"""
+            return np.array([o.specific_energy() for o in orbits])
+        
+        @staticmethod
+        def specific_angular_momentum(orbits):
+            """Get specific angular momentum for multiple orbits"""
+            return np.array([o.specific_angular_momentum() for o in orbits])
+        
+        @staticmethod
+        def to_numpy(orbits):
+            """
+            Convert list of OrbitalElements to NumPy array.
+            
+            Parameters
+            ----------
+            orbits : list of OrbitalElements
+            
+            Returns
+            -------
+            np.ndarray
+                Array of shape (n_orbits, 6) containing orbital elements
+            
+            Notes
+            -----
+            All orbits must be the same element type. The returned array
+            contains the raw element values without type information.
+            """
+            # Check all same type
+            elem_type = orbits[0].element_type
+            if not all(o.element_type == elem_type for o in orbits):
+                raise ValueError("All orbits must have the same element type")
+            
+            return np.array([o.elements for o in orbits])
+        
+        @staticmethod
+        def to_dataframe(orbits, index=None):
+            """
+            Convert list of OrbitalElements to pandas DataFrame.
+            
+            Parameters
+            ----------
+            orbits : list of OrbitalElements
+                List of orbital elements
+            index : array-like, optional
+                Index for the DataFrame (e.g., time values).
+                If None, uses integer index.
+            
+            Returns
+            -------
+            pd.DataFrame
+                DataFrame with columns named according to element type
+            
+            Raises
+            ------
+            ValueError
+                If orbits have different element types or if index length
+                doesn't match number of orbits
+
+            Notes
+            -----
+            Column names depend on element type:
+            - Keplerian: ['a', 'e', 'i', 'RAAN', 'omega', 'nu']
+            - Cartesian: ['x', 'y', 'z', 'vx', 'vy', 'vz']
+            - Equinoctial: ['p', 'f', 'g', 'h', 'k', 'L']
+            - CR3BP: ['x_nd', 'y_nd', 'z_nd', 'vx_nd', 'vy_nd', 'vz_nd']
+            """
+            # pandas isn't needed unless this function is used
+            try:
+                import pandas as pd
+            except ImportError:
+                raise ImportError("pandas required for from_dataframe()")
+            # check for empty list input and return empty DataFrame
+            if not orbits:
+                return pd.DataFrame()
+
+            # Check all same type
+            elem_type = orbits[0].element_type
+            if not all(o.element_type == elem_type for o in orbits):
+                raise ValueError("All orbits must have the same element type")
+            
+            # Validate index length
+            if index is not None:
+                if len(index) != len(orbits):
+                    raise ValueError(
+                        f"Index length ({len(index)}) must match "
+                        f"number of orbits ({len(orbits)})"
+                    )
+            
+            # Get column names based on element type
+            if elem_type == OEType.KEPLERIAN:
+                columns = ['a', 'e', 'i', 'RAAN', 'omega', 'nu']
+            elif elem_type == OEType.CARTESIAN:
+                columns = ['x', 'y', 'z', 'vx', 'vy', 'vz']
+            elif elem_type == OEType.EQUINOCTIAL:
+                columns = ['p', 'f', 'g', 'h', 'k', 'L']
+            elif elem_type == OEType.CR3BP:
+                columns = ['x_nd', 'y_nd', 'z_nd', 'vx_nd', 'vy_nd', 'vz_nd']
+            else:
+                raise ValueError("Orbital Elements must have defined type")
+            
+            # Create DataFrame
+            data = np.array([o.elements for o in orbits])
+            df = pd.DataFrame(data, columns=columns, index=index)
+            
+            return df
 
     # ========== SPECIAL METHODS ==========
     def __len__(self):

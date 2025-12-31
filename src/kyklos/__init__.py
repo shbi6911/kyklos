@@ -6,10 +6,10 @@ and mission design using high-performance Taylor series integration.
 """
 
 # Core classes
-from .orbital_elements import OrbitalElements
+from .orbital_elements import OrbitalElements, OrbitalElements as OE
 from .system import System, BodyParams, AtmoParams
-from .satellite import Satellite
-from .trajectory import Trajectory
+from .satellite import Satellite, Satellite as Sat
+from .trajectory import Trajectory, Trajectory as Traj
 
 # Commonly-used celestial bodies
 from .system import EARTH, MOON, MARS
@@ -30,6 +30,10 @@ __all__ = [
     "AtmoParams", 
     "Satellite",
     "Trajectory",
+    # Abbreviations
+    "OE",
+    "Sat",
+    "Traj",
     # Constants
     "EARTH",
     "MOON",
