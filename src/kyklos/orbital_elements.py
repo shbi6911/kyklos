@@ -653,7 +653,7 @@ class OrbitalElements:
             raise ValueError(
                 "Mean motion not applicable for CR3BP elements (use nondim time)")
         
-        # Get semi-major axis
+        # Get semi-major axis and eccentricity
         if self.element_type == OEType.KEPLERIAN:
             a = self.elements[0]
             e = self.elements[1]

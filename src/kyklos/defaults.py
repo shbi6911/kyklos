@@ -1,5 +1,5 @@
 """
-Default System Configurations
+Default Orbits and System Configurations
 ==============================
 
 Factory functions for commonly-used orbital systems. These functions
@@ -14,8 +14,34 @@ Examples
 >>> sys = earth_2body()  # Standard 2-body Earth
 >>> sys_lazy = earth_j2(compile=False)  # Defer compilation
 """
+import numpy as np
+from .orbital_elements import OrbitalElements
+from .system import EARTH, MOON, MARS, EARTH_STD_ATMO
 
-from .system import System, EARTH, MOON, MARS, EARTH_STD_ATMO
+ISS_ORBIT = OrbitalElements(
+    a=6778.0, e=0.0001, i=np.radians(51.6),
+    omega=0, w=0, nu=0, mu=EARTH.mu
+)
+
+GEO_ORBIT = OrbitalElements(
+    a=42164.0, e=0.0, i=0.0,
+    omega=0, w=0, nu=0, mu=EARTH.mu
+)
+
+LEO_ORBIT = OrbitalElements(
+    a=EARTH.radius+550, e=0.0, i=0.0,
+    omega=0, w=0, nu=0, mu=EARTH.mu
+)
+
+SSO_ORBIT = OrbitalElements(
+    a=EARTH.radius+500, e=0.001, i=np.radians(97.4016),
+    omega=np.radians(140), w=0, nu=0, mu=EARTH.mu
+)
+
+MOLNIYA_ORBIT = OrbitalElements(
+    a = 26554, e = 0.737, i = np.radians(63.4),
+    omega=np.radians(100), w=np.radians(270), nu=0, mu=EARTH.mu
+)
 
 def earth_2body(compile=True):
     """
