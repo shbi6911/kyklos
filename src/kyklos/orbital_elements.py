@@ -17,10 +17,10 @@ class OEType(Enum):
 class OrbitalElements:
     """
     Represents orbital elements as a set of six phase space invariants
-    Currently does not reference a System or specific coordinate frame
-    Cartesian representations assume an equatorial frame centered on a system body
-    WARNING: This class is not set to immutable but is not intended to be modified,
-             use caution when changing a defined OrbitalElements instance
+    Currently does not reference a specific coordinate frame
+    Cartesian representations assume an equatorial frame centered on primary system body
+    OrbitalElements is immutable, extract elements using numpy methods and create a
+    new instance to change
     """
     # ========== CLASS CONSTANTS ==========
     # Tolerance for floating-point equality comparisons
@@ -103,9 +103,13 @@ class OrbitalElements:
                 "  - (p, f, g, h, k, L) for Equinoctial, or\n"
                 "  - (x_nd, y_nd, z_nd, vx_nd, vy_nd, vz_nd) for CR3BP"
             )
+        # Ensure immutability of elements array
+        self.elements.flags.writeable = False
+        # run validation checks on input parameters (if not flagged otherwise)
         if validate:
             self._validate()
     
+    # define alternate constructors to bypass validation and automatically input type
     @classmethod
     def cartesian(cls, elements, system=None, mu=None):
         """
@@ -309,7 +313,7 @@ class OrbitalElements:
         
         if target_type == self.element_type:
             # No conversion needed, return copy
-            return OrbitalElements(self.elements.copy(), target_type, validate=False)
+            return OrbitalElements.copy(self)
         
         if self.element_type == OEType.KEPLERIAN and target_type == OEType.CARTESIAN:
             # Convert Keplerian to Cartesian

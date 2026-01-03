@@ -1,4 +1,4 @@
-# Large data files - CRITICAL!
+# Large data files
 *.csv
 *.dat
 *.h5
@@ -6,7 +6,6 @@
 *.mat
 *.nc
 data/
-test_elements_*.csv
 
 # Python
 __pycache__/

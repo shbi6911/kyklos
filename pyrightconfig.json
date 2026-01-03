@@ -1,5 +1,8 @@
 {
     "typeCheckingMode": "basic",
     "reportAttributeAccessIssue": "none",
+    "reportOptionalSubscript": "none",
+    "reportOptionalMemberAccess": "none",
+    "reportOptionalOperand": "none",
     "reportGeneralTypeIssues": "none"
 }

@@ -65,7 +65,7 @@ class Trajectory:
         """
         self._validate_time(t)
         state_array = self._integrator.c_output(t)
-        return cartesian(state_array)
+        return OrbitalElements.cartesian(state_array, system=self.system)
     
     def evaluate(self, 
                  times: Union[float, 
@@ -100,10 +100,10 @@ class Trajectory:
             List of OrbitalElements uniformly spaced in time
         """
         if n_points < 2:
-            raise ValueError("n_points must be at least 2, use .state_at")
+            raise ValueError("n_points must be at least 2, use .state_at()")
         
         times = np.linspace(self.t0, self.tf, n_points)
-        return self.evaluate(times)
+        return [self.state_at(t) for t in times]
     
     def state_at_raw(self, t: float) -> np.ndarray:
         """Get raw state array at time t """
@@ -160,12 +160,12 @@ class Trajectory:
         # Build data dictionary
         data = {
             'time': times,
-            'x': [s.cartesian[0] for s in states],
-            'y': [s.cartesian[1] for s in states],
-            'z': [s.cartesian[2] for s in states],
-            'vx': [s.cartesian[3] for s in states],
-            'vy': [s.cartesian[4] for s in states],
-            'vz': [s.cartesian[5] for s in states],
+            'x': [s[0] for s in states],
+            'y': [s[1] for s in states],
+            'z': [s[2] for s in states],
+            'vx': [s[3] for s in states],
+            'vy': [s[4] for s in states],
+            'vz': [s[5] for s in states],
         }
         
         return pd.DataFrame(data)

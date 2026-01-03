@@ -5,9 +5,11 @@ created with the assistance of Claude Sonnet 4.5 by Anthropic'''
 import numpy as np
 import warnings
 from dataclasses import dataclass
-from typing import Optional, Dict, List, Tuple, Any
+from typing import Optional, Dict, List, Tuple, Any, Union
 from enum import Enum
 import heyoka as hy
+from .orbital_elements import OrbitalElements
+from .trajectory import Trajectory
 
 # define an enumerated list of system types
 class SysType(Enum):
@@ -135,6 +137,7 @@ class System:
     perturbations : tuple of str, optional
         Perturbation models to include. Options: "J2", "drag"
         Default is empty tuple (point mass dynamics)
+        Note: Use trailing comma for single perturbation: ('J2',)
     atmosphere : AtmosphereParams, optional
         Atmospheric model parameters (required if "drag" in perturbations)
     distance : float, optional
@@ -312,11 +315,13 @@ class System:
                 )
     
     # ========== PROPAGATION ==========
-    def propagate(self, 
-                initial_state, 
-                t_start, 
-                t_end, 
-                satellite_params=None):
+    def propagate(
+        self, 
+        initial_state: "OrbitalElements | np.ndarray", 
+        t_start: float, 
+        t_end: float, 
+        satellite_params: Dict[str, float] | np.ndarray | None = None
+    ) -> "Trajectory":
         """
         Propagate from t_start to t_end with dense output.
         
@@ -326,7 +331,7 @@ class System:
         
         Parameters
         ----------
-        initial_state : array_like
+        initial_state : OrbitalElements or array_like
             Initial state vector [x, y, z, vx, vy, vz] in km, km/s
         t_start : float
             Start time [s]
@@ -342,8 +347,6 @@ class System:
         -------
         Trajectory
             Trajectory object containing dense output
-            (For now, returns raw taylor_adaptive object until 
-            Trajectory class is implemented)
         """
         # Ensure compiled
         if not self.is_compiled:
@@ -362,20 +365,21 @@ class System:
                 f"This system requires satellite parameters: "
                 f"{[name for name, _ in self._param_info['param_map']]}"
             )
-        # TODO: Accept either array-like or OrbitalElements
-        # implement validation of appropriate OEType
+        if isinstance(initial_state, OrbitalElements):
+            cart_state = initial_state.to_cartesian()
+            state_array = cart_state.elements
+        else:
+            state_array = initial_state
         # Set initial conditions
         ta.time = t_start
-        ta.state[:] = initial_state
+        ta.state[:] = state_array
         
         # Propagate with continuous output
         ta.propagate_for_until(
             t_end - t_start,  # Duration
             c_output=True      # Enable continuous output
         )
-        # TODO: Return Trajectory object
-        # For now, return the integrator with continuous output
-        return ta
+        return Trajectory(self,ta,t_start,t_end)
 
     def _process_satellite_params(self, satellite_params):
         """Convert satellite parameters to array format for Heyoka."""

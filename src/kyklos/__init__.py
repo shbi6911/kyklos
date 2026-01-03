@@ -10,8 +10,8 @@ Quick Start
 Create a system and propagate an orbit:
 
 >>> from kyklos import earth_j2, OrbitalElements
->>> sys = earth_j2()  # 2-body Earth with J2
->>> orbit = OrbitalElements(a=7000, e=0.01, i=0.5, omega=0, w=0, nu=0)
+>>> sys = System('2body', EARTH, perturbations=('J2',), compile=compile)
+>>> orbit = OE(a=7000, e=0.01, i=0.5, omega=0, w=0, nu=0)
 >>> state0 = orbit.to_cartesian()
 >>> traj = sys.propagate(state0.elements, 0, 5400)
 
@@ -37,8 +37,8 @@ Celestial Body Parameters
 """
 
 # Core classes
-from .orbital_elements import OrbitalElements, OrbitalElements as OE
-from .system import System, BodyParams, AtmoParams
+from .orbital_elements import OrbitalElements, OrbitalElements as OE, OEType
+from .system import System, BodyParams, AtmoParams, SysType
 from .satellite import Satellite, Satellite as Sat
 from .trajectory import Trajectory, Trajectory as Traj
 
@@ -76,6 +76,8 @@ __all__ = [
     "AtmoParams", 
     "Satellite",
     "Trajectory",
+    "OEType",
+    "SysType",
     # Abbreviations
     "OE",
     "Sat",

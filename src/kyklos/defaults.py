@@ -16,7 +16,7 @@ Examples
 """
 import numpy as np
 from .orbital_elements import OrbitalElements
-from .system import EARTH, MOON, MARS, EARTH_STD_ATMO
+from .system import System, EARTH, MOON, MARS, EARTH_STD_ATMO
 
 ISS_ORBIT = OrbitalElements(
     a=6778.0, e=0.0001, i=np.radians(51.6),
