@@ -321,8 +321,9 @@ class Trajectory:
     # ========== PLOTTING ==========
     # these methods are temporary until a Visualization module is established
     def plot_3d(self, n_points: int = 1000, show_body: bool = True, 
-                body_color: str = 'lightblue', traj_color: str = 'red',
-                body_opacity: float = 0.6) -> 'plotly.graph_objects.Figure':
+            body_color: str = 'lightblue', traj_color: str = 'red',
+            body_opacity: float = 0.6, 
+            proximity_threshold: float = 10.0) -> go.Figure:
         """
         Create 3D plot of trajectory with optional central body.
         
@@ -332,44 +333,95 @@ class Trajectory:
             body_color: Color of central body (default: 'lightblue')
             traj_color: Color of trajectory line (default: 'red')
             body_opacity: Opacity of central body (default: 0.6)
+            proximity_threshold: Show body if trajectory within this many radii (default: 10)
             
         Returns:
             Plotly Figure object
         """
+        from .system import SysType
         
         # Sample trajectory
-        states = self.sample(n_points=n_points)
-        positions = np.array(states)[:, 0:3]  # Extract position components
+        states = self.sample_raw(n_points=n_points)
+        positions = states[:, 0:3]
         
         # Create figure
         fig = go.Figure()
         
-        # Add central body sphere if requested
+        # Determine which bodies to show
+        is_cr3bp = self.system.base_type == SysType.CR3BP
+        show_primary = False
+        show_secondary = False
+        
         if show_body:
-            # Get body radius from system (fallback to estimate if not available)
-            try:
-                radius = self.system.primary_body.radius
-            except AttributeError:
-                # Estimate: 1% of max trajectory extent
-                max_extent = np.max(np.abs(positions))
-                radius = max_extent * 0.01
-            
-            # Generate sphere mesh
-            u = np.linspace(0, 2 * np.pi, 30)
-            v = np.linspace(0, np.pi, 20)
-            x = radius * np.outer(np.cos(u), np.sin(v))
-            y = radius * np.outer(np.sin(u), np.sin(v))
-            z = radius * np.outer(np.ones(np.size(u)), np.cos(v))
-            
-            fig.add_trace(go.Surface(
-                x=x, y=y, z=z,
-                colorscale=[[0, body_color], [1, body_color]],
-                showscale=False,
+            if is_cr3bp:
+                mu = self.system.mass_ratio
+                assert mu is not None  # Always true for CR3BP
+                
+                # Body positions in rotating frame
+                p1_pos = np.array([-mu, 0, 0])
+                p2_pos = np.array([1 - mu, 0, 0])
+                
+                # Body radii
+                r1 = self.system.primary_body.radius_nd
+                r2 = self.system.secondary_body.radius_nd
+                
+                # Calculate minimum distance from trajectory to each body
+                dist_to_p1 = np.linalg.norm(positions - p1_pos, axis=1)
+                dist_to_p2 = np.linalg.norm(positions - p2_pos, axis=1)
+                
+                min_dist_p1 = np.min(dist_to_p1)
+                min_dist_p2 = np.min(dist_to_p2)
+                
+                # Show body if trajectory gets within threshold
+                show_primary = (min_dist_p1 < proximity_threshold * r1)
+                show_secondary = (min_dist_p2 < proximity_threshold * r2)
+                
+                # Inform user if no bodies shown
+                if not show_primary and not show_secondary:
+                    print(f"Trajectory does not approach either body within "
+                        f"{proximity_threshold} radii.")
+                    print(f"  Closest approach to primary: {min_dist_p1/r1:.1f} radii")
+                    print(f"  Closest approach to secondary: {min_dist_p2/r2:.1f} radii")
+                    print(f"  No bodies shown in plot.")
+            else:
+                # For 2-body systems, always show primary if show_body=True
+                show_primary = True
+        
+        # Add primary body sphere if needed
+        if show_primary:
+            if is_cr3bp:
+                mu = self.system.mass_ratio
+                self._add_sphere_to_plot(
+                    fig, 
+                    center=(-mu, 0, 0),
+                    radius=self.system.primary_body.radius_nd,
+                    color=body_color,
+                    opacity=body_opacity,
+                    name="Primary"
+                )
+            else:
+                # 2-body: central body at origin
+                self._add_sphere_to_plot(
+                    fig,
+                    center=(0, 0, 0),
+                    radius=self.system.primary_body.radius,
+                    color=body_color,
+                    opacity=body_opacity,
+                    name="Central Body"
+                )
+        
+        # Add secondary body sphere if needed
+        if show_secondary and is_cr3bp:
+            mu = self.system.mass_ratio
+            assert mu is not None   # always true if CR3BP
+            self._add_sphere_to_plot(
+                fig,
+                center=(1 - mu, 0, 0),
+                radius=self.system.secondary_body.radius_nd,
+                color=body_color,
                 opacity=body_opacity,
-                name=self.system.body_name if hasattr(self.system, 
-                                                      'body_name') else 'Central Body',
-                hoverinfo='name'
-            ))
+                name="Secondary"
+            )
         
         # Add trajectory
         fig.add_trace(go.Scatter3d(
@@ -379,28 +431,46 @@ class Trajectory:
             mode='lines',
             line=dict(color=traj_color, width=3),
             name='Trajectory',
-            hovertemplate='x: %{x:.1f}<br>y: %{y:.1f}<br>z: %{z:.1f}<extra></extra>'
+            hovertemplate='x: %{x:.6f}<br>y: %{y:.6f}<br>z: %{z:.6f}<extra></extra>'
         ))
         
         # Set layout
+        units = 'nd' if is_cr3bp else 'km'
         fig.update_layout(
             scene=dict(
-                xaxis_title='X [km]',
-                yaxis_title='Y [km]',
-                zaxis_title='Z [km]',
-                aspectmode='data'  # Equal aspect ratio
+                xaxis_title=f'X [{units}]',
+                yaxis_title=f'Y [{units}]',
+                zaxis_title=f'Z [{units}]',
+                aspectmode='data'
             ),
-            title=f'Trajectory: {self.system.body_name if hasattr(self.system, 
-                                                    "body_name") else "Unknown Body"}',
+            title='CR3BP Trajectory' if is_cr3bp else 'Orbital Trajectory',
             showlegend=True
         )
         
         return fig
 
+    def _add_sphere_to_plot(self, fig, center, radius, color, opacity, name):
+        """Helper to add a sphere to the plot at specified center."""
+        u = np.linspace(0, 2 * np.pi, 30)
+        v = np.linspace(0, np.pi, 20)
+        
+        x = center[0] + radius * np.outer(np.cos(u), np.sin(v))
+        y = center[1] + radius * np.outer(np.sin(u), np.sin(v))
+        z = center[2] + radius * np.outer(np.ones(np.size(u)), np.cos(v))
+        
+        fig.add_trace(go.Surface(
+            x=x, y=y, z=z,
+            colorscale=[[0, color], [1, color]],
+            showscale=False,
+            opacity=opacity,
+            name=name,
+            hoverinfo='name'
+        ))
 
-    def add_to_plot(self, fig: 'plotly.graph_objects.Figure', 
+
+    def add_to_plot(self, fig: go.Figure, 
                     n_points: int = 1000, color: str = 'blue',
-                    name: Optional[str] = None, **kwargs) -> 'plotly.graph_objects.Figure':
+                    name: Optional[str] = None, **kwargs) -> go.Figure:
         """
         Add this trajectory to an existing Plotly figure.
         
@@ -415,7 +485,7 @@ class Trajectory:
             Updated Plotly Figure object (same object, modified in place)
         """
         # Sample trajectory
-        states = self.sample(n_points=n_points)
+        states = self.sample_raw(n_points=n_points)
         positions = np.array(states)[:, 0:3]  # Extract position components
         
         # Default name if not provided

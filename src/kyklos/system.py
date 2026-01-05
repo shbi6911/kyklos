@@ -29,7 +29,7 @@ class BodyParams:
     Attributes
     ----------
     mu : float
-        Gravitational parameter [km³/s²]
+        Gravitational parameter [kmÂ³/sÂ²]
     radius : float
         Equatorial radius [km]
     J2 : float, optional
@@ -43,6 +43,7 @@ class BodyParams:
     radius: float
     J2: Optional[float] = None
     rotation_rate: Optional[float] = None
+    name: Optional[str] = None
     
     def __post_init__(self):
         #Validate parameters
@@ -60,16 +61,16 @@ class AtmoParams:
     """
     Immutable parameters for exponential atmosphere model.
     
-    The density profile follows: ρ(r) = ρ₀ * exp(-(r - r₀)/H)
+    The density profile follows: Ï(r) = Ïâ‚€ * exp(-(r - râ‚€)/H)
     
     Attributes
     ----------
     rho0 : float
-        Reference density at reference altitude [kg/m³]
+        Reference density at reference altitude [kg/mÂ³]
     H : float
         Scale height [m]
     r0 : float
-        Reference radius (altitude where ρ₀ is defined) [m]
+        Reference radius (altitude where Ïâ‚€ is defined) [m]
     
     Notes
     -----
@@ -89,27 +90,51 @@ class AtmoParams:
             raise ValueError(f"Scale height must be positive, got {self.H}")
         if self.r0 <= 0:
             raise ValueError(f"Reference radius must be positive, got {self.r0}")
+
+class _BodyParamsWithND:
+        """
+        Wrapper for BodyParams that adds nondimensional radius property.
+        Used internally by System to provide .radius_nd access for CR3BP systems.
+        """
+        def __init__(self, body_params: BodyParams, L_star: float):
+            self._body_params = body_params
+            self._L_star = L_star
+        
+        @property
+        def radius_nd(self) -> float:
+            """Nondimensional radius [L_star units]"""
+            return self._body_params.radius / self._L_star
+        
+        # Delegate all other attributes to the underlying BodyParams
+        def __getattr__(self, name):
+            return getattr(self._body_params, name)
+        
+        def __repr__(self):
+            return repr(self._body_params)
         
 # Pre-defined common bodies for convenience
 EARTH = BodyParams(
     mu=3.986004418e5,
     radius=6378.1370,
     J2=1.08262668e-3,
-    rotation_rate=7.2921150e-5
+    rotation_rate=7.2921150e-5,
+    name='Earth'
 )
 
 MOON = BodyParams(
     mu=4.9048695e3,
     radius=1737.4000,
     J2=2.033e-4,
-    rotation_rate=2.6617e-6
+    rotation_rate=2.6617e-6,
+    name='Moon'
 )
 
 MARS = BodyParams(
     mu=4.282837e4,
     radius=3389.5000,
     J2=1.96045e-3,
-    rotation_rate=7.088218e-5
+    rotation_rate=7.088218e-5,
+    name='Mars'
 )
 
 # Standard atmosphere models
@@ -151,7 +176,7 @@ class System:
     T_star : float  
         Characteristic time [s]
     mass_ratio : float
-        Nondimensional mass ratio μ = m₂/(m₁+m₂)
+        Nondimensional mass ratio Î¼ = mâ‚‚/(mâ‚+mâ‚‚)
     n_mean : float
         Mean motion [rad/s]
 
@@ -431,33 +456,200 @@ class System:
                 )
             return params_array
 
+    # ========== NONDIMENSIONALIZATION METHODS ==========
+    def r2nd(self, r):
+        """
+        Convert dimensional position to nondimensional (CR3BP only).
+        
+        Parameters
+        ----------
+        r : float or array-like
+            Dimensional position [km]
+            
+        Returns
+        -------
+        np.float64 or np.ndarray
+            Nondimensional position (scalar if input is scalar, array otherwise)
+            
+        Raises
+        ------
+        ValueError
+            If system is not CR3BP type
+        """
+        if self._base_type != SysType.CR3BP:
+            raise ValueError(
+                "Nondimensionalization only available for CR3BP systems. "
+                f"Current system type: {self._base_type.value}"
+            )
+        assert self._L_star is not None  # Type checker hint
+        return np.asarray(r) / self._L_star
+    
+    def r2d(self, r_nd):
+        """
+        Convert nondimensional position to dimensional (CR3BP only).
+        
+        Parameters
+        ----------
+        r_nd : float or array-like
+            Nondimensional position
+            
+        Returns
+        -------
+        np.float64 or np.ndarray
+            Dimensional position [km] (scalar if input is scalar, array otherwise)
+            
+        Raises
+        ------
+        ValueError
+            If system is not CR3BP type
+        """
+        if self._base_type != SysType.CR3BP:
+            raise ValueError(
+                "Redimensionalization only available for CR3BP systems. "
+                f"Current system type: {self._base_type.value}"
+            )
+        assert self._L_star is not None  # Type checker hint
+        return np.asarray(r_nd) * self._L_star
+    
+    def v2nd(self, v):
+        """
+        Convert dimensional velocity to nondimensional (CR3BP only).
+        
+        Parameters
+        ----------
+        v : float or array-like
+            Dimensional velocity [km/s]
+            
+        Returns
+        -------
+        np.float64 or np.ndarray
+            Nondimensional velocity (scalar if input is scalar, array otherwise)
+            
+        Raises
+        ------
+        ValueError
+            If system is not CR3BP type
+        """
+        if self._base_type != SysType.CR3BP:
+            raise ValueError(
+                "Nondimensionalization only available for CR3BP systems. "
+                f"Current system type: {self._base_type.value}"
+            )
+        # Type checker hint: these are guaranteed non-None for CR3BP
+        assert self._L_star is not None and self._T_star is not None
+        # v_nd = v * T_star / L_star
+        return np.asarray(v) * self._T_star / self._L_star
+    
+    def v2d(self, v_nd):
+        """
+        Convert nondimensional velocity to dimensional (CR3BP only).
+        
+        Parameters
+        ----------
+        v_nd : float or array-like
+            Nondimensional velocity
+            
+        Returns
+        -------
+        np.float64 or np.ndarray
+            Dimensional velocity [km/s] (scalar if input is scalar, array otherwise)
+            
+        Raises
+        ------
+        ValueError
+            If system is not CR3BP type
+        """
+        if self._base_type != SysType.CR3BP:
+            raise ValueError(
+                "Redimensionalization only available for CR3BP systems. "
+                f"Current system type: {self._base_type.value}"
+            )
+        # Type checker hint: these are guaranteed non-None for CR3BP
+        assert self._L_star is not None and self._T_star is not None
+        # v = v_nd * L_star / T_star
+        return np.asarray(v_nd) * self._L_star / self._T_star
+    
+    def t2nd(self, t):
+        """
+        Convert dimensional time to nondimensional (CR3BP only).
+        
+        Parameters
+        ----------
+        t : float or array-like
+            Dimensional time [s]
+            
+        Returns
+        -------
+        np.float64 or np.ndarray
+            Nondimensional time (scalar if input is scalar, array otherwise)
+            
+        Raises
+        ------
+        ValueError
+            If system is not CR3BP type
+        """
+        if self._base_type != SysType.CR3BP:
+            raise ValueError(
+                "Nondimensionalization only available for CR3BP systems. "
+                f"Current system type: {self._base_type.value}"
+            )
+        assert self._T_star is not None  # Type checker hint
+        return np.asarray(t) / self._T_star
+    
+    def t2d(self, t_nd):
+        """
+        Convert nondimensional time to dimensional (CR3BP only).
+        
+        Parameters
+        ----------
+        t_nd : float or array-like
+            Nondimensional time
+            
+        Returns
+        -------
+        np.float64 or np.ndarray
+            Dimensional time [s] (scalar if input is scalar, array otherwise)
+            
+        Raises
+        ------
+        ValueError
+            If system is not CR3BP type
+        """
+        if self._base_type != SysType.CR3BP:
+            raise ValueError(
+                "Redimensionalization only available for CR3BP systems. "
+                f"Current system type: {self._base_type.value}"
+            )
+        assert self._T_star is not None  # Type checker hint
+        return np.asarray(t_nd) * self._T_star
+
     # ========== PROPERTY ACCESS ==========
     def summary(self):
         """Print detailed summary of system parameters."""
         print(f"System Type: {self._base_type}")
-        print(f"Primary Body: μ = {self._primary_body.mu:.6e} km³/s², "
+        print(f"Primary Body: Î¼ = {self._primary_body.mu:.6e} kmÂ³/sÂ², "
               f"R = {self._primary_body.radius:.3f} km")
         
         if self._base_type == SysType.CR3BP:
-            print(f"Secondary Body: μ = {self._secondary_body.mu:.6e} km³/s², "
+            print(f"Secondary Body: Î¼ = {self._secondary_body.mu:.6e} kmÂ³/sÂ², "
                   f"R = {self._secondary_body.radius:.3f} km")
             print(f"Distance: {self._distance:.3f} km")
             print(f"\nNondimensional Parameters:")
             print(f"  L* = {self._L_star:.6e} km")
             print(f"  T* = {self._T_star:.6e} s")
-            print(f"  μ  = {self._mass_ratio:.10f}")
+            print(f"  Î¼  = {self._mass_ratio:.10f}")
             print(f"  n  = {self._n_mean:.6e} rad/s")
         
         if self._perturbations:
             print(f"\nPerturbations: {', '.join(self._perturbations)}")
             
             if "J2" in self._perturbations:
-                print(f"  J₂ = {self._primary_body.J2:.6e}")
+                print(f"  Jâ‚‚ = {self._primary_body.J2:.6e}")
             
             if "drag" in self._perturbations:
-                print(f"  Atmosphere: ρ₀ = {self._atmosphere.rho0} kg/m³, "
+                print(f"  Atmosphere: Ïâ‚€ = {self._atmosphere.rho0} kg/mÂ³, "
                       f"H = {self._atmosphere.H} m")
-                print(f"  Rotation: ω = {self._primary_body.rotation_rate:.6e} rad/s")
+                print(f"  Rotation: Ï‰ = {self._primary_body.rotation_rate:.6e} rad/s")
         else:
             print("\nPerturbations: None (point mass)")
     
@@ -479,13 +671,21 @@ class System:
         return self._base_type
     
     @property
-    def primary_body(self) -> BodyParams:
+    def primary_body(self) -> BodyParams | _BodyParamsWithND:
         """Primary celestial body parameters."""
+        # For CR3BP, wrap with nondimensional radius support
+        if self._base_type == SysType.CR3BP:
+            assert self._L_star is not None #always true for CR3BP system
+            return _BodyParamsWithND(self._primary_body, self._L_star)
         return self._primary_body
-    
+
     @property
-    def secondary_body(self) -> Optional[BodyParams]:
+    def secondary_body(self) -> BodyParams | _BodyParamsWithND | None:
         """Secondary celestial body parameters."""
+        # For CR3BP, wrap with nondimensional radius support
+        if self._base_type == SysType.CR3BP and self._secondary_body is not None:
+            assert self._L_star is not None #always true for CR3BP system
+            return _BodyParamsWithND(self._secondary_body, self._L_star)
         return self._secondary_body
     
     @property
@@ -497,7 +697,7 @@ class System:
     def atmosphere(self) -> Optional[AtmoParams]:
         """Atmospheric model parameters (if drag enabled)."""
         return self._atmosphere
-    
+       
     @property
     def distance(self) -> Optional[float]:
         """Distance between primary and secondary [km]."""
@@ -515,7 +715,7 @@ class System:
     
     @property
     def mass_ratio(self) -> Optional[float]:
-        """Nondimensional mass ratio μ = m₂/(m₁+m₂)."""
+        """Nondimensional mass ratio Î¼ = mâ‚‚/(mâ‚+mâ‚‚)."""
         return self._mass_ratio
     
     @property
@@ -544,16 +744,16 @@ class System:
         # Characteristic length (distance between primaries)
         self._L_star = self._distance
         
-        # Total gravitational parameter [km³/s²]
+        # Total gravitational parameter [kmÂ³/sÂ²]
         mu_total = self._primary_body.mu + self._secondary_body.mu
         
-        # Mass ratio: μ = m₂/(m₁+m₂) = μ₂/(μ₁+μ₂)
+        # Mass ratio: Î¼ = mâ‚‚/(mâ‚+mâ‚‚) = Î¼â‚‚/(Î¼â‚+Î¼â‚‚)
         self._mass_ratio = self._secondary_body.mu / mu_total
         
-        # Characteristic time: T* = sqrt(L*³/μ_total)
+        # Characteristic time: T* = sqrt(L*Â³/Î¼_total)
         self._T_star = np.sqrt(self._L_star**3 / mu_total)
         
-        # Mean motion: n = 2π/T* = sqrt(μ_total/L*³)
+        # Mean motion: n = 2Ï€/T* = sqrt(Î¼_total/L*Â³)
         self._n_mean = np.sqrt(mu_total / self._L_star**3)
     
     def _build_eom(self):
@@ -575,7 +775,7 @@ class System:
         
         Notes
         -----
-        - System parameters (μ, J2, atmospheric params) are hardcoded into
+        - System parameters (Î¼, J2, atmospheric params) are hardcoded into
         the symbolic expressions since they're part of the immutable System
         - Satellite parameters (Cd*A, mass) use hy.par[] for runtime binding,
         allowing one System to propagate multiple satellites
@@ -661,11 +861,12 @@ class System:
         """Build J2 perturbation acceleration terms."""
         J2 = self._primary_body.J2
         R = self._primary_body.radius
+        assert J2 is not None # validated in _compute_params
         # J2 perturbation (zonal harmonic)
-        # Common factor: (3/2) * J2 * μ * R² / r⁵
+        # Common factor: (3/2) * J2 * Î¼ * RÂ² / râµ
         factor = 1.5 * J2 * mu * R**2 / r**5
         # Acceleration components
-        # a_J2 = factor * [x(5z²/r² - 1), y(5z²/r² - 1), z(5z²/r² - 3)]
+        # a_J2 = factor * [x(5zÂ²/rÂ² - 1), y(5zÂ²/rÂ² - 1), z(5zÂ²/rÂ² - 3)]
         z2_r2 = z**2 / r**2
         
         a_J2_x = factor * x * (5.0 * z2_r2 - 1.0)
@@ -693,24 +894,24 @@ class System:
             Parameter mapping information
         """
         # Atmospheric parameters (hardcoded from System)
-        rho0 = self._atmosphere.rho0  # kg/m³
+        rho0 = self._atmosphere.rho0  # kg/mÂ³
         H = self._atmosphere.H  # m
         r0 = self._atmosphere.r0  # m
         omega = self._primary_body.rotation_rate  # rad/s
         
         # Convert atmospheric params to km (package standard)
-        # Density will be kg/km³, scale height in km
-        rho0_km = rho0 * 1e9  # kg/m³ -> kg/km³
+        # Density will be kg/kmÂ³, scale height in km
+        rho0_km = rho0 * 1e9  # kg/mÂ³ -> kg/kmÂ³
         H_km = H / 1000.0  # m -> km
         r0_km = r0 / 1000.0  # m -> km
         
         # Altitude-dependent density (exponential model)
-        # ρ(r) = ρ₀ * exp(-(r - r₀)/H)
+        # Ï(r) = Ïâ‚€ * exp(-(r - râ‚€)/H)
         rho = rho0_km * hy.exp(-(r - r0_km) / H_km)
         
         # Velocity relative to rotating atmosphere
-        # v_rel = v_inertial - ω × r
-        # For Earth rotation about z-axis: ω × r = [-ω*y, ω*x, 0]
+        # v_rel = v_inertial - Ï‰ Ã— r
+        # For Earth rotation about z-axis: Ï‰ Ã— r = [-Ï‰*y, Ï‰*x, 0]
         vx_rel = vx + omega * y
         vy_rel = vy - omega * x
         vz_rel = vz
@@ -719,14 +920,14 @@ class System:
         v_rel = hy.sqrt(vx_rel**2 + vy_rel**2 + vz_rel**2)
         
         # Satellite parameters (runtime via hy.par[])
-        Cd_A = hy.par[param_start_idx]      # Drag coefficient * area [m²]
+        Cd_A = hy.par[param_start_idx]      # Drag coefficient * area [mÂ²]
         mass = hy.par[param_start_idx + 1]  # Satellite mass [kg]
         
-        # Convert Cd*A to km² for unit consistency
-        Cd_A_km = Cd_A / 1e6  # m² -> km²
+        # Convert Cd*A to kmÂ² for unit consistency
+        Cd_A_km = Cd_A / 1e6  # mÂ² -> kmÂ²
         
-        # Drag acceleration: a_drag = -(1/2) * ρ * (Cd*A/m) * v_rel * v⃗_rel
-        # Factor: -(1/2) * ρ * (Cd*A/m) * v_rel
+        # Drag acceleration: a_drag = -(1/2) * Ï * (Cd*A/m) * v_rel * vâƒ—_rel
+        # Factor: -(1/2) * Ï * (Cd*A/m) * v_rel
         drag_factor = -0.5 * rho * Cd_A_km / mass * v_rel
         
         a_drag_x = drag_factor * vx_rel
@@ -740,7 +941,7 @@ class System:
                 ('mass', param_start_idx + 1)
             ],
             'description': {
-                'Cd_A': 'Drag coefficient times reference area [m²]',
+                'Cd_A': 'Drag coefficient times reference area [mÂ²]',
                 'mass': 'Satellite mass [kg]'
             }
         }
@@ -751,6 +952,7 @@ class System:
         """Build CR3BP equations in rotating frame."""
         # Mass ratio (nondimensional)
         mu = self._mass_ratio
+        assert mu is not None # validated in _compute_CR3BP_params
         # Distances to primaries (in rotating frame)
         r1 = hy.sqrt((x + mu)**2 + y**2 + z**2)
         r2 = hy.sqrt((x - 1.0 + mu)**2 + y**2 + z**2)
@@ -762,9 +964,9 @@ class System:
             (x, vx),
             (y, vy),
             (z, vz),
-            (vx, 2.0 * vy + hy.diff(U, x)),   # 2Ω×v + ∂U/∂x
-            (vy, -2.0 * vx + hy.diff(U, y)),  # -2Ω×v + ∂U/∂y
-            (vz, hy.diff(U, z))                # ∂U/∂z
+            (vx, 2.0 * vy + hy.diff(U, x)),   # 2Î©Ã—v + âˆ‚U/âˆ‚x
+            (vy, -2.0 * vx + hy.diff(U, y)),  # -2Î©Ã—v + âˆ‚U/âˆ‚y
+            (vz, hy.diff(U, z))                # âˆ‚U/âˆ‚z
         ]
         
         # CR3BP has no runtime parameters (everything is nondimensional)
@@ -801,7 +1003,7 @@ class System:
             state=[0.0] * 6,  # Dummy state
             pars=dummy_params,
         )
-        print(f"✓ Compilation complete")
+        print(f"âœ“ Compilation complete")
     
     def compile(self):
         """
@@ -828,14 +1030,14 @@ class System:
         parts = [f"System(base_type='{self._base_type.value}'"]
         
         if self._base_type == SysType.TWO_BODY:
-            parts.append(f"primary={self._primary_body.mu:.3e} km³/s²")
+            parts.append(f"primary={self._primary_body.mu:.3e} kmÂ³/sÂ²")
             if self._perturbations:
                 parts.append(f"perturbations={self._perturbations}")
         else:  # 3body
-            parts.append(f"μ₁={self._primary_body.mu:.3e}")
-            parts.append(f"μ₂={self._secondary_body.mu:.3e}")
+            parts.append(f"Î¼â‚={self._primary_body.mu:.3e}")
+            parts.append(f"Î¼â‚‚={self._secondary_body.mu:.3e}")
             parts.append(f"L*={self._L_star:.3e} km")
-            parts.append(f"μ={self._mass_ratio:.6f}")
+            parts.append(f"Î¼={self._mass_ratio:.6f}")
         
         return ", ".join(parts) + ")"
 
