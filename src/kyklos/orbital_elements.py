@@ -4,7 +4,10 @@ created with the assistance of Claude Sonnet 4.5 by Anthropic'''
 
 import numpy as np
 from enum import Enum
-from .system import SysType
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .system import SysType
 
 # define an enumerated list of element types
 class OEType(Enum):
@@ -71,6 +74,7 @@ class OrbitalElements:
         self._system = system
         if system is not None:
             # Extract mu from system
+            from .system import SysType
             if system.base_type == SysType.CR3BP:
                 # For CR3BP, use mass ratio instead of gravitational parameter
                 self._mu = system.mass_ratio
@@ -157,7 +161,9 @@ class OrbitalElements:
     
     # ========== VALIDATION ==========
     def _validate(self):
-        """Check if elements conform to their claimed type"""
+        """Check if elements conform to their claimed type
+        If validation fails inappropriately, set validate=False for constructor
+        """
         # check some properties common to all element sets
         if len(self.elements) != 6:
             raise ValueError("Orbital elements must be 6-element vector")
@@ -177,6 +183,14 @@ class OrbitalElements:
     
     def _validate_keplerian(self):
         a, e, i, omega, w, nu = self.elements
+        # Validate a-e combination for physical consistency
+        if e < 1 and a <= 0:
+            raise ValueError(f"Elliptic orbit (e={e}) "
+                         f"requires positive semi-major axis, got a={a}")
+        if e >= 1 and a >= 0:
+            raise ValueError(f"Hyperbolic orbit (e={e}) "
+                             f"requires negative semi-major axis, got a={a}")
+        # check appropriate ranges
         if e < 0 or e > 10:
             raise ValueError("Eccentricity out of range")
         if i > np.pi or i < 0:
@@ -215,11 +229,10 @@ class OrbitalElements:
         if pos > 10:
             raise ValueError(
                 f"Position magnitude is > 10 nondimensional units, check units.")
-        if pos < 10 * vel:
+        if vel > 5:
             raise ValueError(
-                f"Position magnitude ({pos:.2f}) should be at least "
-                f"an order of magnitude greater than velocity magnitude ({vel:.2f})"
-            )
+                f"Velocity magnitude is > 5 nondimensional units, check units.")
+        
     
     # ========== FACTORY METHODS ==========
     @classmethod

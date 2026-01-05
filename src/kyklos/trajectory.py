@@ -4,11 +4,12 @@ created with the assistance of Claude Sonnet 4.5 by Anthropic'''
 
 import numpy as np
 import pandas as pd
-from typing import Union, Optional, Dict, List, Tuple, Any
+from typing import Union, Optional, Dict, List, Tuple, Any, TYPE_CHECKING
 import heyoka as hy
 import plotly.graph_objects as go
-from .system import System
-from .orbital_elements import OrbitalElements
+from .orbital_elements import OrbitalElements, OEType
+if TYPE_CHECKING:
+    from .system import System
 
 class Trajectory:
     """
@@ -16,24 +17,21 @@ class Trajectory:
     
     Attributes:
         system: Reference to parent System (immutable)
-        integrator: taylor_adaptive object with dense output
+        output: continuous output function object from hy.taylor_adaptive()
         t0: Start time
         tf: End time
     """
     # ========== CONSTRUCTION ==========
-    def __init__(self, system: System, integrator, t0: float, tf: float):
+    def __init__(self, system: "System", output, t0: float, tf: float):
         self._system = system  # Immutable reference
-        self._integrator = integrator  # Must have dense output enabled
+        self._output = output  # Must have dense output enabled
         self._t0 = t0
         self._tf = tf
         
-        # Validation
-        if not integrator.with_c_out:
-            raise ValueError("Integrator must have continuous output enabled")
     
     # ========== PROPERTY ACCESS ==========
     @property
-    def system(self):
+    def system(self) -> "System":
         return self._system
     
     @property
@@ -50,75 +48,140 @@ class Trajectory:
         return self.tf - self.t0
     
     # ========== UTILITY METHODS ==========
-    def state_at(self, t: float) -> OrbitalElements:
+    def state_at(self, t: float, 
+                 element_type: Union[OEType, str, None] = None) -> OrbitalElements:
         """
         Get orbital state at specified time.
         
         Parameters:
             t: Time to query (must be in [t0, tf])
-            
-        Returns:
-            OrbitalElements at time t
-            
-        Raises:
-            ValueError: If t is outside trajectory bounds
+            element_type: Desired element type (defaults to system-appropriate type)
+                        Can be OEType enum or string ('cart', 'kep', 'equi', 'cr3bp')
         """
         self._validate_time(t)
-        state_array = self._integrator.c_output(t)
-        return OrbitalElements.cartesian(state_array, system=self.system)
+        state_array = self._output(float(t)) # Heyoka requires float input
+        
+        # Auto-detect type from system if not specified
+        if element_type is None:
+            from .system import SysType
+            if self.system.base_type == SysType.CR3BP:
+                element_type = OEType.CR3BP
+            else:
+                element_type = OEType.CARTESIAN
+        else:
+            # Parse string to enum if needed
+            element_type = OrbitalElements._parse_element_type(element_type)
+        
+        return OrbitalElements(state_array, element_type, 
+                            validate=False, system=self.system)
     
     def evaluate(self, 
-                 times: Union[float, 
-                 np.ndarray, list]) -> Union[OrbitalElements, 
-                                       list[OrbitalElements]]:
+                 times: Union[float, np.ndarray, list],
+                 element_type: Union[OEType, str, None] 
+                 = None) -> Union[OrbitalElements, list[OrbitalElements]]:
         """
         Evaluate trajectory at one or more times.
         
         Parameters:
             times: Single time or array of times
+            element_type: Desired element type (defaults to system-appropriate type)
+                        Can be OEType enum or string ('cart', 'kep', 'equi', 'cr3bp')
             
         Returns:
             Single OrbitalElements if times is scalar,
             list of OrbitalElements if times is array-like
         """
+        # Auto-detect type from system if not specified
+        if element_type is None:
+            from .system import SysType
+            if self.system.base_type == SysType.CR3BP:
+                element_type = OEType.CR3BP
+            else:
+                element_type = OEType.CARTESIAN
+        else:
+            # Parse string to enum if needed
+            element_type = OrbitalElements._parse_element_type(element_type)
         # Handle scalar input
         if isinstance(times, (int, float)):
-            return self.state_at(times)
+            return self.state_at(times, element_type=element_type)
         
         # Handle array input
-        times = np.asarray(times)
-        return [self.state_at(t) for t in times]
+        times = np.asarray(times, dtype=float)
+        states_array = self._output(times)  # One vectorized call to Heyoka
+        return [OrbitalElements(row, element_type, validate=False, system=self.system) 
+                for row in states_array]
     
-    def sample(self, n_points: int = 100) -> list[OrbitalElements]:
+    def sample(self, element_type: Union[OEType, str, None] = None, 
+               n_points: int = 100) -> list[OrbitalElements]:
         """
         Uniformly sample trajectory in time.
         
         Parameters:
             n_points: Number of points to sample (default: 100)
+            element_type: Desired element type (defaults to system-appropriate type)
+                        Can be OEType enum or string ('cart', 'kep', 'equi', 'cr3bp')
             
         Returns:
             List of OrbitalElements uniformly spaced in time
         """
         if n_points < 2:
             raise ValueError("n_points must be at least 2, use .state_at()")
-        
+        # generate evenly spaced times array
         times = np.linspace(self.t0, self.tf, n_points)
-        return [self.state_at(t) for t in times]
+         # Auto-detect type from system if not specified
+        if element_type is None:
+            from .system import SysType
+            if self.system.base_type == SysType.CR3BP:
+                element_type = OEType.CR3BP
+            else:
+                element_type = OEType.CARTESIAN
+        else:
+            # Parse string to enum if needed
+            element_type = OrbitalElements._parse_element_type(element_type)
+        
+        states_array = self._output(times)  # One vectorized call to Heyoka
+        return [OrbitalElements(row, element_type, validate=False, system=self.system) 
+                for row in states_array]
     
     def state_at_raw(self, t: float) -> np.ndarray:
         """Get raw state array at time t """
         self._validate_time(t)
-        return self._integrator.c_output(t)
+        return self._output(float(t))  # Heyoka needs float input
     
-    def evaluate_raw(self, times: np.ndarray) -> np.ndarray:
+    def evaluate_raw(self, times: Union[float, np.ndarray, list]) -> np.ndarray:
         """
-        Evaluate at multiple times, returning raw arrays.
+        Evaluate at one or more times, returning raw arrays.
         
+        Parameters:
+            times: Single time or array of times
+            
         Returns:
-            Array of shape (n_times, n_states)
+            State array of shape (6,) if times is scalar,
+            Array of shape (n_times, 6) if times is array-like
         """
-        times = np.asarray(times)
-        return np.array([self.state_at_raw(t) for t in times])
+        # Handle scalar input
+        if isinstance(times, (int, float)):
+            return self.state_at_raw(times)
+        
+        # Handle array input
+        times = np.asarray(times, dtype=float)
+        return self._output(times)
+    
+    def sample_raw(self, n_points: int = 100) -> np.ndarray:
+        """
+        Uniformly sample trajectory in time, returning raw arrays.
+        
+        Parameters:
+            n_points: Number of points to sample (default: 100)
+            
+        Returns:
+            Array of shape (n_points, 6) with uniformly spaced states
+        """
+        if n_points < 2:
+            raise ValueError("n_points must be at least 2, use .state_at_raw()")
+        
+        times = np.linspace(self.t0, self.tf, n_points)
+        return self._output(times)
     
     def _validate_time(self, t: float):
         """Validate that time is within trajectory bounds."""
@@ -152,20 +215,20 @@ class Trajectory:
         if times is None:
             times = np.linspace(self.t0, self.tf, n_points)
         else:
-            times = np.asarray(times)
+            times = np.asarray(times, dtype=float)
         
-        # Evaluate states
-        states = self.evaluate(times)
+        # Evaluate states to a numpy array
+        states = self.evaluate_raw(times)
         
-        # Build data dictionary
+        # Build data dictionary using array slicing
         data = {
             'time': times,
-            'x': [s[0] for s in states],
-            'y': [s[1] for s in states],
-            'z': [s[2] for s in states],
-            'vx': [s[3] for s in states],
-            'vy': [s[4] for s in states],
-            'vz': [s[5] for s in states],
+            'x': states[:, 0],
+            'y': states[:, 1],
+            'z': states[:, 2],
+            'vx': states[:, 3],
+            'vy': states[:, 4],
+            'vz': states[:, 5],
         }
         
         return pd.DataFrame(data)
@@ -189,14 +252,15 @@ class Trajectory:
         if new_tf <= self.tf:
             raise ValueError(f"new_tf ({new_tf}) must be > current tf ({self.tf})")
         
+        # Ensure proper type for new tf
+        new_tf = float(new_tf)
+
         # Get the final state of current trajectory
         final_state = self.state_at(self.tf)
         
         # Continue propagation from final state
-        #TODO: establish parameter pass-thru for propagation
-        raise NotImplementedError(
-            "extend() requires System.propagate() method. "
-            "This will be implemented when propagation interface is finalized."
+        return self._system.propagate(final_state, self.tf, 
+                                      new_tf, self._system._param_info
     )
     
     def slice(self, t_start: float, t_end: float) -> 'Trajectory':
@@ -225,14 +289,14 @@ class Trajectory:
                 f"Slice bounds [{t_start}, {t_end}] outside trajectory "
                 f"bounds [{self.t0}, {self.tf}]"
             )
-    
+        # Ensure proper type for input times
+        t_start = float(t_start)
+        t_end = float(t_end)
+        new_initial_state = self.state_at(t_start)
         # Create new Trajectory with same integrator but different time bounds
-        return Trajectory(
-            system=self.system,
-            integrator=self._integrator,  # Reuse same integrator
-            t0=t_start,
-            tf=t_end
-        )
+        return self._system.propagate(new_initial_state,t_start, t_end, 
+                                     self._system._param_info
+    )
 
     # ========== SPECIAL METHODS ==========
     def __repr__(self):
@@ -302,7 +366,8 @@ class Trajectory:
                 colorscale=[[0, body_color], [1, body_color]],
                 showscale=False,
                 opacity=body_opacity,
-                name=self.system.body_name if hasattr(self.system, 'body_name') else 'Central Body',
+                name=self.system.body_name if hasattr(self.system, 
+                                                      'body_name') else 'Central Body',
                 hoverinfo='name'
             ))
         
@@ -325,7 +390,8 @@ class Trajectory:
                 zaxis_title='Z [km]',
                 aspectmode='data'  # Equal aspect ratio
             ),
-            title=f'Trajectory: {self.system.body_name if hasattr(self.system, "body_name") else "Unknown Body"}',
+            title=f'Trajectory: {self.system.body_name if hasattr(self.system, 
+                                                    "body_name") else "Unknown Body"}',
             showlegend=True
         )
         

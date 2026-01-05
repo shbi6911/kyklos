@@ -355,6 +355,22 @@ class System:
         ta = self._cached_integrator
         # Assert for type checker (should always be true after compile)
         assert ta is not None, "Integrator should be compiled"
+
+        # cast input times explicitly to floats (required by heyoka)
+        t_start = float(t_start)
+        t_end = float(t_end)
+
+        # ensure initial state is a Cartesian state vector as a numpy array
+        if isinstance(initial_state, OrbitalElements):
+            cart_state = initial_state.to_cartesian()
+            state_array = cart_state.elements
+        else:
+            state_array = np.asarray(initial_state)
+            # Validate array input (OrbitalElements already validated)
+            if not np.all(np.isfinite(state_array)):
+                raise ValueError(
+                    f"Initial state contains NaN or Inf values: {state_array}"
+                )
         
         # Handle satellite parameters
         if satellite_params is not None:
@@ -365,21 +381,35 @@ class System:
                 f"This system requires satellite parameters: "
                 f"{[name for name, _ in self._param_info['param_map']]}"
             )
-        if isinstance(initial_state, OrbitalElements):
-            cart_state = initial_state.to_cartesian()
-            state_array = cart_state.elements
-        else:
-            state_array = initial_state
+        
         # Set initial conditions
         ta.time = t_start
         ta.state[:] = state_array
         
-        # Propagate with continuous output
-        ta.propagate_for_until(
-            t_end - t_start,  # Duration
-            c_output=True      # Enable continuous output
-        )
-        return Trajectory(self,ta,t_start,t_end)
+        # Propagate until ending time
+        traj = ta.propagate_until(t_end, c_output=True)[4]
+
+        # Check for integration failure
+        if not np.all(np.isfinite(ta.state)):
+            raise ValueError(
+                f"Integration failed: state became invalid during propagation.\n"
+                f"Initial state: {state_array}\n"
+                f"Final time: {ta.time}\n"
+                f"Final state: {ta.state}\n"
+                f"Likely causes:\n"
+                f"  - Initial position too close to central body\n"
+                f"  - Collision with central body during propagation\n"
+                f"  - Numerical instability in perturbation models"
+            )
+        
+        # Check that continuous output object produces a valid trajectory
+        if traj is None:
+            raise ValueError(
+                f"Integration produced no continuous output (c_output is None).\n"
+                f"This may indicate a severe integration failure."
+            )
+
+        return Trajectory(self,traj,t_start,t_end)
 
     def _process_satellite_params(self, satellite_params):
         """Convert satellite parameters to array format for Heyoka."""
@@ -566,7 +596,6 @@ class System:
         
         return sys, param_info
 
-
     def _build_2body_eom(self, x, y, z, vx, vy, vz):
         """Build 2-body equations with optional perturbations."""
         # Position magnitude
@@ -628,7 +657,6 @@ class System:
         
         return sys, param_info
 
-
     def _build_J2_perturbation(self, x, y, z, r, mu):
         """Build J2 perturbation acceleration terms."""
         J2 = self._primary_body.J2
@@ -645,7 +673,6 @@ class System:
         a_J2_z = factor * z * (5.0 * z2_r2 - 3.0)
         
         return a_J2_x, a_J2_y, a_J2_z
-
 
     def _build_drag_perturbation(self, x, y, z, vx, vy, vz, r, param_start_idx):
         """
@@ -772,7 +799,7 @@ class System:
         self._cached_integrator = hy.taylor_adaptive(
             sys=self._cached_eom,
             state=[0.0] * 6,  # Dummy state
-            pars=dummy_params
+            pars=dummy_params,
         )
         print(f"✓ Compilation complete")
     
