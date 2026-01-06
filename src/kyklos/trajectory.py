@@ -185,7 +185,10 @@ class Trajectory:
     
     def _validate_time(self, t: float):
         """Validate that time is within trajectory bounds."""
-        if not (self.t0 <= t <= self.tf):
+        t_min = min(self.t0, self.tf)
+        t_max = max(self.t0, self.tf)
+        
+        if not (t_min <= t <= t_max):
             raise ValueError(
                 f"Time {t} outside trajectory bounds [{self.t0}, {self.tf}]"
             )
@@ -257,13 +260,16 @@ class Trajectory:
 
         # Get the final state of current trajectory
         final_state = self.state_at(self.tf)
+
+        # Extract satellite_params from kwargs if provided
+        satellite_params = propagation_kwargs.get('satellite_params', None)
         
         # Continue propagation from final state
         return self._system.propagate(final_state, self.tf, 
-                                      new_tf, self._system._param_info
+                                      new_tf, satellite_params
     )
     
-    def slice(self, t_start: float, t_end: float) -> 'Trajectory':
+    def slice(self, t_start: float, t_end: float, **propagation_kwargs) -> 'Trajectory':
         """
         Extract a time window as a new Trajectory.
         
@@ -292,21 +298,26 @@ class Trajectory:
         # Ensure proper type for input times
         t_start = float(t_start)
         t_end = float(t_end)
+        # Extract satellite_params from kwargs if provided
+        satellite_params = propagation_kwargs.get('satellite_params', None)
+        # set initial state 
         new_initial_state = self.state_at(t_start)
         # Create new Trajectory with same integrator but different time bounds
         return self._system.propagate(new_initial_state,t_start, t_end, 
-                                     self._system._param_info
+                                     satellite_params
     )
 
     # ========== SPECIAL METHODS ==========
     def __repr__(self):
-        return (f"Trajectory(system={self.system.body_name}, "
+        return (f"Trajectory(system={self.system.primary_body.name}, "
                 f"t0={self.t0}, tf={self.tf}, duration={self.duration})")
     
     def __str__(self):
-        return f"Trajectory around {self.system.body_name}: t ∈ [{self.t0}, {self.tf}]"
+        return (f"Trajectory around {self.system.primary_body.name}: "
+                f"t ∈ [{self.t0}, {self.tf}]")
     
-    def __call__(self, t: float) -> OrbitalElements:
+    def __call__(self, t: float, element_type: Union[OEType, str, None] = None
+                 ) -> OrbitalElements:
         """
         Evaluate trajectory at time t.
         Syntactic sugar for .state_at(t). Allows traj(t) syntax.
@@ -317,7 +328,7 @@ class Trajectory:
         Returns:
             OrbitalElements at time t
         """
-        return self.state_at(t)
+        return self.state_at(t, element_type)
     # ========== PLOTTING ==========
     # these methods are temporary until a Visualization module is established
     def plot_3d(self, n_points: int = 1000, show_body: bool = True, 

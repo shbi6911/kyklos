@@ -114,7 +114,7 @@ class Satellite:
             return NotImplemented
         
         # Use appropriate tolerances for orbital mechanics
-        return (
+        return bool(
             np.isclose(self.mass, other.mass, 
                        rtol=self._EQUALITY_RTOL, atol=self._EQUALITY_ATOL) and
             np.isclose(self.drag_coeff, other.drag_coeff, 
