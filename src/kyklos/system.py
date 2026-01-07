@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Optional, Dict, List, Tuple, Any, Union
 from enum import Enum
 import heyoka as hy
-from .orbital_elements import OrbitalElements
+from .orbital_elements import OrbitalElements, OEType
 from .trajectory import Trajectory
 
 # define an enumerated list of system types
@@ -385,11 +385,31 @@ class System:
         t_start = float(t_start)
         t_end = float(t_end)
 
-        # ensure initial state is a Cartesian state vector as a numpy array
+        # validate and condition input state to produce initial state vector
         if isinstance(initial_state, OrbitalElements):
-            cart_state = initial_state.to_cartesian()
-            state_array = cart_state.elements
+            # Check for type mismatch between system and elements
+            if self._base_type == SysType.CR3BP:
+                # CR3BP systems require CR3BP elements
+                if initial_state.element_type != OEType.CR3BP:
+                    raise ValueError(
+                        f"CR3BP system requires CR3BP (nondimensional) elements. "
+                        f"Got {initial_state.element_type.value}. "
+                        f"Convert to nondimensional coordinates first."
+                    )
+                state_array = initial_state.elements
+            else:
+                # 2-body systems should not get CR3BP elements
+                if initial_state.element_type == OEType.CR3BP:
+                    raise ValueError(
+                        f"Cannot use CR3BP (nondimensional) elements with "
+                        f"{self._base_type.value} system. "
+                        f"Use Cartesian or Keplerian elements instead."
+                    )
+                # Convert to Cartesian for propagation
+                cart_state = initial_state.to_cartesian()
+                state_array = cart_state.elements
         else:
+            # Raw array input
             state_array = np.asarray(initial_state)
             # Validate array input (OrbitalElements already validated)
             if not np.all(np.isfinite(state_array)):

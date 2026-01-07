@@ -350,6 +350,8 @@ class Trajectory:
             Plotly Figure object
         """
         from .system import SysType
+        import plotly.io as pio
+        pio.renderers.default = 'browser'
         
         # Sample trajectory
         states = self.sample_raw(n_points=n_points)

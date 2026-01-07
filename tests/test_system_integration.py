@@ -258,6 +258,44 @@ class TestCR3BPIntegration:
         assert isinstance(state_final, OrbitalElements)
         # Trajectory should recognize System type and output accordingly
         assert state_final.element_type == OEType.CR3BP
+
+    def test_cr3bp_with_cr3bp_orbital_elements(self):
+        """CR3BP system accepts CR3BP OrbitalElements."""
+        sys = System('3body', EARTH,
+                    secondary_body=MOON,
+                    distance=384400.0)
+        
+        # Create CR3BP OrbitalElements
+        state = OE(x_nd=0.8, y_nd=0.0, z_nd=0.0,
+                vx_nd=0.0, vy_nd=0.1, vz_nd=0.0,
+                system=sys)
+        
+        # Should propagate successfully
+        traj = sys.propagate(state, t_start=0, t_end=10)
+        state_final = traj.state_at(10)
+        
+        assert isinstance(state_final, OrbitalElements)
+        assert state_final.element_type == OEType.CR3BP
+
+    def test_cr3bp_rejects_dimensional_orbital_elements(self):
+        """CR3BP system rejects Cartesian/Keplerian OrbitalElements."""
+        sys = System('3body', EARTH,
+                    secondary_body=MOON,
+                    distance=384400.0)
+        
+        # Try to use Cartesian elements (dimensional, wrong for CR3BP)
+        state_cart = OE(x=0.8, y=0.0, z=0.0,
+                    vx=0.0, vy=0.1, vz=0.0)
+        
+        with pytest.raises(ValueError, match="CR3BP.*Cartesian|nondimensional"):
+            sys.propagate(state_cart, t_start=0, t_end=10)
+        
+        # Try to use Keplerian elements (also wrong for CR3BP)
+        state_kep = OE(a=384400, e=0.01, i=0.1, 
+                    omega=0, w=0, nu=0)
+        
+        with pytest.raises(ValueError, match="CR3BP.*Keplerian|nondimensional"):
+            sys.propagate(state_kep, t_start=0, t_end=10)
     
     def test_cr3bp_jacobi_constant_accessible(self):
         """Can compute Jacobi constant for CR3BP states."""
