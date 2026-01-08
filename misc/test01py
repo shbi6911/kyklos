@@ -1,0 +1,16 @@
+import kyklos as ky
+
+# In a notebook or test script
+sys = ky.System('2body', ky.EARTH)
+orbit = ky.OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
+
+# Propagate from t=100 to t=500
+traj = sys.propagate(orbit, t_start=100, t_end=500)
+
+# Check the times
+print(f"t0: {traj.t0}")  # Should be 100
+print(f"tf: {traj.tf}")  # Should be 500
+
+# Can we evaluate at t=300?
+state = traj.state_at(300)
+print(f"State at t=300: {state.position}")
