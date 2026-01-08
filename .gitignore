@@ -45,3 +45,6 @@ ENV/
 # Documentation builds
 docs/_build/
 docs/.doctrees/
+
+# Experimental/scratch work
+misc/
