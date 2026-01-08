@@ -286,6 +286,8 @@ Kyklos is released under the BSD 3-clause License, aligning with the scientific 
 ## Acknowledgments
 
 - Built with [Heyoka](https://github.com/bluescarni/heyoka) by Francesco Biscani and Dario Izzo
+- Sincere thanks to Matt Bolliger and Galen Savidge of Advanced Space.  Kyklos' structural features
+  are heavily inspired by design features of their internal company software packages.
 - Development assisted by Claude Sonnet 4.5 (Anthropic)
 - Part of MS research at CU Boulder Ann & H.J. Smead Department of Aerospace Engineering Sciences
 
