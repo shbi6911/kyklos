@@ -5,8 +5,8 @@
 Kyklos is a Python package for spacecraft trajectory analysis and mission design, built on the Heyoka Taylor series integrator for exceptional accuracy and speed. Designed for astrodynamics researchers and engineers who need reliable, efficient orbital mechanics tools with a clean, intuitive API.
 
 [![Python Version](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
-[![License](https://img.shields.io/badge/license-BSD--2--Clause-green.svg)](LICENSE)
-[![Status](https://img.shields.io/badge/status-alpha-orange.svg)](https://github.com/******************)
+[![License](https://img.shields.io/badge/license-BSD--3--Clause-green.svg)](LICENSE)
+[![Status](https://img.shields.io/badge/status-alpha-orange.svg)](https://github.com/shbi6911/kyklos.git)
 
 ---
 
@@ -46,19 +46,19 @@ through the heyoka.py Python API, and so it is necessary to install heyoka.py sp
 
 **Option 1: Install from GitHub (recommended for testers)**
 ```bash
-pip install git+https://github.com/*******************
+pip install git+https://github.com/shbi6911/kyklos.git
 ```
 
 **Option 2: Install from source**
 ```bash
-git clone https://github.com/*********************
+git clone https://github.com/shbi6911/kyklos.git
 cd kyklos
 pip install .
 ```
 
 **For development:**
 ```bash
-git clone https://github.com/********************
+git clone https://github.com/shbi6911/kyklos.git
 cd kyklos
 pip install -e .
 ```
@@ -141,7 +141,7 @@ sys = earth_2body()
 # Create constellation of satellites
 altitudes = np.linspace(400, 1000, 25)  # 400-1000 km altitude
 ecc = np.linspace(0.01, 0.1, 25) # range of eccentricities
-inc = np.radians(np.linspace(0, 55, 25) #range of inclinations
+inc = np.radians(np.linspace(0, 55, 25)) #range of inclinations
 orbits = [
     OrbitalElements(a=6378.137 + h, e=e, i=i,
                    omega=0, w=0, nu=0, system=sys)
@@ -257,7 +257,7 @@ Please include:
 - Minimal code to reproduce
 - Expected vs. actual behavior
 
-**Issue Tracker:** [GitHub Issues](https://github.com/****************/issues)
+**Issue Tracker:** [GitHub Issues](https://github.com/shbi6911/kyklos/issues)
 
 ---
 
@@ -271,7 +271,7 @@ If you use Kyklos in academic work, please cite:
   title = {Kyklos: High-Performance Orbital Mechanics for Python},
   year = {2025},
   version = {0.1.0},
-  url = {https://github.com/*****************/kyklos}
+  url = {https://github.com/shbi6911/kyklos.git}
 }
 ```
 
