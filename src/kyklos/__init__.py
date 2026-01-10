@@ -26,7 +26,7 @@ Core Classes
 Default Systems (Factory Functions)
     earth_2body : Point-mass Earth
     earth_j2 : Earth with J2 oblateness
-    earth_drag : Earth with J2 and atmospheric drag
+    earth_drag : Earth with atmospheric drag
     earth_moon_cr3bp : Earth-Moon circular restricted 3-body problem
     moon_2body, moon_j2 : Moon systems
     mars_2body, mars_j2 : Mars systems
@@ -44,10 +44,11 @@ from .trajectory import Trajectory, Trajectory as Traj
 from .utils import Timer
 
 # Commonly-used celestial bodies
-from .system import EARTH, MOON, MARS
+from .defaults import MERCURY, VENUS, EARTH, MOON, MARS, JUPITER, SATURN, URANUS
+from .defaults import NEPTUNE
 
 # Standard atmosphere model
-from .system import EARTH_STD_ATMO
+from .defaults import EARTH_STD_ATMO
 
 # Some commonly-used Earth orbits
 from .defaults import ISS_ORBIT, GEO_ORBIT, LEO_ORBIT, SSO_ORBIT, MOLNIYA_ORBIT
@@ -58,6 +59,7 @@ from .defaults import (
     earth_j2,
     earth_drag,
     earth_moon_cr3bp,
+    earth_sun_cr3bp,
     moon_2body,
     moon_j2,
     mars_2body,
@@ -95,13 +97,20 @@ __all__ = [
     "earth_j2",
     "earth_drag",
     "earth_moon_cr3bp",
+    "earth_sun_cr3bp",
     "moon_2body",
     "moon_j2",
     "mars_2body",
     "mars_j2",
     # Constants
+    "MERCURY",
+    "VENUS",
     "EARTH",
     "MOON",
     "MARS",
+    "JUPITER",
+    "SATURN",
+    "URANUS",
+    "NEPTUNE",
     "EARTH_STD_ATMO",
 ]

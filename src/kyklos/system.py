@@ -53,8 +53,6 @@ class BodyParams:
             raise ValueError(f"Radius must be positive, got {self.radius}")
         if self.J2 is not None and abs(self.J2) > 1:
             raise ValueError(f"J2 coefficient seems unrealistic: {self.J2}")
-        if self.rotation_rate is not None and self.rotation_rate < 0:
-            raise ValueError(f"Rotation rate must be non-negative, got {self.rotation_rate}")
 
 @dataclass(frozen=True)
 class AtmoParams:
@@ -111,38 +109,6 @@ class _BodyParamsWithND:
         
         def __repr__(self):
             return repr(self._body_params)
-        
-# Pre-defined common bodies for convenience
-EARTH = BodyParams(
-    mu=3.986004418e5,
-    radius=6378.1370,
-    J2=1.08262668e-3,
-    rotation_rate=7.2921150e-5,
-    name='Earth'
-)
-
-MOON = BodyParams(
-    mu=4.9048695e3,
-    radius=1737.4000,
-    J2=2.033e-4,
-    rotation_rate=2.6617e-6,
-    name='Moon'
-)
-
-MARS = BodyParams(
-    mu=4.282837e4,
-    radius=3389.5000,
-    J2=1.96045e-3,
-    rotation_rate=7.088218e-5,
-    name='Mars'
-)
-
-# Standard atmosphere models
-EARTH_STD_ATMO = AtmoParams(
-    rho0=1.225,
-    H=8500.0,
-    r0=6378137.0
-)
 
 class System:
     """

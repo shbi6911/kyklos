@@ -2,6 +2,9 @@
 Default Orbits and System Configurations
 ==============================
 
+Default values for Solar System BodyParams, as well as Standard Atmosphere models
+and some predefined orbits
+
 Factory functions for commonly-used orbital systems. These functions
 create System objects on demand, avoiding memory overhead until needed.
 
@@ -16,8 +19,106 @@ Examples
 """
 import numpy as np
 from .orbital_elements import OrbitalElements
-from .system import System, EARTH, MOON, MARS, EARTH_STD_ATMO
+from .system import System, BodyParams, AtmoParams
 
+"""
+Predefined Solar System bodies for System creation
+Values taken from Vallado, Fundamentals of Astrdynamics, Fifth Edition, 2022, Appendix D
+Units referenced to km (i.e. mu = km^3/s^2)
+"""
+# Pre-defined common bodies for convenience
+
+MERCURY = BodyParams(
+    mu=2.2032e4,
+    radius=2439.0,
+    J2=6.0e-5,
+    rotation_rate=1.24001e-6,
+    name='Mercury'
+)
+
+VENUS = BodyParams(
+    mu=3.257e5,
+    radius=6052.0,
+    J2=2.7e-5,
+    rotation_rate=-2.9926e-7,
+    name='Venus'
+)
+EARTH = BodyParams(
+    mu=3.986004415e5,
+    radius=6378.1363,
+    J2=1.0826269e-3,
+    rotation_rate=7.2921150e-5,
+    name='Earth'
+)
+
+MOON = BodyParams(
+    mu=4.902799e3,
+    radius=1738.0,
+    J2=2.027e-4,
+    rotation_rate=2.661700e-6,
+    name='Moon'
+)
+
+MARS = BodyParams(
+    mu=4.305e4,
+    radius=3397.2,
+    J2=1.964e-3,
+    rotation_rate=7.0882181e-5,
+    name='Mars'
+)
+
+JUPITER = BodyParams(
+    mu=1.268e8,
+    radius=71492.0,
+    J2=1.475e-2,
+    rotation_rate=1.7585e-4,
+    name='Jupiter'
+)
+
+SATURN = BodyParams(
+    mu=3.794e7,
+    radius=60268.0,
+    J2=1.645e-2,
+    rotation_rate=1.662e-4,
+    name='Saturn'
+)
+
+URANUS = BodyParams(
+    mu=5.794e6,
+    radius=25559.0,
+    J2=1.2e-2,
+    rotation_rate=-1.12e-4,
+    name='Uranus'
+)
+
+NEPTUNE = BodyParams(
+    mu=6.809e6,
+    radius=24764.0,
+    J2=4.0e-3,
+    rotation_rate=9.47e-5,
+    name='Neptune'
+)
+
+SUN = BodyParams(
+    mu=1.32712428e11,
+    radius=6.96e5,
+    J2=None,
+    rotation_rate=None,
+    name='Sun'
+)
+
+"""
+Predefined standard atmosphere models for System creation
+"""
+EARTH_STD_ATMO = AtmoParams(
+    rho0=1.225,
+    H=8500.0,
+    r0=6378137.0
+)
+
+"""
+Predefined orbits for convenience
+"""
 ISS_ORBIT = OrbitalElements(
     a=6778.0, e=0.0001, i=np.radians(51.6),
     omega=0, w=0, nu=0, mu=EARTH.mu
@@ -99,7 +200,7 @@ def earth_drag(compile=True):
     Returns
     -------
     System
-        2-body Earth system with J2 and drag perturbations
+        2-body Earth system with drag perturbation
     
     Notes
     -----
@@ -144,6 +245,38 @@ def earth_moon_cr3bp(compile=True):
     return System(
         '3body', EARTH, MOON,
         distance=384400.0,
+        compile=compile
+    )
+
+def earth_sun_cr3bp(compile=True):
+    """
+    Create Sun-Earth circular restricted 3-body problem system.
+    
+    Models spacecraft motion in the rotating Sun-Earth frame.
+    
+    Parameters
+    ----------
+    compile : bool, optional
+        If True (default), compile integrator immediately.
+    
+    Returns
+    -------
+    System
+        Sun-Earth CR3BP system in rotating frame
+    
+    Notes
+    -----
+    The system uses nondimensional units where:
+    - Characteristic length L* = 149,597,870.7 km (1 AU distance)
+    - Characteristic time T* = 5,022,635.6 s
+    - Mass ratio μ = 3.00348e-6 (Earth mass / total system mass)
+    
+    State vectors should be nondimensional. Origin is at the system
+    barycenter with primaries at x = ±(μ, 1-μ).
+    """
+    return System(
+        '3body', SUN, EARTH,
+        distance=149597870.7,
         compile=compile
     )
 
