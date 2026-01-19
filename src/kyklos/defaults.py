@@ -113,14 +113,14 @@ Predefined standard atmosphere models for System creation
 EARTH_STD_ATMO = AtmoParams(
     rho0=1.225,
     H=8500.0,
-    r0=6378137.0
+    r0=6378136.3
 )
 
 """
 Predefined orbits for convenience
 """
 ISS_ORBIT = OrbitalElements(
-    a=6778.0, e=0.0001, i=np.radians(51.6),
+    a=EARTH.radius + 400, e=0.0001, i=np.radians(51.6),
     omega=0, w=0, nu=0, mu=EARTH.mu
 )
 
@@ -130,7 +130,7 @@ GEO_ORBIT = OrbitalElements(
 )
 
 LEO_ORBIT = OrbitalElements(
-    a=EARTH.radius+550, e=0.0, i=0.0,
+    a=EARTH.radius+300, e=0.0, i=0.0,
     omega=0, w=0, nu=0, mu=EARTH.mu
 )
 
