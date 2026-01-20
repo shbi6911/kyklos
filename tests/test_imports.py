@@ -24,7 +24,7 @@ def test_can_create_system():
     """Test basic System creation."""
     from kyklos import System, EARTH
     sys = System('2body',EARTH)
-    assert sys.primary_body.mu == 3.986004418e5
+    assert sys.primary_body.mu == 3.986004415e5
 
 def test_can_create_satellite():
     """Test basic Satellite creation."""

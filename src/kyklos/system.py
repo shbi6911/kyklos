@@ -109,6 +109,19 @@ class _BodyParamsWithND:
         
         def __repr__(self):
             return repr(self._body_params)
+        
+        # need to preserve equality through the wrapper
+        def __eq__(self, other):
+            """Compare based on wrapped BodyParams."""
+            if isinstance(other, _BodyParamsWithND):
+                return self._body_params == other._body_params
+            elif isinstance(other, BodyParams):
+                return self._body_params == other
+            return NotImplemented
+        
+        def __hash__(self):
+            """Hash based on wrapped BodyParams."""
+            return hash(self._body_params)
 
 class System:
     """
@@ -1016,14 +1029,14 @@ class System:
         parts = [f"System(base_type='{self._base_type.value}'"]
         
         if self._base_type == SysType.TWO_BODY:
-            parts.append(f"primary={self._primary_body.mu:.3e} kmÂ³/sÂ²")
+            parts.append(f"primary={self._primary_body.mu:.3e} km^3/s^2")
             if self._perturbations:
                 parts.append(f"perturbations={self._perturbations}")
         else:  # 3body
-            parts.append(f"Î¼â‚={self._primary_body.mu:.3e}")
-            parts.append(f"Î¼â‚‚={self._secondary_body.mu:.3e}")
+            parts.append(f"mu_1‚={self._primary_body.mu:.3e}")
+            parts.append(f"mu_2‚={self._secondary_body.mu:.3e}")
             parts.append(f"L*={self._L_star:.3e} km")
-            parts.append(f"Î¼={self._mass_ratio:.6f}")
+            parts.append(f"mu={self._mass_ratio:.6f}")
         
         return ", ".join(parts) + ")"
 

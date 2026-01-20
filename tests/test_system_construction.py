@@ -323,7 +323,7 @@ class TestStringRepresentations:
         repr_str = repr(sys)
         
         assert '2body' in repr_str
-        assert 'km³/s²' in repr_str
+        assert 'km^3/s^2' in repr_str
     
     def test_repr_cr3bp(self):
         """__repr__ works for CR3BP system."""
@@ -332,8 +332,8 @@ class TestStringRepresentations:
                     distance=384400.0)
         repr_str = repr(sys)
         
-        assert 'μ₁' in repr_str or 'mu1' in repr_str.lower()
-        assert 'μ₂' in repr_str or 'mu2' in repr_str.lower()
+        assert 'mu_1' in repr_str
+        assert 'mu_2' in repr_str
     
     def test_summary_runs_without_error(self):
         """summary() method executes without error."""

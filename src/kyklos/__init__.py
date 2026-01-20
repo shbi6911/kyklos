@@ -45,7 +45,7 @@ from .utils import Timer
 
 # Commonly-used celestial bodies
 from .defaults import MERCURY, VENUS, EARTH, MOON, MARS, JUPITER, SATURN, URANUS
-from .defaults import NEPTUNE
+from .defaults import NEPTUNE, SUN
 
 # Standard atmosphere model
 from .defaults import EARTH_STD_ATMO
@@ -112,5 +112,6 @@ __all__ = [
     "SATURN",
     "URANUS",
     "NEPTUNE",
+    "SUN",
     "EARTH_STD_ATMO",
 ]

@@ -284,7 +284,7 @@ class TestCR3BPIntegration:
                     distance=384400.0)
         
         # Try to use Cartesian elements (dimensional, wrong for CR3BP)
-        state_cart = OE(x=0.8, y=0.0, z=0.0,
+        state_cart = OE(x=0.8, y=0.8, z=0.0,
                     vx=0.0, vy=0.1, vz=0.0)
         
         with pytest.raises(ValueError, match="CR3BP.*Cartesian|nondimensional"):
