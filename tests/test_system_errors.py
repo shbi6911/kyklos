@@ -377,7 +377,7 @@ class TestCR3BPEdgeCases:
                     distance=384400.0)
         
         # Near Moon (Moon is at 1-mu)
-        state = np.array([1 - sys.mass_ratio - 0.01, 0, 0, 0, 0.1, 0])
+        state = np.array([1 - sys.mass_ratio - 0.01, 0, 0, 0, 0.1, 0]) # type: ignore
         
         try:
             traj = sys.propagate(state, t_start=0, t_end=1)

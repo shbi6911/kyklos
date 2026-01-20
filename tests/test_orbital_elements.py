@@ -35,11 +35,11 @@ ANGLE_RTOL = 1e-10
 ANGLE_ATOL = 1e-12
 
 # Earth's gravitational parameter (matching MATLAB test data)
-MU_EARTH = 398600.435507  # km³/s²
+MU_EARTH = 398600.435507  # km^3/s^2
 
 
 # =============================================================================
-# Fixtures
+# Fixtures (Load in Data)
 # =============================================================================
 
 @pytest.fixture
@@ -502,7 +502,7 @@ class TestEdgeCases:
         assert np.allclose(kep_back.elements[2], 0.0, atol=ATOL)
     
     def test_circular_inclined(self):
-        """Circular inclined orbit (e=0, i≠0) - arg of periapsis undefined."""
+        """Circular inclined orbit (e=0, i!=0) - arg of periapsis undefined."""
         kep = np.array([8500.0, 0.0, np.deg2rad(60), 
                        np.deg2rad(45), 0.0, np.deg2rad(30)])
         
@@ -685,7 +685,7 @@ class TestUtilities:
         """Test orbital period calculation from Keplerian elements."""
         T = leo_circular_kep.orbital_period()
         
-        # Expected: T = 2π√(a³/μ)
+        # Expected: T = 2*pi*sqrt(a^3/mu)
         a = 7000.0
         T_expected = 2 * np.pi * np.sqrt(a**3 / MU_EARTH)
         
@@ -710,7 +710,7 @@ class TestUtilities:
         """Test orbital period for eccentric orbit."""
         T = molniya_kep.orbital_period()
         
-        # Molniya: a ≈ 26553 km → T ≈ 12 hours
+        # Molniya: a = 26553 km → T = 12 hours
         T_hours = T / 3600
         assert 11.5 < T_hours < 12.5
     
@@ -737,7 +737,7 @@ class TestUtilities:
         """Test specific energy from Keplerian elements."""
         energy = leo_circular_kep.specific_energy()
         
-        # Expected: ε = -μ/(2a)
+        # Expected: energy = -mu/(2a)
         a = 7000.0
         energy_expected = -MU_EARTH / (2 * a)
         
@@ -784,7 +784,7 @@ class TestUtilities:
         """Test angular momentum from Keplerian elements."""
         h = leo_circular_kep.specific_angular_momentum()
         
-        # Expected: h = √(μp) where p = a(1-e²)
+        # Expected: h = sqrt(mu*p) where p = a(1-e^2)
         a = 7000.0
         e = 0.0
         p = a * (1 - e**2)
@@ -797,7 +797,7 @@ class TestUtilities:
         """Test angular momentum from Cartesian elements."""
         h = leo_circular_cart.specific_angular_momentum()
         
-        # Calculate manually: h = |r × v|
+        # Calculate manually: h = |r x v|
         r = leo_circular_cart.elements[:3]
         v = leo_circular_cart.elements[3:]
         h_expected = np.linalg.norm(np.cross(r, v))
@@ -808,7 +808,7 @@ class TestUtilities:
         """Test angular momentum from Equinoctial elements."""
         h = leo_circular_equi.specific_angular_momentum()
         
-        # From equinoctial: h = √(μp)
+        # From equinoctial: h = sqrt(mu*p)
         p = leo_circular_equi.elements[0]
         h_expected = np.sqrt(MU_EARTH * p)
         
@@ -834,7 +834,7 @@ class TestUtilities:
         """Test mean motion from Keplerian elements."""
         n = leo_circular_kep.mean_motion()
         
-        # Expected: n = √(μ/a³)
+        # Expected: n = sqrt(mu/a^3)
         a = 7000.0
         n_expected = np.sqrt(MU_EARTH / a**3)
         
