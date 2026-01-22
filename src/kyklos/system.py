@@ -210,11 +210,17 @@ class System:
         # Compute 3-body parameters if needed
         if self._base_type == SysType.CR3BP:
             self._compute_CR3BP_params()
+            self._compute_lagrange_points()
         else:
             self._L_star = None
             self._T_star = None
             self._mass_ratio = None
             self._n_mean = None
+            self._L1 = None
+            self._L2 = None
+            self._L3 = None
+            self._L4 = None
+            self._L5 = None
         
         # Initialize cached EOMs and heyoka integrator
         self._cached_eom = None
@@ -752,6 +758,83 @@ class System:
     def requires_satellite(self) -> bool:
         """Check if this system requires satellite properties."""
         return len(self._param_info['param_map']) > 0
+    
+    @property
+    def L1(self) -> np.ndarray:
+        """Nondimensional L1 Lagrange point location [x, y, z]."""
+        if self._base_type != SysType.CR3BP:
+            raise ValueError(
+                "Lagrange points only available for CR3BP systems. "
+                f"Current system type: {self._base_type.value}"
+            )
+        return self._L1 #type: ignore
+
+    @property
+    def L2(self) -> np.ndarray:
+        """Nondimensional L2 Lagrange point location [x, y, z]."""
+        if self._base_type != SysType.CR3BP:
+            raise ValueError(
+                "Lagrange points only available for CR3BP systems. "
+                f"Current system type: {self._base_type.value}"
+            )
+        return self._L2 #type: ignore
+
+    @property
+    def L3(self) -> np.ndarray:
+        """Nondimensional L3 Lagrange point location [x, y, z]."""
+        if self._base_type != SysType.CR3BP:
+            raise ValueError(
+                "Lagrange points only available for CR3BP systems. "
+                f"Current system type: {self._base_type.value}"
+            )
+        return self._L3 #type: ignore
+
+    @property
+    def L4(self) -> np.ndarray:
+        """Nondimensional L4 Lagrange point location [x, y, z]."""
+        if self._base_type != SysType.CR3BP:
+            raise ValueError(
+                "Lagrange points only available for CR3BP systems. "
+                f"Current system type: {self._base_type.value}"
+            )
+        return self._L4 #type: ignore
+
+    @property
+    def L5(self) -> np.ndarray:
+        """Nondimensional L5 Lagrange point location [x, y, z]."""
+        if self._base_type != SysType.CR3BP:
+            raise ValueError(
+                "Lagrange points only available for CR3BP systems. "
+                f"Current system type: {self._base_type.value}"
+            )
+        return self._L5 #type: ignore
+
+    @property
+    def lagrange_points(self) -> np.ndarray:
+        """
+        All five Lagrange points as (5, 3) array [nondimensional].
+        
+        Returns
+        -------
+        np.ndarray
+            Shape (5, 3) with rows [L1, L2, L3, L4, L5]
+            Each row is [x, y, z] in nondimensional coordinates
+        
+        Raises
+        ------
+        ValueError
+            If system is not CR3BP type
+        """
+        if self._base_type != SysType.CR3BP:
+            raise ValueError(
+                "Lagrange points only available for CR3BP systems. "
+                f"Current system type: {self._base_type.value}"
+            )
+        
+        # Stack into (5, 3) array
+        points = np.vstack([self._L1, self._L2, self._L3, self._L4, self._L5]) #type: ignore
+        points.flags.writeable = False  # Read-only
+        return points
 
     # ========== UTILITY METHODS ==========
     def _compute_CR3BP_params(self):
@@ -770,6 +853,62 @@ class System:
         
         # Mean motion: n = 2Ï€/T* = sqrt(Î¼_total/L*Â³)
         self._n_mean = np.sqrt(mu_total / self._L_star**3)
+
+    def _compute_lagrange_points(self):
+        """
+        Compute nondimensional Lagrange point locations for CR3BP.
+        
+        Uses Brent's method for collinear points (L1, L2, L3) with series
+        expansion initial guesses. Triangular points (L4, L5) computed analytically.
+        
+        Notes
+        -----
+        Series expansions accurate to O(mu^3) from Szebehely (1967).
+        """
+        import scipy.optimize as opt
+        
+        mu = self._mass_ratio
+        assert mu is not None   #this is only called for CR3BP systems
+        
+        # Equilibrium condition on x-axis: dU/dx = 0
+        def eq_func(x):
+            """Equilibrium function for collinear points."""
+            r1 = abs(x + mu)
+            r2 = abs(x - 1 + mu)
+            return x - (1-mu)*(x+mu)/r1**3 - mu*(x-1+mu)/r2**3
+        
+        # L1: between primaries
+        # Series expansion for initial guess
+        alpha1 = (mu/3)**(1/3) * (1 - (1/3)*(mu/3)**(1/3) + (1/3)*(mu/3)**(2/3))
+        L1_a, L1_b = -mu + 1e-6, 1 - mu - 1e-6
+        x_L1 = opt.brentq(eq_func, L1_a, L1_b, xtol=1e-14)
+        
+        # L2: beyond secondary
+        alpha2 = (mu/3)**(1/3) * (1 + (1/3)*(mu/3)**(1/3) + (1/3)*(mu/3)**(2/3))
+        L2_a, L2_b = 1 - mu + 1e-6, 2.0
+        x_L2 = opt.brentq(eq_func, L2_a, L2_b, xtol=1e-14)
+        
+        # L3: beyond primary
+        L3_a, L3_b = -2.0, -mu - 1e-6
+        x_L3 = opt.brentq(eq_func, L3_a, L3_b, xtol=1e-14)
+        
+        # L4, L5: equilateral triangles (analytic)
+        L4 = np.array([0.5 - mu, np.sqrt(3)/2, 0.0])
+        L5 = np.array([0.5 - mu, -np.sqrt(3)/2, 0.0])
+        
+        # Store as nondimensional arrays (read-only)
+        self._L1 = np.array([x_L1, 0.0, 0.0])
+        self._L2 = np.array([x_L2, 0.0, 0.0])
+        self._L3 = np.array([x_L3, 0.0, 0.0])
+        self._L4 = L4
+        self._L5 = L5
+        
+        # Make arrays read-only
+        self._L1.flags.writeable = False
+        self._L2.flags.writeable = False
+        self._L3.flags.writeable = False
+        self._L4.flags.writeable = False
+        self._L5.flags.writeable = False
     
     def _build_eom(self):
         """
