@@ -12,7 +12,7 @@ import pytest
 import numpy as np
 from kyklos import (
     System, EARTH, MOON, MARS, EARTH_STD_ATMO,
-    OE, OrbitalElements, OEType, Trajectory
+    OE, OrbitalElements, OEType, Trajectory, Satellite
 )
 
 
@@ -110,61 +110,21 @@ class TestParameterHandling:
                     atmosphere=EARTH_STD_ATMO)
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         
-        with pytest.raises(ValueError, match="requires satellite parameters"):
+        with pytest.raises(ValueError, match="requires a Satellite object"):
             sys.propagate(orbit, t_start=0, t_end=100)
     
-    def test_drag_system_accepts_dict_params(self):
+    def test_drag_system_accepts_satellite(self):
         """System with drag accepts dict satellite_params."""
         sys = System('2body', EARTH,
                     perturbations=('drag',),
                     atmosphere=EARTH_STD_ATMO)
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         
-        params = {'Cd_A': 5.0, 'mass': 500.0}
+        sat = Satellite.for_drag_only(100,11)
         traj = sys.propagate(orbit, t_start=0, t_end=100,
-                           satellite_params=params)
+                           satellite=sat)
         
         assert traj is not None
-    
-    def test_drag_system_accepts_array_params(self):
-        """System with drag accepts array satellite_params."""
-        sys = System('2body', EARTH,
-                    perturbations=('drag',),
-                    atmosphere=EARTH_STD_ATMO)
-        orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
-        
-        params = np.array([5.0, 500.0])  # [Cd_A, mass]
-        traj = sys.propagate(orbit, t_start=0, t_end=100,
-                           satellite_params=params)
-        
-        assert traj is not None
-    
-    def test_missing_required_param_raises_error(self):
-        """Missing required parameter raises clear error."""
-        sys = System('2body', EARTH,
-                    perturbations=('drag',),
-                    atmosphere=EARTH_STD_ATMO)
-        orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
-        
-        params = {'Cd_A': 5.0}  # Missing 'mass'
-        
-        with pytest.raises(ValueError, match="Missing required parameter"):
-            sys.propagate(orbit, t_start=0, t_end=100,
-                        satellite_params=params)
-    
-    def test_wrong_number_params_array_raises_error(self):
-        """Array with wrong number of parameters raises error."""
-        sys = System('2body', EARTH,
-                    perturbations=('drag',),
-                    atmosphere=EARTH_STD_ATMO)
-        orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
-        
-        params = np.array([5.0])  # Need 2 params
-        
-        with pytest.raises(ValueError, match="Expected .* parameters"):
-            sys.propagate(orbit, t_start=0, t_end=100,
-                        satellite_params=params)
-
 
 class TestTimeHandling:
     """Test propagation with different time configurations."""
@@ -252,9 +212,9 @@ class TestSmokeTests:
         orbit = OE(a=6800, e=0.001, i=np.radians(45),
                   omega=0, w=0, nu=0)
         
-        params = {'Cd_A': 5.0, 'mass': 500.0}
+        sat = Satellite.for_drag_only(100,11)
         traj = sys.propagate(orbit, t_start=0, t_end=5400,
-                           satellite_params=params)
+                           satellite=sat)
         
         assert isinstance(traj, Trajectory)
         state_mid = traj(2700)
@@ -268,9 +228,9 @@ class TestSmokeTests:
         orbit = OE(a=6800, e=0.001, i=np.radians(98),
                   omega=0, w=0, nu=0)
         
-        params = {'Cd_A': 5.0, 'mass': 500.0}
+        sat = Satellite.for_drag_only(100,11)
         traj = sys.propagate(orbit, t_start=0, t_end=5400,
-                           satellite_params=params)
+                           satellite=sat)
         
         assert isinstance(traj, Trajectory)
         state_mid = traj(2700)

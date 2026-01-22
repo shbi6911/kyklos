@@ -261,12 +261,12 @@ class Trajectory:
         # Get the final state of current trajectory
         final_state = self.state_at(self.tf)
 
-        # Extract satellite_params from kwargs if provided
-        satellite_params = propagation_kwargs.get('satellite_params', None)
+        # Extract satellite from kwargs if provided
+        satellite = propagation_kwargs.get('satellite', None)
         
         # Continue propagation from final state
         return self._system.propagate(final_state, self.tf, 
-                                      new_tf, satellite_params
+                                      new_tf, satellite=satellite
     )
     
     def slice(self, t_start: float, t_end: float, **propagation_kwargs) -> 'Trajectory':
@@ -299,12 +299,12 @@ class Trajectory:
         t_start = float(t_start)
         t_end = float(t_end)
         # Extract satellite_params from kwargs if provided
-        satellite_params = propagation_kwargs.get('satellite_params', None)
+        satellite = propagation_kwargs.get('satellite', None)
         # set initial state 
         new_initial_state = self.state_at(t_start)
         # Create new Trajectory with same integrator but different time bounds
         return self._system.propagate(new_initial_state,t_start, t_end, 
-                                     satellite_params
+                                     satellite=satellite
     )
 
     # ========== SPECIAL METHODS ==========

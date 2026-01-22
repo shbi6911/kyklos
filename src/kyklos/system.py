@@ -10,6 +10,7 @@ from enum import Enum
 import heyoka as hy
 from .orbital_elements import OrbitalElements, OEType
 from .trajectory import Trajectory
+from .satellite import Satellite
 
 # define an enumerated list of system types
 class SysType(Enum):
@@ -155,7 +156,7 @@ class System:
     T_star : float  
         Characteristic time [s]
     mass_ratio : float
-        Nondimensional mass ratio Î¼ = mâ‚‚/(mâ‚+mâ‚‚)
+        Nondimensional mass ratio mu = mu_2/(mu_1 + mu_2)
     n_mean : float
         Mean motion [rad/s]
 
@@ -324,7 +325,7 @@ class System:
         initial_state: "OrbitalElements | np.ndarray", 
         t_start: float, 
         t_end: float, 
-        satellite_params: Dict[str, float] | np.ndarray | None = None
+        satellite: Optional[Satellite] = None
     ) -> "Trajectory":
         """
         Propagate from t_start to t_end with dense output.
@@ -341,11 +342,11 @@ class System:
             Start time [s]
         t_end : float
             End time [s]
-        satellite_params : dict or array_like, optional
-            Satellite parameters needed for perturbations.
-            Can be dict with keys from param_info['param_map']
-            or array in correct order. Required if system has
-            perturbations that need satellite properties.
+        satellite : Satellite, optional
+            Satellite object containing physical properties (mass, drag 
+            coefficient, cross-sectional area, inertia tensor). Required 
+            if system has perturbations that depend on satellite properties
+            (e.g., drag). For systems without perturbations, can be None.
         
         Returns
         -------
@@ -397,12 +398,13 @@ class System:
                 )
         
         # Handle satellite parameters
-        if satellite_params is not None:
-            params_array = self._process_satellite_params(satellite_params)
+        if satellite is not None:
+            params_array = self._process_satellite(satellite)
             ta.pars[:] = params_array
         elif len(self._param_info['param_map']) > 0:
             raise ValueError(
-                f"This system requires satellite parameters: "
+                f"This system requires a Satellite object. "
+                f"The following properties are needed: "
                 f"{[name for name, _ in self._param_info['param_map']]}"
             )
         
@@ -435,25 +437,39 @@ class System:
 
         return Trajectory(self,traj,t_start,t_end)
 
-    def _process_satellite_params(self, satellite_params):
-        """Convert satellite parameters to array format for Heyoka."""
-        if isinstance(satellite_params, dict):
-            # Convert dict to array using param_map
-            params_array = []
-            for name, idx in self._param_info['param_map']:
-                if name not in satellite_params:
-                    raise ValueError(f"Missing required parameter: {name}")
-                params_array.append(satellite_params[name])
-            return np.array(params_array)
-        else:
-            # Assume already in correct order
-            params_array = np.asarray(satellite_params)
-            expected_len = len(self._param_info['param_map'])
-            if len(params_array) != expected_len:
+    def _process_satellite(self, satellite: Satellite) -> np.ndarray:
+        """
+        Extract parameters from Satellite object for Heyoka integrator.
+        
+        Parameters
+        ----------
+        satellite : Satellite
+            Satellite object containing required physical properties
+            
+        Returns
+        -------
+        np.ndarray
+            Array of parameter values in order expected by integrator,
+            as defined by self._param_info['param_map']
+            
+        Raises
+        ------
+        ValueError
+            If satellite is missing a required property
+        """
+        params = []
+        for name, idx in self._param_info['param_map']:
+            if name == 'Cd_A':
+                params.append(satellite.Cd_A)
+            elif name == 'mass':
+                params.append(satellite.mass)
+            else:
+                # This shouldn't happen until we add new perturbations
                 raise ValueError(
-                    f"Expected {expected_len} parameters, got {len(params_array)}"
+                    f"Unknown satellite parameter '{name}' required by system. "
+                    f"This may indicate a bug in the System implementation."
                 )
-            return params_array
+        return np.array(params)
 
     # ========== NONDIMENSIONALIZATION METHODS ==========
     def r2nd(self, r):
@@ -714,7 +730,7 @@ class System:
     
     @property
     def mass_ratio(self) -> Optional[float]:
-        """Nondimensional mass ratio Î¼ = mâ‚‚/(mâ‚+mâ‚‚)."""
+        """Nondimensional mass ratio mu= mu_2/(mu_1 + mu_2)."""
         return self._mass_ratio
     
     @property
@@ -733,9 +749,9 @@ class System:
         return self._cached_eom
     
     @property
-    def param_info(self) -> Optional[Dict[str, Any]]:
-        """Cached set of needed Satellite parameters"""
-        return self._param_info
+    def requires_satellite(self) -> bool:
+        """Check if this system requires satellite properties."""
+        return len(self._param_info['param_map']) > 0
 
     # ========== UTILITY METHODS ==========
     def _compute_CR3BP_params(self):
@@ -862,10 +878,10 @@ class System:
         R = self._primary_body.radius
         assert J2 is not None # validated in _compute_params
         # J2 perturbation (zonal harmonic)
-        # Common factor: (3/2) * J2 * Î¼ * RÂ² / râµ
+        # Common factor: (3/2) * J2 * mu * R^2 / r^5
         factor = 1.5 * J2 * mu * R**2 / r**5
         # Acceleration components
-        # a_J2 = factor * [x(5zÂ²/rÂ² - 1), y(5zÂ²/rÂ² - 1), z(5zÂ²/rÂ² - 3)]
+        # a_J2 = factor * [x(5z^2/r^2 - 1), y(5z^2/r^2 - 1), z(5z^2/r^2 - 3)]
         z2_r2 = z**2 / r**2
         
         a_J2_x = factor * x * (5.0 * z2_r2 - 1.0)
@@ -877,20 +893,24 @@ class System:
     def _build_drag_perturbation(self, x, y, z, vx, vy, vz, r, param_start_idx):
         """
         Build atmospheric drag perturbation.
-        
+
         Uses exponential atmosphere model and accounts for Earth rotation.
-        
+        Drag parameters (Cd*A, mass) are extracted from Satellite object
+        during propagation and passed via hy.par[] array.
+
         Parameters
         ----------
         param_start_idx : int
             Starting index for hy.par[] array
-        
+
         Returns
         -------
         a_drag_x, a_drag_y, a_drag_z : symbolic expressions
             Drag acceleration components
         param_info : dict
-            Parameter mapping information
+            Parameter mapping information with keys:
+            - 'param_map': [('Cd_A', idx), ('mass', idx)]
+            - 'description': Human-readable parameter descriptions
         """
         # Atmospheric parameters (hardcoded from System)
         rho0 = self._atmosphere.rho0  # kg/mÂ³
@@ -963,9 +983,9 @@ class System:
             (x, vx),
             (y, vy),
             (z, vz),
-            (vx, 2.0 * vy + hy.diff(U, x)),   # 2Î©Ã—v + âˆ‚U/âˆ‚x
-            (vy, -2.0 * vx + hy.diff(U, y)),  # -2Î©Ã—v + âˆ‚U/âˆ‚y
-            (vz, hy.diff(U, z))                # âˆ‚U/âˆ‚z
+            (vx, 2.0 * vy + hy.diff(U, x)),   
+            (vy, -2.0 * vx + hy.diff(U, y)), 
+            (vz, hy.diff(U, z))
         ]
         
         # CR3BP has no runtime parameters (everything is nondimensional)
@@ -1002,7 +1022,7 @@ class System:
             state=[0.0] * 6,  # Dummy state
             pars=dummy_params,
         )
-        print(f"âœ“ Compilation complete")
+        print(f"Compilation complete")
     
     def compile(self):
         """

@@ -15,7 +15,7 @@ import numpy as np
 import plotly.graph_objects as go
 from kyklos import (
     System, EARTH, MOON, EARTH_STD_ATMO,
-    OE, OEType, Trajectory
+    OE, OEType, Trajectory, Satellite
 )
 
 
@@ -219,16 +219,16 @@ class TestTrajectorySpecificMethods:
             traj.extend(100)  # Same time
     
     def test_extend_with_drag_system(self):
-        """extend() works with drag systems requiring satellite_params."""
+        """extend() works with drag systems requiring satellite input."""
         sys = System('2body', EARTH,
                     perturbations=('drag',),
                     atmosphere=EARTH_STD_ATMO)
+        sat = Satellite.for_drag_only(100,11)
         orbit = OE(a=6800, e=0.001, i=0, omega=0, w=0, nu=0)
-        params = {'Cd_A': 5.0, 'mass': 500.0}
         
         traj1 = sys.propagate(orbit, t_start=0, t_end=100,
-                            satellite_params=params)
-        traj2 = traj1.extend(200, satellite_params=params)
+                            satellite = sat)
+        traj2 = traj1.extend(200, satellite=sat)
         
         assert traj2.tf == 200
     

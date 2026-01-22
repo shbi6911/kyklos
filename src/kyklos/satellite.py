@@ -74,6 +74,19 @@ class Satellite:
         self._inv_inertia = np.linalg.inv(inertia)
         self._inv_inertia.flags.writeable = False
     
+    @classmethod
+    def for_drag_only(cls, mass: float, Cd_A: float, name: Optional[str] = None):
+        """
+        Create Satellite with minimal properties for drag-only propagation.
+        
+        Assumes Cd=2.2 and computes cross-section from Cd*A.
+        Uses diagonal inertia placeholder (not for attitude dynamics).
+        """
+        Cd = 2.2  # Typical value
+        A = Cd_A / Cd
+        I = np.diag([mass, mass, mass])  # Placeholder
+        return cls(mass=mass, drag_coeff=Cd, cross_section=A, inertia=I, name=name)
+    
     @property
     def mass(self) -> float:
         """Satellite mass [kg]"""
@@ -88,6 +101,11 @@ class Satellite:
     def cross_section(self) -> float:
         """Reference cross-sectional area [m^2]"""
         return self._cross_section
+    
+    @property
+    def Cd_A(self) -> float:
+        """Drag coefficient times reference area [m^2]"""
+        return self._drag_coeff * self._cross_section
     
     @property
     def inertia(self) -> np.ndarray:

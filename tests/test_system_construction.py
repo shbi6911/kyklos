@@ -200,27 +200,33 @@ class TestPropertyAccess:
         assert 0 < sys.mass_ratio < 1
         assert sys.n_mean > 0
     
-    def test_param_info_no_perturbations(self):
-        """System without perturbations has empty param_info."""
+    def test_requires_satellite_false_no_perturbations(self):
+        """System without perturbations doesn't require satellite."""
         sys = System('2body', EARTH)
         
-        assert sys.param_info is not None
-        assert sys.param_info['param_map'] == []
-        assert sys.param_info['description'] == {}
-    
-    def test_param_info_with_drag(self):
-        """System with drag has satellite parameters in param_info."""
+        assert not sys.requires_satellite
+
+    def test_requires_satellite_false_j2_only(self):
+        """System with only J2 doesn't require satellite."""
+        sys = System('2body', EARTH, perturbations=('J2',))
+        
+        assert not sys.requires_satellite
+
+    def test_requires_satellite_true_with_drag(self):
+        """System with drag requires satellite."""
         sys = System('2body', EARTH,
                     perturbations=('drag',),
                     atmosphere=EARTH_STD_ATMO)
         
-        param_map = sys.param_info['param_map']
+        assert sys.requires_satellite
+
+    def test_requires_satellite_true_with_j2_and_drag(self):
+        """System with J2+drag requires satellite (due to drag)."""
+        sys = System('2body', EARTH,
+                    perturbations=('J2', 'drag'),
+                    atmosphere=EARTH_STD_ATMO)
         
-        # Should have Cd_A and mass
-        assert len(param_map) == 2
-        param_names = [name for name, idx in param_map]
-        assert 'Cd_A' in param_names
-        assert 'mass' in param_names
+        assert sys.requires_satellite
     
     def test_is_compiled_property(self):
         """is_compiled property reflects compilation state."""

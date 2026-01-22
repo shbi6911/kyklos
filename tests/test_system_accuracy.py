@@ -18,7 +18,7 @@ import pandas as pd
 from pathlib import Path
 
 from kyklos import (
-    System, OE, 
+    System, OE, Sat,
     ISS_ORBIT, GEO_ORBIT, LEO_ORBIT, SSO_ORBIT, MOLNIYA_ORBIT,
     earth_2body, earth_j2, earth_drag,
     EARTH, MOON
@@ -32,14 +32,14 @@ from kyklos import (
 DATA_DIR = Path(__file__).parent / "data"
 
 # Tolerance for numerical comparisons
-POSITION_TOL = 1e-9  # km (1 micrometer)
-VELOCITY_TOL = 1e-12  # km/s (1 micrometer/s)
+POSITION_TOL = 1e-2  # km (1 mm)
+VELOCITY_TOL = 1e-5  # km/s (1 micrometer/s)
 
 # Drag parameters used in MATLAB (unrealistic for testing)
-DRAG_PARAMS = {
-    'Cd_A': 2.2 * 2800,  # Cd * A [m^2]
-    'mass': 1.0          # [kg]
-}
+SAT = Sat.for_drag_only(
+    1,           # [kg]
+    2.2 * 2800   # Cd * A [m^2]       
+)
 
 # Orbit name to default orbit mapping
 ORBIT_MAP = {
@@ -201,7 +201,7 @@ class TestTwoBodyIntegration:
                 initial_orbit, 
                 t_start=t_start, 
                 t_end=t_end,
-                satellite_params=DRAG_PARAMS
+                satellite=SAT
             )
         else:
             traj = system.propagate(

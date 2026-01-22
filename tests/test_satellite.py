@@ -77,6 +77,19 @@ class TestConstruction:
         )
         
         assert np.allclose(sat.inertia, I)
+    
+    def test_drag_only_construction(self):
+        """Satellite can be constructed with for_drag_only convenience constructor."""
+        
+        sat = Satellite.for_drag_only(
+            mass=500.0,
+            Cd_A=11,
+        )
+        
+        assert sat.mass == 500.0
+        assert sat.drag_coeff == 2.2
+        assert sat.cross_section == 5.0
+        assert np.array_equal(sat.inertia, np.diag(np.full(3,sat.mass)))
 
 
 class TestValidation:
