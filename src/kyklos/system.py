@@ -11,6 +11,8 @@ import heyoka as hy
 from .orbital_elements import OrbitalElements, OEType
 from .trajectory import Trajectory
 from .satellite import Satellite
+from .utils import validation_error
+from .config import config
 
 # define an enumerated list of system types
 class SysType(Enum):
@@ -53,23 +55,23 @@ class BodyParams:
         if self.radius <= 0:
             raise ValueError(f"Radius must be positive, got {self.radius}")
         if self.J2 is not None and abs(self.J2) > 1:
-            raise ValueError(f"J2 coefficient seems unrealistic: {self.J2}")
+            validation_error(f"J2 coefficient seems unrealistic: {self.J2}")
 
 @dataclass(frozen=True)
 class AtmoParams:
     """
     Immutable parameters for exponential atmosphere model.
     
-    The density profile follows: Ï(r) = Ïâ‚€ * exp(-(r - râ‚€)/H)
+    The density profile follows: rho(r) = rho0 * exp(-(r - r0)/H)
     
     Attributes
     ----------
     rho0 : float
-        Reference density at reference altitude [kg/mÂ³]
+        Reference density at reference altitude [kg/m^3]
     H : float
         Scale height [m]
     r0 : float
-        Reference radius (altitude where Ïâ‚€ is defined) [m]
+        Reference radius (altitude where rho0 is defined) [m]
     
     Notes
     -----
@@ -171,7 +173,6 @@ class System:
     # ========== CLASS CONSTANTS ==========
     # Class variable for instance counting
     _instance_count = 0
-    _instance_warning_threshold = 10
     # currently implemented perturbations
     _VALID_PERTURBATIONS = frozenset(("J2", "drag"))
 
@@ -184,7 +185,7 @@ class System:
         perturbations: tuple = (),
         atmosphere: Optional[AtmoParams] = None,
         distance: Optional[float] = None,
-        compile: bool = True  # Default: compile integrator immediately
+        compile: bool | None = None
     ):
         """
         Initialize System with validation and computed parameters.
@@ -194,6 +195,10 @@ class System:
         ValueError
             If parameters are invalid or incompatible
         """
+        # set defaults
+        if compile is None:
+            compile = config.DEFAULT_COMPILE
+
         # Validate before storing
         self._validate_params(
             base_type, primary_body, secondary_body,
@@ -236,7 +241,7 @@ class System:
         
         # Instance counting
         System._instance_count += 1
-        if System._instance_count > System._instance_warning_threshold:
+        if System._instance_count > config.INSTANCE_WARNING_THRESHOLD:
             warnings.warn(
                 f"Created {System._instance_count} System instances. "
                 f"Each System will cache compiled Heyoka integrators, "
@@ -423,7 +428,7 @@ class System:
 
         # Check for integration failure
         if not np.all(np.isfinite(ta.state)):
-            raise ValueError(
+            validation_error(
                 f"Integration failed: state became invalid during propagation.\n"
                 f"Initial state: {state_array}\n"
                 f"Final time: {ta.time}\n"
@@ -436,7 +441,7 @@ class System:
         
         # Check that continuous output object produces a valid trajectory
         if traj is None:
-            raise ValueError(
+            validation_error(
                 f"Integration produced no continuous output (c_output is None).\n"
                 f"This may indicate a severe integration failure."
             )
@@ -880,13 +885,28 @@ class System:
         # L1: between primaries
         # Series expansion for initial guess
         alpha1 = (mu/3)**(1/3) * (1 - (1/3)*(mu/3)**(1/3) + (1/3)*(mu/3)**(2/3))
+        x_L1_expected = 1 - mu - alpha1
         L1_a, L1_b = -mu + 1e-6, 1 - mu - 1e-6
         x_L1 = opt.brentq(eq_func, L1_a, L1_b, xtol=1e-14)
+
+        # Sanity check against series expansion
+        if abs(x_L1 - x_L1_expected) > 0.1:
+            validation_error(
+                f"L1 location {x_L1} differs significantly from expected "
+                f"value {x_L1_expected}. Possible rootfinding error."
+            )
         
         # L2: beyond secondary
         alpha2 = (mu/3)**(1/3) * (1 + (1/3)*(mu/3)**(1/3) + (1/3)*(mu/3)**(2/3))
+        x_L2_expected = 1 - mu + alpha2
         L2_a, L2_b = 1 - mu + 1e-6, 2.0
         x_L2 = opt.brentq(eq_func, L2_a, L2_b, xtol=1e-14)
+
+        if abs(x_L2 - x_L2_expected) > 0.1:
+            validation_error(
+                f"L2 location {x_L2} differs significantly from expected "
+                f"value {x_L2_expected}. Possible rootfinding error."
+            )
         
         # L3: beyond primary
         L3_a, L3_b = -2.0, -mu - 1e-6
@@ -1058,18 +1078,18 @@ class System:
         omega = self._primary_body.rotation_rate  # rad/s
         
         # Convert atmospheric params to km (package standard)
-        # Density will be kg/kmÂ³, scale height in km
-        rho0_km = rho0 * 1e9  # kg/mÂ³ -> kg/kmÂ³
+        # Density will be kg/km^3, scale height in km
+        rho0_km = rho0 * 1e9  # kg/m^3 -> kg/km^3
         H_km = H / 1000.0  # m -> km
         r0_km = r0 / 1000.0  # m -> km
         
         # Altitude-dependent density (exponential model)
-        # Ï(r) = Ïâ‚€ * exp(-(r - râ‚€)/H)
+        # rho(r) = rho0 * exp(-(r - r0)/H)
         rho = rho0_km * hy.exp(-(r - r0_km) / H_km)
         
         # Velocity relative to rotating atmosphere
-        # v_rel = v_inertial - Ï‰ Ã— r
-        # For Earth rotation about z-axis: Ï‰ Ã— r = [-Ï‰*y, Ï‰*x, 0]
+        # v_rel = v_inertial - omega x r
+        # For Earth rotation about z-axis: omega x r = [-omega*y, omega*x, 0]
         vx_rel = vx + omega * y
         vy_rel = vy - omega * x
         vz_rel = vz
@@ -1078,11 +1098,11 @@ class System:
         v_rel = hy.sqrt(vx_rel**2 + vy_rel**2 + vz_rel**2)
         
         # Satellite parameters (runtime via hy.par[])
-        Cd_A = hy.par[param_start_idx]      # Drag coefficient * area [mÂ²]
+        Cd_A = hy.par[param_start_idx]      # Drag coefficient * area [m^2]
         mass = hy.par[param_start_idx + 1]  # Satellite mass [kg]
         
-        # Convert Cd*A to kmÂ² for unit consistency
-        Cd_A_km = Cd_A / 1e6  # mÂ² -> kmÂ²
+        # Convert Cd*A to km^2 for unit consistency
+        Cd_A_km = Cd_A / 1e6  # m^2 -> km^2
         
         # Drag acceleration: a_drag = -(1/2) * Ï * (Cd*A/m) * v_rel * vâƒ—_rel
         # Factor: -(1/2) * Ï * (Cd*A/m) * v_rel

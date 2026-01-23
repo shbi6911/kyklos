@@ -4,6 +4,7 @@ created with the assistance of Claude Sonnet 4.5 by Anthropic'''
 
 import numpy as np
 from typing import Optional
+from .config import config
 
 class Satellite:
     """
@@ -25,11 +26,6 @@ class Satellite:
     name : str, optional
         Satellite identifier
     """
-    # ========== CLASS CONSTANTS ==========
-    # Tolerance for floating-point equality comparisons
-    _EQUALITY_RTOL = 1e-12  # Relative tolerance (~mm at LEO)
-    _EQUALITY_ATOL = 1e-14  # Absolute tolerance
-    _HASH_DECIMALS = 10     # Rounding for consistent hashing
     
     def __init__(
         self,
@@ -42,7 +38,7 @@ class Satellite:
         # Validate inputs
         if mass <= 0:
             raise ValueError(f"Mass must be positive, got {mass}")
-        if drag_coeff <= 0:
+        if drag_coeff < 0:
             raise ValueError(f"Drag coefficient must be positive, got {drag_coeff}")
         if cross_section <= 0:
             raise ValueError(f"Cross-sectional area must be positive, "
@@ -53,8 +49,8 @@ class Satellite:
             raise ValueError(f"Inertia tensor must be 3x3, got shape {inertia.shape}")
         
         # Check symmetry
-        if not np.allclose(inertia, inertia.T, rtol=self._EQUALITY_RTOL, 
-                                               atol=self._EQUALITY_ATOL):
+        if not np.allclose(inertia, inertia.T, rtol=config.EQUALITY_RTOL, 
+                                               atol=config.EQUALITY_ATOL):
             raise ValueError("Inertia tensor must be symmetric")
         
         # Check positive definiteness (all eigenvalues > 0)
@@ -79,7 +75,7 @@ class Satellite:
         """
         Create Satellite with minimal properties for drag-only propagation.
         
-        Assumes Cd=2.2 and computes cross-section from Cd*A.
+        Assumes Cd = 2.2 and computes cross-section from Cd*A.
         Uses diagonal inertia placeholder (not for attitude dynamics).
         """
         Cd = 2.2  # Typical value
@@ -125,31 +121,30 @@ class Satellite:
     def __repr__(self) -> str:
         name_str = f"'{self.name}'" if self.name else "unnamed"
         return (f"Satellite({name_str}, mass={self.mass:.2f} kg, "
-                f"Cd={self.drag_coeff:.2f}, A={self.cross_section:.2f} m²)")
+                f"Cd={self.drag_coeff:.2f}, A={self.cross_section:.2f} m^2)")
     
     def __eq__(self, other) -> bool:
         if not isinstance(other, Satellite):
             return NotImplemented
         
-        # Use appropriate tolerances for orbital mechanics
         return bool(
             np.isclose(self.mass, other.mass, 
-                       rtol=self._EQUALITY_RTOL, atol=self._EQUALITY_ATOL) and
+                       rtol=config.EQUALITY_RTOL, atol=config.EQUALITY_ATOL) and
             np.isclose(self.drag_coeff, other.drag_coeff, 
-                       rtol=self._EQUALITY_RTOL, atol=self._EQUALITY_ATOL) and
+                       rtol=config.EQUALITY_RTOL, atol=config.EQUALITY_ATOL) and
             np.isclose(self.cross_section, other.cross_section, 
-                       rtol=self._EQUALITY_RTOL, atol=self._EQUALITY_ATOL) and
+                       rtol=config.EQUALITY_RTOL, atol=config.EQUALITY_ATOL) and
             np.allclose(self.inertia, other.inertia, 
-                        rtol=self._EQUALITY_RTOL, atol=self._EQUALITY_ATOL) and
+                        rtol=config.EQUALITY_RTOL, atol=config.EQUALITY_ATOL) and
             self.name == other.name
         )
     
     def __hash__(self) -> int:
         # Round to tolerance for hashing (similar to OrbitalElements)
-        mass_rounded = round(self.mass / self._HASH_DECIMALS)
-        cd_rounded = round(self.drag_coeff / self._HASH_DECIMALS)
-        area_rounded = round(self.cross_section / self._HASH_DECIMALS)
-        inertia_rounded = tuple(round(x/self._HASH_DECIMALS) for x in self.inertia.flat)
+        mass_rounded = round(self.mass / config.HASH_DECIMALS)
+        cd_rounded = round(self.drag_coeff / config.HASH_DECIMALS)
+        area_rounded = round(self.cross_section / config.HASH_DECIMALS)
+        inertia_rounded = tuple(round(x/config.HASH_DECIMALS) for x in self.inertia.flat)
         
         return hash((mass_rounded, cd_rounded, area_rounded, 
                      inertia_rounded, self.name))

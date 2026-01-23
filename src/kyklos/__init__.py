@@ -42,6 +42,7 @@ from .system import System, BodyParams, AtmoParams, SysType
 from .satellite import Satellite, Satellite as Sat
 from .trajectory import Trajectory, Trajectory as Traj
 from .utils import Timer
+from .config import config, temp_config
 
 # Commonly-used celestial bodies
 from .defaults import MERCURY, VENUS, EARTH, MOON, MARS, JUPITER, SATURN, URANUS
@@ -86,6 +87,9 @@ __all__ = [
     "OE",
     "Sat",
     "Traj",
+    # Configuration
+    "config",
+    "temp_config",
     # Default Orbits
     "ISS_ORBIT",
     "GEO_ORBIT",

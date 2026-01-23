@@ -5,7 +5,8 @@ created with the assistance of Claude Sonnet 4.5 by Anthropic'''
 import numpy as np
 from enum import Enum
 from typing import TYPE_CHECKING
-
+from .utils import validation_error
+from .config import config
 if TYPE_CHECKING:
     from .system import SysType
 
@@ -25,12 +26,6 @@ class OrbitalElements:
     OrbitalElements is immutable, extract elements using numpy methods and create a
     new instance to change
     """
-    # ========== CLASS CONSTANTS ==========
-    # Tolerance for floating-point equality comparisons
-    _EQUALITY_RTOL = 1e-12  # Relative tolerance (~mm at LEO)
-    _EQUALITY_ATOL = 1e-14  # Absolute tolerance
-    _HASH_DECIMALS = 10     # Rounding for consistent hashing
-    
     # Default gravitational parameter (Earth)
     DEFAULT_MU = 3.986004415e5  # km³/s²
     
@@ -61,7 +56,7 @@ class OrbitalElements:
         system : System, optional
             System object containing gravitational parameters
         mu : float, optional
-            Gravitational parameter (km³/s²) if system not provided
+            Gravitational parameter (km^3/s^2) if system not provided
             Defaults to Earth's GM if neither system nor mu provided
         **kwargs : dict
             Named parameters for appropriate orbital element set
@@ -135,7 +130,7 @@ class OrbitalElements:
         Create Keplerian orbital elements without validation (for automated processes)
         
         Args:
-            elements: 6-element array [a, e, i, Ω, ω, ν]
+            elements: 6-element array [a, e, i, omega, w, nu]
             system: System object (optional)
             mu: Gravitational parameter (optional, defaults to Earth) 
         
@@ -168,7 +163,7 @@ class OrbitalElements:
         if len(self.elements) != 6:
             raise ValueError("Orbital elements must be 6-element vector")
         if not np.all(np.isfinite(self.elements)):
-            raise ValueError("Elements contain NaN or Inf")
+            raise ValueError("Elements cannot contain NaN or Inf")
         if np.iscomplexobj(self.elements):
             raise ValueError("Elements cannot contain complex values")
         
@@ -192,7 +187,7 @@ class OrbitalElements:
                              f"requires negative semi-major axis, got a={a}")
         # check appropriate ranges
         if e < 0 or e > 10:
-            raise ValueError("Eccentricity out of range")
+            validation_error("Eccentricity out of range")
         if i > np.pi or i < 0:
             raise ValueError("Inclination out of range")
         # check range for Euler angles
@@ -206,9 +201,9 @@ class OrbitalElements:
     def _validate_equinoctial(self):
         p, f, g, h, k, L = self.elements
         if f < -10 or f > 10:
-            raise ValueError("f out of range")
+            validation_error("f out of range")
         if g < -10 or g > 10:
-            raise ValueError("g out of range")
+            validation_error("g out of range")
         if L < 0:
             raise ValueError("L out of range")
     
@@ -217,7 +212,7 @@ class OrbitalElements:
         pos = np.linalg.norm(self.elements[:3])
         vel = np.linalg.norm(self.elements[3:])
         if pos < 10 * vel:
-            raise ValueError(
+            validation_error(
                 f"Position magnitude ({pos:.2f}) should be at least "
                 f"an order of magnitude greater than velocity magnitude ({vel:.2f})"
             )
@@ -227,10 +222,10 @@ class OrbitalElements:
         pos = np.linalg.norm(self.elements[:3])
         vel = np.linalg.norm(self.elements[3:])
         if pos > 10:
-            raise ValueError(
+            validation_error(
                 f"Position magnitude is > 10 nondimensional units, check units.")
         if vel > 5:
-            raise ValueError(
+            validation_error(
                 f"Velocity magnitude is > 5 nondimensional units, check units.")
         
     
@@ -314,7 +309,7 @@ class OrbitalElements:
             The desired orbital element type to convert to
             Can be OEType enum or string ('cart', 'kep', 'equi')
         mu : float, optional
-            Gravitational parameter (km³/s²), default is Earth's GM
+            Gravitational parameter (km^3/s^2), default is Earth's mu
             
         Returns:
         --------
@@ -395,9 +390,11 @@ class OrbitalElements:
         return np.concatenate([R,V])
     
     def _keplerian_to_equinoctial(self):
-        """Convert Keplerian elements to Modified Equinoctial elements"""
+        """Convert Keplerian elements to Modified Equinoctial elements
+        Uses algorithm from Walker et al, Celestial Mechanics, v.36,pp.409
+        Uses the prograde formulation (singularity at i = 180°).
+        """
         a, e, i, omega, w, nu = self.elements
-        # define elements according to Walker et al, Celestial Mechanics, v.36,pp.409
         p = a*(1-e**2)
         f = e*np.cos(omega + w)
         g = e*np.sin(omega + w)
@@ -557,9 +554,9 @@ class OrbitalElements:
         elif self.element_type == OEType.EQUINOCTIAL:
             f, g = self.elements[1], self.elements[2]
             return np.sqrt(f**2 + g**2)
-        elif self.element_type == OEType.CARTESIAN:
+        else:
             raise NotImplementedError(
-                "Computing eccentricity from Cartesian requires conversion")
+                "Computing eccentricity requires conversion")
 
     @property
     def position(self):
@@ -654,7 +651,7 @@ class OrbitalElements:
     
     def mean_motion(self):
         """
-        Calculate mean motion (n = √(μ/a³))
+        Calculate mean motion (n = sqrt(mu/a^3))
         
         Returns
         -------
@@ -718,8 +715,8 @@ class OrbitalElements:
         a list of OrbitalElements or computed values.
         """
         @staticmethod
-        def copy(orbits, target_type):
-            """Convert multiple orbits to target type"""
+        def copy(orbits):
+            """Create a deep copy of a list of orbital elements"""
             return [o.copy() for o in orbits]
         
         @staticmethod
@@ -864,7 +861,7 @@ class OrbitalElements:
             
             # Get column names based on element type
             if elem_type == OEType.KEPLERIAN:
-                columns = ['a', 'e', 'i', 'RAAN', 'omega', 'nu']
+                columns = ['a', 'e', 'i', 'omega', 'w', 'nu']
             elif elem_type == OEType.CARTESIAN:
                 columns = ['x', 'y', 'z', 'vx', 'vy', 'vz']
             elif elem_type == OEType.EQUINOCTIAL:
@@ -939,12 +936,12 @@ class OrbitalElements:
             return False
         return (self.element_type == other.element_type and 
                 np.allclose(self.elements, other.elements,
-                           rtol=self._EQUALITY_RTOL,
-                           atol=self._EQUALITY_ATOL))
+                           rtol=config.EQUALITY_RTOL,
+                           atol=config.EQUALITY_ATOL))
     
     def __hash__(self):
         #Hash with rounding to match equality
-        rounded = tuple(round(x, self._HASH_DECIMALS) for x in self.elements)
+        rounded = tuple(round(x, config.HASH_DECIMALS) for x in self.elements)
         return hash((self.element_type, rounded))
     
     def __sizeof__(self):

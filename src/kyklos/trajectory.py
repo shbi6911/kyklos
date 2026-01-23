@@ -10,6 +10,7 @@ import plotly.graph_objects as go
 from .orbital_elements import OrbitalElements, OEType
 if TYPE_CHECKING:
     from .system import System
+from .config import config
 
 class Trajectory:
     """
@@ -329,22 +330,33 @@ class Trajectory:
             OrbitalElements at time t
         """
         return self.state_at(t, element_type)
+    
     # ========== PLOTTING ==========
     # these methods are temporary until a Visualization module is established
-    def plot_3d(self, n_points: int = 1000, show_body: bool = True, 
-            body_color: str = 'lightblue', traj_color: str = 'red',
-            body_opacity: float = 0.6, 
-            proximity_threshold: float = 10.0) -> go.Figure:
+    def plot_3d(self, n_points: int | None = None, show_body: bool = True, 
+            body_color: str | None = None, traj_color: str | None = None,
+            body_opacity: float | None = None, 
+            proximity_threshold: float | None = None) -> go.Figure:
         """
         Create 3D plot of trajectory with optional central body.
         
         Parameters:
-            n_points: Number of points to sample trajectory (default: 1000)
+            n_points : int, optional
+                Number of points to sample trajectory.
+                If None, uses config.DEFAULT_PLOT_POINTS (default: None)
             show_body: Whether to show central body sphere (default: True)
-            body_color: Color of central body (default: 'lightblue')
-            traj_color: Color of trajectory line (default: 'red')
-            body_opacity: Opacity of central body (default: 0.6)
-            proximity_threshold: Show body if trajectory within this many radii (default: 10)
+            body_color : str, optional
+                Color of central body.
+                If None, uses config.DEFAULT_BODY_COLOR (default: None)
+            traj_color: str, optional
+                Color of trajectory line.
+                If None, uses config.DEFAULT_TRAJ_COLOR (default: None)
+            body_opacity: float, optional
+                Opacity of central body.
+                If None, uses config.DEFAULT_BODY_OPACITY (default: None)
+            proximity_threshold: float, optional
+                Show body if trajectory within this many radii.
+                If None, uses config.PROXIMITY_THRESHOLD
             
         Returns:
             Plotly Figure object
@@ -352,6 +364,18 @@ class Trajectory:
         from .system import SysType
         import plotly.io as pio
         pio.renderers.default = 'browser'
+
+        # Apply config defaults where user didn't specify
+        if n_points is None:
+            n_points = config.DEFAULT_PLOT_POINTS
+        if body_color is None:
+            body_color = config.DEFAULT_BODY_COLOR
+        if traj_color is None:
+            traj_color = config.DEFAULT_TRAJ_COLOR
+        if body_opacity is None:
+            body_opacity = config.DEFAULT_BODY_OPACITY
+        if proximity_threshold is None:
+            proximity_threshold = config.PROXIMITY_THRESHOLD
         
         # Sample trajectory
         states = self.sample_raw(n_points=n_points)
@@ -482,21 +506,31 @@ class Trajectory:
 
 
     def add_to_plot(self, fig: go.Figure, 
-                    n_points: int = 1000, color: str = 'blue',
+                    n_points: int | None = None, color: str | None = None,
                     name: Optional[str] = None, **kwargs) -> go.Figure:
         """
         Add this trajectory to an existing Plotly figure.
         
         Parameters:
             fig: Existing Plotly Figure object
-            n_points: Number of points to sample trajectory (default: 1000)
-            color: Color of trajectory line (default: 'blue')
+            n_points : int, optional
+                Number of points to sample trajectory.
+                If None, uses config.DEFAULT_PLOT_POINTS (default: None)
+            color: str, optional
+                Color of trajectory line.
+                If None, uses config.DEFAULT_TRAJ_COLOR_ADD (default: None)
             name: Legend name for this trajectory (default: 'Trajectory N')
             **kwargs: Additional arguments passed to Scatter3d
             
         Returns:
             Updated Plotly Figure object (same object, modified in place)
         """
+        # Apply config defaults where user didn't specify
+        if n_points is None:
+            n_points = config.DEFAULT_PLOT_POINTS
+        if color is None:
+            color = config.DEFAULT_TRAJ_COLOR
+
         # Sample trajectory
         states = self.sample_raw(n_points=n_points)
         positions = np.array(states)[:, 0:3]  # Extract position components
