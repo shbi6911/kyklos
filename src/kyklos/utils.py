@@ -4,6 +4,7 @@ Utility functions and classes for the Kyklos package.
 
 from time import perf_counter
 import warnings
+from typing import Type
 from .config import config
 
 class Timer:
@@ -44,22 +45,25 @@ class Timer:
         if self.verbose:
             print(f"{self.name}: {self.elapsed:.6f} s")
     
-def validation_error(message: str):
+def validation_error(message: str, error_class: Type[Exception] = ValueError):
     """
     Raise error or warn based on config.STRICT_VALIDATION.
     
     This function provides consistent validation behavior across the package.
-    When STRICT_VALIDATION is True (default), raises ValueError. When False,
-    issues a UserWarning instead.
+    When STRICT_VALIDATION is True (default), raises the specified exception.
+    When False, issues a UserWarning instead.
     
     Parameters
     ----------
     message : str
         Validation error message
+    error_class : Type[Exception], optional
+        Exception class to raise if STRICT_VALIDATION is True.
+        Default: ValueError
     
     Raises
     ------
-    ValueError
+    Exception (of type error_class)
         If config.STRICT_VALIDATION is True
     
     Warns
@@ -73,11 +77,13 @@ def validation_error(message: str):
     >>> from kyklos import config
     >>> config.STRICT_VALIDATION = True
     >>> validation_error("Invalid value")  # Raises ValueError
+    >>> validation_error("Computation failed", RuntimeError)  # Raises RuntimeError
     
     >>> config.STRICT_VALIDATION = False
     >>> validation_error("Invalid value")  # Issues warning
+    >>> validation_error("Computation failed", RuntimeError)  # Also issues warning
     """
     if config.STRICT_VALIDATION:
-        raise ValueError(message)
+        raise error_class(message)
     else:
-        warnings.warn(message, UserWarning)
+        warnings.warn(message, UserWarning, stacklevel=2)
