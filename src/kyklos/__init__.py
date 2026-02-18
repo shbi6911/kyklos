@@ -53,6 +53,7 @@ from .defaults import EARTH_STD_ATMO
 
 # Some commonly-used Earth orbits
 from .defaults import ISS_ORBIT, GEO_ORBIT, LEO_ORBIT, SSO_ORBIT, MOLNIYA_ORBIT
+from .defaults import LYAPUNOV_ORBIT, GATEWAY_ORBIT
 
 # Default systems (factory functions)
 from .defaults import (
@@ -96,6 +97,8 @@ __all__ = [
     "LEO_ORBIT",
     "SSO_ORBIT",
     "MOLNIYA_ORBIT",
+    "LYAPUNOV_ORBIT",
+    "GATEWAY_ORBIT",
     # Default systems
     "earth_2body",
     "earth_j2",

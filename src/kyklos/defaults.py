@@ -144,6 +144,14 @@ MOLNIYA_ORBIT = OrbitalElements(
     omega=np.radians(100), w=np.radians(270), nu=0, mu=EARTH.mu
 )
 
+LYAPUNOV_ORBIT = OrbitalElements([0.787904556873149,0,0,0,0.419844640800615,0],
+                                 'cr3bp',mu=0.012150581477176512
+)
+
+GATEWAY_ORBIT = OrbitalElements([1.02199359562483,0,-0.182077530534944,
+                                 0,-0.103195530587244,0],'cr3bp',mu=0.012150581477176512
+)
+
 def earth_2body(compile=True):
     """
     Create a point-mass 2-body Earth system.
