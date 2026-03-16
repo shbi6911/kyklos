@@ -45,7 +45,11 @@ class Timer:
         if self.verbose:
             print(f"{self.name}: {self.elapsed:.6f} s")
     
-def validation_error(message: str, error_class: Type[Exception] = ValueError):
+def validation_error(
+    message: str,
+    error_class: Type[Exception] = ValueError,
+    stacklevel: int = 2          # callers can override when called from deeper frames
+):
     """
     Raise error or warn based on config.STRICT_VALIDATION.
     
@@ -60,6 +64,9 @@ def validation_error(message: str, error_class: Type[Exception] = ValueError):
     error_class : Type[Exception], optional
         Exception class to raise if STRICT_VALIDATION is True.
         Default: ValueError
+    stacklevel : int = 2, optional
+        How far up the function call stack to point to when raising a warning
+        Default: stacklevel=2
     
     Raises
     ------
@@ -86,4 +93,4 @@ def validation_error(message: str, error_class: Type[Exception] = ValueError):
     if config.STRICT_VALIDATION:
         raise error_class(message)
     else:
-        warnings.warn(message, UserWarning, stacklevel=2)
+        warnings.warn(message, UserWarning, stacklevel=stacklevel)

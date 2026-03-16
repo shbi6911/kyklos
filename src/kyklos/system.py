@@ -45,17 +45,52 @@ class BodyParams:
     mu: float
     radius: float
     J2: Optional[float] = None
+    J3: Optional[float] = None
     rotation_rate: Optional[float] = None
     name: Optional[str] = None
     
     def __post_init__(self):
-        #Validate parameters
+        # --- Non-negotiable physical requirements ---
         if self.mu <= 0:
-            raise ValueError(f"Gravitational parameter must be positive, got {self.mu}")
+            raise ValueError(
+                f"Gravitational parameter must be positive, got {self.mu}"
+            )
         if self.radius <= 0:
-            raise ValueError(f"Radius must be positive, got {self.radius}")
+            raise ValueError(
+                f"Radius must be positive, got {self.radius}"
+            )
+
+        # --- J2 sanity check ---
         if self.J2 is not None and abs(self.J2) > 1:
-            validation_error(f"J2 coefficient seems unrealistic: {self.J2}")
+            validation_error(
+                f"J2 coefficient seems unrealistic: {self.J2}. "
+                "Expected |J2| << 1 for physical bodies."
+            )
+
+        # --- J3 dependency: API contract, not physical sanity ---
+        if self.J3 is not None and self.J2 is None:
+            raise ValueError(
+                "J2 must be specified when J3 is used. "
+                "Set J2=0.0 explicitly if you intend to model J3 without J2."
+            )
+
+        # --- J3 sanity checks (only reached if J2 is also set) ---
+        if self.J3 is not None:
+            # Magnitude sanity: same threshold as J2.
+            if abs(self.J3) > 1:
+                validation_error(
+                    f"J3 coefficient seems unrealistic: {self.J3}. "
+                    "Expected |J3| << 1 for physical bodies."
+                )
+            assert self.J2 is not None  # guaranteed by the dependency check above
+            # Hierarchy sanity: J3 should be smaller in magnitude than J2.
+            if abs(self.J3) > abs(self.J2):
+                validation_error(
+                    f"|J3| ({abs(self.J3):.3e}) exceeds |J2| ({abs(self.J2):.3e}). "
+                    "Physical gravity models have J2 dominant. "
+                    "If J2=0.0 was set intentionally, consider whether this "
+                    "model represents your intended gravity field."
+                )
 
 @dataclass(frozen=True)
 class AtmoParams:
@@ -174,7 +209,7 @@ class System:
     # Class variable for instance counting
     _instance_count = 0
     # currently implemented perturbations
-    _VALID_PERTURBATIONS = frozenset(("J2", "drag"))
+    _VALID_PERTURBATIONS = frozenset(("J2", "J3", "drag"))
 
     # ========== CONSTRUCTION ==========
     def __init__(
@@ -318,6 +353,12 @@ class System:
             if primary_body.J2 is None:
                 raise ValueError(
                     "J2 perturbation requested but primary_body.J2 is None"
+                )
+        
+        if "J3" in perturbations:
+            if primary_body.J3 is None:
+                raise ValueError(
+                    "J3 perturbation requested but primary_body.J3 is None"
                 )
         
         if "drag" in perturbations:
@@ -653,29 +694,33 @@ class System:
     def summary(self):
         """Print detailed summary of system parameters."""
         print(f"System Type: {self._base_type}")
-        print(f"Primary Body: Î¼ = {self._primary_body.mu:.6e} kmÂ³/sÂ², "
-              f"R = {self._primary_body.radius:.3f} km")
+        print(f"Primary Body: mu = {self._primary_body.mu:.6e} km^3/s^2, "
+            f"R = {self._primary_body.radius:.3f} km")
         
         if self._base_type == SysType.CR3BP:
-            print(f"Secondary Body: Î¼ = {self._secondary_body.mu:.6e} kmÂ³/sÂ², "
-                  f"R = {self._secondary_body.radius:.3f} km")
+            print(f"Secondary Body: mu = {self._secondary_body.mu:.6e} km^3/s^2, "
+                f"R = {self._secondary_body.radius:.3f} km")
             print(f"Distance: {self._distance:.3f} km")
             print(f"\nNondimensional Parameters:")
             print(f"  L* = {self._L_star:.6e} km")
             print(f"  T* = {self._T_star:.6e} s")
-            print(f"  Î¼  = {self._mass_ratio:.10f}")
+            print(f"  mu = {self._mass_ratio:.10f}")
             print(f"  n  = {self._n_mean:.6e} rad/s")
         
         if self._perturbations:
             print(f"\nPerturbations: {', '.join(self._perturbations)}")
             
             if "J2" in self._perturbations:
-                print(f"  Jâ‚‚ = {self._primary_body.J2:.6e}")
+                print(f"  J2 = {self._primary_body.J2:.6e}")
+            
+            if "J3" in self._perturbations:
+                print(f"  J3 = {self._primary_body.J3:.6e}")
             
             if "drag" in self._perturbations:
-                print(f"  Atmosphere: Ïâ‚€ = {self._atmosphere.rho0} kg/mÂ³, "
-                      f"H = {self._atmosphere.H} m")
-                print(f"  Rotation: Ï‰ = {self._primary_body.rotation_rate:.6e} rad/s")
+                print(f"  Atmosphere: rho0 = {self._atmosphere.rho0} kg/m^3, "
+                    f"H = {self._atmosphere.H} m")
+                print(f"  Rotation: omega = "
+                      f"{self._primary_body.rotation_rate:.6e} rad/s")
         else:
             print("\nPerturbations: None (point mass)")
     
@@ -1001,6 +1046,14 @@ class System:
             a_total_y = a_total_y + a_J2_y
             a_total_z = a_total_z + a_J2_z
         
+        if "J3" in self._perturbations:
+            a_J3_x, a_J3_y, a_J3_z = self._build_J3_perturbation(
+                x, y, z, r, mu
+            )
+            a_total_x = a_total_x + a_J3_x
+            a_total_y = a_total_y + a_J3_y
+            a_total_z = a_total_z + a_J3_z
+        
         if "drag" in self._perturbations:
             a_drag_x, a_drag_y, a_drag_z, drag_params = self._build_drag_perturbation(
                 x, y, z, vx, vy, vz, r, next_param_idx
@@ -1048,6 +1101,28 @@ class System:
         a_J2_z = factor * z * (5.0 * z2_r2 - 3.0)
         
         return a_J2_x, a_J2_y, a_J2_z
+    
+    def _build_J3_perturbation(self, x, y, z, r, mu):
+        """Build J3 perturbation acceleration terms."""
+        J3 = self._primary_body.J3
+        R = self._primary_body.radius
+        assert J3 is not None # validated in _compute_params
+
+        z2_r2 = z**2 / r**2
+
+        # Common factor for x and y components
+        # a_J3_x = (5/2) * mu * J3 * R^3 * x * z / r^7 * (7*z^2/r^2 - 3)
+        factor_xy = 2.5 * J3 * mu * R**3 * z / r**7
+
+        a_J3_x = factor_xy * x * (7.0 * z2_r2 - 3.0)
+        a_J3_y = factor_xy * y * (7.0 * z2_r2 - 3.0)
+        
+        # z component uses a separate factoring
+        # a_J3_z =  (mu*J3*R^3/r^5) * (1.5 - 15*z2_r2 + 17.5*z2_r2^2)
+        factor_z = mu * J3 * R**3 / r**5
+        a_J3_z = factor_z * (1.5 - 15.0 * z2_r2 + 17.5 * z2_r2**2)
+        
+        return a_J3_x, a_J3_y, a_J3_z
 
     def _build_drag_perturbation(self, x, y, z, vx, vy, vz, r, param_start_idx):
         """
@@ -1104,8 +1179,8 @@ class System:
         # Convert Cd*A to km^2 for unit consistency
         Cd_A_km = Cd_A / 1e6  # m^2 -> km^2
         
-        # Drag acceleration: a_drag = -(1/2) * Ï * (Cd*A/m) * v_rel * vâƒ—_rel
-        # Factor: -(1/2) * Ï * (Cd*A/m) * v_rel
+        # Drag acceleration: a_drag = -(1/2) * rho * (Cd*A/m) * v_rel * v_rel_vec
+        # Factor: -(1/2) * rho * (Cd*A/m) * v_rel
         drag_factor = -0.5 * rho * Cd_A_km / mass * v_rel
         
         a_drag_x = drag_factor * vx_rel
@@ -1119,7 +1194,7 @@ class System:
                 ('mass', param_start_idx + 1)
             ],
             'description': {
-                'Cd_A': 'Drag coefficient times reference area [mÂ²]',
+                'Cd_A': 'Drag coefficient times reference area [m^2]',
                 'mass': 'Satellite mass [kg]'
             }
         }
