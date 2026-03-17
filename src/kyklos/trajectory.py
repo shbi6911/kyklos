@@ -4,6 +4,7 @@ created with the assistance of Claude Sonnet 4.5 by Anthropic'''
 
 import numpy as np
 import pandas as pd
+import warnings
 from typing import Union, Optional, Dict, List, Tuple, Any, TYPE_CHECKING
 import heyoka as hy
 import plotly.graph_objects as go
@@ -23,11 +24,12 @@ class Trajectory:
         tf: End time
     """
     # ========== CONSTRUCTION ==========
-    def __init__(self, system: "System", output, t0: float, tf: float):
-        self._system = system  # Immutable reference
-        self._output = output  # Must have dense output enabled
+    def __init__(self, system, output, t0, tf, stm_order=None):
+        self._system = system
+        self._output = output
         self._t0 = t0
         self._tf = tf
+        self._stm_order = stm_order  # None or 1 or 2
         
     
     # ========== PROPERTY ACCESS ==========
@@ -48,7 +50,7 @@ class Trajectory:
         """Trajectory duration."""
         return self.tf - self.t0
     
-    # ========== UTILITY METHODS ==========
+    # ========== SAMPLING METHODS ==========
     def state_at(self, t: float, 
                  element_type: Union[OEType, str, None] = None) -> OrbitalElements:
         """
@@ -73,7 +75,7 @@ class Trajectory:
             # Parse string to enum if needed
             element_type = OrbitalElements._parse_element_type(element_type)
         
-        return OrbitalElements(state_array, element_type, 
+        return OrbitalElements(state_array[:6], element_type, 
                             validate=False, system=self.system)
     
     def evaluate(self, 
@@ -109,7 +111,8 @@ class Trajectory:
         # Handle array input
         times = np.asarray(times, dtype=float)
         states_array = self._output(times)  # One vectorized call to Heyoka
-        return [OrbitalElements(row, element_type, validate=False, system=self.system) 
+        return [OrbitalElements(row[:6], element_type, validate=False, 
+                                system=self.system) 
                 for row in states_array]
     
     def sample(self, element_type: Union[OEType, str, None] = None, 
@@ -141,13 +144,14 @@ class Trajectory:
             element_type = OrbitalElements._parse_element_type(element_type)
         
         states_array = self._output(times)  # One vectorized call to Heyoka
-        return [OrbitalElements(row, element_type, validate=False, system=self.system) 
+        return [OrbitalElements(row[:6], element_type, validate=False, 
+                                system=self.system) 
                 for row in states_array]
     
     def state_at_raw(self, t: float) -> np.ndarray:
         """Get raw state array at time t """
         self._validate_time(t)
-        return self._output(float(t))  # Heyoka needs float input
+        return self._output(float(t))[:6]  # Heyoka needs float input
     
     def evaluate_raw(self, times: Union[float, np.ndarray, list]) -> np.ndarray:
         """
@@ -166,7 +170,7 @@ class Trajectory:
         
         # Handle array input
         times = np.asarray(times, dtype=float)
-        return self._output(times)
+        return self._output(times)[:, :6]
     
     def sample_raw(self, n_points: int = 100) -> np.ndarray:
         """
@@ -182,8 +186,181 @@ class Trajectory:
             raise ValueError("n_points must be at least 2, use .state_at_raw()")
         
         times = np.linspace(self.t0, self.tf, n_points)
+        return self._output(times)[:, :6]
+    
+    def get_stm(self, t: float) -> np.ndarray:
+        """
+        Get State Transition Matrix at time t.
+        
+        Parameters
+        ----------
+        t : float
+            Time at which to evaluate STM
+            
+        Returns
+        -------
+        np.ndarray
+            6x6 State Transition Matrix Phi(t, t0)
+            
+        Raises
+        ------
+        ValueError
+            If trajectory was not propagated with STM
+        """
+        if self._stm_order is None:
+            raise ValueError(
+                "Trajectory not propagated with STM. "
+                "Use with_stm=True in System.propagate()"
+            )
+        
+        self._validate_time(t)
+        
+        # Query continuous output for full state
+        full_state = self._output(float(t))
+        
+        # Extract STM (indices 6:42 for 6-state system)
+        stm_flat = full_state[6:42]
+        
+        # Reshape to 6x6 matrix
+        return stm_flat.reshape(6, 6)
+    
+    def state_full(self, t: float) -> np.ndarray:
+        """Get raw state array at time t, including STM if present"""
+        if self._stm_order is None:
+            warnings.warn(
+            "Trajectory does not have STM enabled. "
+            "Use state_at_raw() instead for non-STM trajectories.",
+            UserWarning,
+            stacklevel=2
+        )
+        self._validate_time(t)
+        return self._output(float(t))  # Heyoka needs float input
+    
+    def evaluate_stm(self, times: Union[float, np.ndarray, list]) -> np.ndarray:
+        """
+        Evaluate STM at one or more times.
+        
+        Parameters
+        ----------
+        times : float or array-like
+            Single time or array of times
+            
+        Returns
+        -------
+        np.ndarray
+            STM array of shape (6, 6) if times is scalar,
+            Array of shape (n_times, 6, 6) if times is array-like
+            
+        Raises
+        ------
+        ValueError
+            If trajectory was not propagated with STM
+        """
+        if self._stm_order is None:
+            raise ValueError(
+                "Trajectory not propagated with STM. "
+                "Use with_stm=True in System.propagate()"
+            )
+        
+        # Handle scalar input
+        if isinstance(times, (int, float)):
+            return self.get_stm(times)
+        
+        # Handle array input
+        times = np.asarray(times, dtype=float)
+        full_states = self._output(times)  # Shape: (n, 42)
+        stm_flat = full_states[:, 6:42]     # Shape: (n, 36)
+        
+        # Reshape to (n, 6, 6)
+        n_times = len(times)
+        return stm_flat.reshape(n_times, 6, 6)
+    
+    def evaluate_full(self, times: Union[float, np.ndarray, list]) -> np.ndarray:
+        """
+        Evaluate at one or more times, returning raw arrays, including STM if present.
+        
+        Parameters:
+            times: Single time or array of times
+            
+        Returns:
+            State array of shape (6,) if times is scalar,
+            Array of shape (n_times, 6) if times is array-like
+        """
+        if self._stm_order is None:
+            warnings.warn(
+            "Trajectory does not have STM enabled. "
+            "Use evaluate_raw() instead for non-STM trajectories.",
+            UserWarning,
+            stacklevel=2
+        )
+        # Handle scalar input
+        if isinstance(times, (int, float)):
+            return self.state_full(times)
+        
+        # Handle array input
+        times = np.asarray(times, dtype=float)
         return self._output(times)
     
+    def sample_stm(self, n_points: int = 100) -> np.ndarray:
+        """
+        Uniformly sample STM in time.
+        
+        Parameters
+        ----------
+        n_points : int, optional
+            Number of points to sample (default: 100)
+            
+        Returns
+        -------
+        np.ndarray
+            Array of shape (n_points, 6, 6) with uniformly spaced STMs
+            
+        Raises
+        ------
+        ValueError
+            If trajectory was not propagated with STM or if n_points < 2
+        """
+        if self._stm_order is None:
+            raise ValueError(
+                "Trajectory not propagated with STM. "
+                "Use with_stm=True in System.propagate()"
+            )
+        
+        if n_points < 2:
+            raise ValueError("n_points must be at least 2, use .get_stm()")
+        
+        times = np.linspace(self.t0, self.tf, n_points)
+        full_states = self._output(times)  # Shape: (n, 42)
+        stm_flat = full_states[:, 6:42]     # Shape: (n, 36)
+        
+        # Reshape to (n, 6, 6)
+        return stm_flat.reshape(n_points, 6, 6)
+    
+    def sample_full(self, n_points: int = 100) -> np.ndarray:
+        """
+        Uniformly sample trajectory in time, returning raw arrays, including STM.
+        
+        Parameters:
+            n_points: Number of points to sample (default: 100)
+            
+        Returns:
+            Array of shape (n_points, 6) with uniformly spaced states
+        """
+        if self._stm_order is None:
+            warnings.warn(
+            "Trajectory does not have STM enabled. "
+            "Use evaluate_raw() instead for non-STM trajectories.",
+            UserWarning,
+            stacklevel=2
+        )
+        
+        if n_points < 2:
+            raise ValueError("n_points must be at least 2, use .state_at_raw()")
+        
+        times = np.linspace(self.t0, self.tf, n_points)
+        return self._output(times)
+    
+    # ========== UTILITY METHODS ==========
     def _validate_time(self, t: float):
         """Validate that time is within trajectory bounds."""
         t_min = min(self.t0, self.tf)
@@ -262,13 +439,22 @@ class Trajectory:
         # Get the final state of current trajectory
         final_state = self.state_at(self.tf)
 
+        # Preserve STM settings from original trajectory
+        with_stm = self._stm_order is not None
+        stm_order = self._stm_order if with_stm else 1
+
         # Extract satellite from kwargs if provided
         satellite = propagation_kwargs.get('satellite', None)
         
         # Continue propagation from final state
-        return self._system.propagate(final_state, self.tf, 
-                                      new_tf, satellite=satellite
-    )
+        return self._system.propagate(
+            final_state, 
+            self.tf, 
+            new_tf,
+            with_stm=with_stm,
+            stm_order=stm_order,
+            satellite=satellite
+        )
     
     def slice(self, t_start: float, t_end: float, **propagation_kwargs) -> 'Trajectory':
         """
@@ -299,14 +485,25 @@ class Trajectory:
         # Ensure proper type for input times
         t_start = float(t_start)
         t_end = float(t_end)
+
+        # Preserve STM settings from original trajectory
+        with_stm = self._stm_order is not None
+        stm_order = self._stm_order if with_stm else 1
+
         # Extract satellite_params from kwargs if provided
         satellite = propagation_kwargs.get('satellite', None)
+        
         # set initial state 
         new_initial_state = self.state_at(t_start)
         # Create new Trajectory with same integrator but different time bounds
-        return self._system.propagate(new_initial_state,t_start, t_end, 
-                                     satellite=satellite
-    )
+        return self._system.propagate(
+            new_initial_state, 
+            t_start, 
+            t_end,
+            with_stm=with_stm,
+            stm_order=stm_order,
+            satellite=satellite
+        )
 
     # ========== SPECIAL METHODS ==========
     def __repr__(self):

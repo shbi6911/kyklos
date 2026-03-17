@@ -32,12 +32,15 @@ class BodyParams:
     Attributes
     ----------
     mu : float
-        Gravitational parameter [kmÂ³/sÂ²]
+        Gravitational parameter [km^3/s^2]
     radius : float
         Equatorial radius [km]
     J2 : float, optional
         J2 zonal harmonic coefficient [dimensionless]
         Required if J2 perturbations are enabled
+    J3 : float, optional
+        J3 zonal harmonic coefficient [dimensionless]
+        Required if J3 perturbations are enabled
     rotation_rate : float, optional
         Angular rotation rate [rad/s]
         Required if atmospheric drag is enabled
@@ -266,6 +269,9 @@ class System:
         self._cached_eom = None
         self._cached_integrator = None
         self._param_info = None
+        # account for variational ODE integrator
+        self._cached_var_integrator = None
+        self._var_order = None
 
         # Build symbolic EOM
         self._cached_eom, self._param_info = self._build_eom()
@@ -370,13 +376,357 @@ class System:
                 raise ValueError(
                     "drag perturbation requires primary_body.rotation_rate"
                 )
+            
+    # ========== COMPILATION METHODS ==========
+    def _build_eom(self):
+        """
+        Build symbolic Heyoka equations of motion for this system.
+        
+        Creates symbolic expressions for the equations of motion based on
+        the system's base dynamics (2-body or CR3BP) and any perturbations
+        (J2, drag).
+        
+        Returns
+        -------
+        sys : list of (var, rhs) tuples
+            Heyoka ODE system definition ready for taylor_adaptive()
+        param_info : dict
+            Information about runtime parameters:
+            - 'param_map': list of (name, index) tuples for hy.par[] array
+            - 'description': dict with human-readable parameter descriptions
+        
+        Notes
+        -----
+        - System parameters (mu, J2, atmospheric params) are hardcoded into
+        the symbolic expressions since they're part of the immutable System
+        - Satellite parameters (Cd*A, mass) use hy.par[] for runtime binding,
+        allowing one System to propagate multiple satellites
+        - State vector order: [x, y, z, vx, vy, vz] (km, km/s)
+        """
+        # Create symbolic state variables
+        x, y, z, vx, vy, vz = hy.make_vars("x", "y", "z", "vx", "vy", "vz")
+        
+        # Build equations based on system type
+        if self._base_type == SysType.TWO_BODY:
+            sys, param_info = self._build_2body_eom(x, y, z, vx, vy, vz)
+        elif self._base_type == SysType.CR3BP:
+            sys, param_info = self._build_cr3bp_eom(x, y, z, vx, vy, vz)
+        else:
+            raise NotImplementedError(
+                f"build_eom() not yet implemented for {self._base_type}"
+            )
+        
+        return sys, param_info
+
+    def _build_2body_eom(self, x, y, z, vx, vy, vz):
+        """Build 2-body equations with optional perturbations."""
+        # Position magnitude
+        r = hy.sqrt(x**2 + y**2 + z**2)
+        # Gravitational parameter (hardcoded from System)
+        mu = self._primary_body.mu
+        
+        # Base gravitational acceleration
+        a_grav_x = -mu * x / r**3
+        a_grav_y = -mu * y / r**3
+        a_grav_z = -mu * z / r**3
+        
+        # Start with gravitational acceleration then add perturbations
+        a_total_x = a_grav_x
+        a_total_y = a_grav_y
+        a_total_z = a_grav_z
+        
+        # Parameter tracking
+        param_map = []
+        param_desc = {}
+        next_param_idx = 0
+        
+        # Add perturbations
+        if "J2" in self._perturbations:
+            a_J2_x, a_J2_y, a_J2_z = self._build_J2_perturbation(
+                x, y, z, r, mu
+            )
+            a_total_x = a_total_x + a_J2_x
+            a_total_y = a_total_y + a_J2_y
+            a_total_z = a_total_z + a_J2_z
+        
+        if "J3" in self._perturbations:
+            a_J3_x, a_J3_y, a_J3_z = self._build_J3_perturbation(
+                x, y, z, r, mu
+            )
+            a_total_x = a_total_x + a_J3_x
+            a_total_y = a_total_y + a_J3_y
+            a_total_z = a_total_z + a_J3_z
+        
+        if "drag" in self._perturbations:
+            a_drag_x, a_drag_y, a_drag_z, drag_params = self._build_drag_perturbation(
+                x, y, z, vx, vy, vz, r, next_param_idx
+            )
+            a_total_x = a_total_x + a_drag_x
+            a_total_y = a_total_y + a_drag_y
+            a_total_z = a_total_z + a_drag_z
+            
+            # Add drag parameters to map
+            param_map.extend(drag_params['param_map'])
+            param_desc.update(drag_params['description'])
+            next_param_idx += len(drag_params['param_map'])
+        
+        # Assemble system
+        sys = [
+            (x, vx),
+            (y, vy),
+            (z, vz),
+            (vx, a_total_x),
+            (vy, a_total_y),
+            (vz, a_total_z)
+        ]
+        
+        param_info = {
+            'param_map': param_map,
+            'description': param_desc
+        }
+        
+        return sys, param_info
+
+    def _build_J2_perturbation(self, x, y, z, r, mu):
+        """Build J2 perturbation acceleration terms."""
+        J2 = self._primary_body.J2
+        R = self._primary_body.radius
+        assert J2 is not None # validated in _compute_params
+        # J2 perturbation (zonal harmonic)
+        # Common factor: (3/2) * J2 * mu * R^2 / r^5
+        factor = 1.5 * J2 * mu * R**2 / r**5
+        # Acceleration components
+        # a_J2 = factor * [x(5z^2/r^2 - 1), y(5z^2/r^2 - 1), z(5z^2/r^2 - 3)]
+        z2_r2 = z**2 / r**2
+        
+        a_J2_x = factor * x * (5.0 * z2_r2 - 1.0)
+        a_J2_y = factor * y * (5.0 * z2_r2 - 1.0)
+        a_J2_z = factor * z * (5.0 * z2_r2 - 3.0)
+        
+        return a_J2_x, a_J2_y, a_J2_z
+    
+    def _build_J3_perturbation(self, x, y, z, r, mu):
+        """Build J3 perturbation acceleration terms."""
+        J3 = self._primary_body.J3
+        R = self._primary_body.radius
+        assert J3 is not None # validated in _compute_params
+
+        z2_r2 = z**2 / r**2
+
+        # Common factor for x and y components
+        # a_J3_x = (5/2) * mu * J3 * R^3 * x * z / r^7 * (7*z^2/r^2 - 3)
+        factor_xy = 2.5 * J3 * mu * R**3 * z / r**7
+
+        a_J3_x = factor_xy * x * (7.0 * z2_r2 - 3.0)
+        a_J3_y = factor_xy * y * (7.0 * z2_r2 - 3.0)
+        
+        # z component uses a separate factoring
+        # a_J3_z =  (mu*J3*R^3/r^5) * (1.5 - 15*z2_r2 + 17.5*z2_r2^2)
+        factor_z = mu * J3 * R**3 / r**5
+        a_J3_z = factor_z * (1.5 - 15.0 * z2_r2 + 17.5 * z2_r2**2)
+        
+        return a_J3_x, a_J3_y, a_J3_z
+
+    def _build_drag_perturbation(self, x, y, z, vx, vy, vz, r, param_start_idx):
+        """
+        Build atmospheric drag perturbation.
+
+        Uses exponential atmosphere model and accounts for Earth rotation.
+        Drag parameters (Cd*A, mass) are extracted from Satellite object
+        during propagation and passed via hy.par[] array.
+
+        Parameters
+        ----------
+        param_start_idx : int
+            Starting index for hy.par[] array
+
+        Returns
+        -------
+        a_drag_x, a_drag_y, a_drag_z : symbolic expressions
+            Drag acceleration components
+        param_info : dict
+            Parameter mapping information with keys:
+            - 'param_map': [('Cd_A', idx), ('mass', idx)]
+            - 'description': Human-readable parameter descriptions
+        """
+        # Atmospheric parameters (hardcoded from System)
+        rho0 = self._atmosphere.rho0  # kg/m^3
+        H = self._atmosphere.H  # m
+        r0 = self._atmosphere.r0  # m
+        omega = self._primary_body.rotation_rate  # rad/s
+        
+        # Convert atmospheric params to km (package standard)
+        # Density will be kg/km^3, scale height in km
+        rho0_km = rho0 * 1e9  # kg/m^3 -> kg/km^3
+        H_km = H / 1000.0  # m -> km
+        r0_km = r0 / 1000.0  # m -> km
+        
+        # Altitude-dependent density (exponential model)
+        # rho(r) = rho0 * exp(-(r - r0)/H)
+        rho = rho0_km * hy.exp(-(r - r0_km) / H_km)
+        
+        # Velocity relative to rotating atmosphere
+        # v_rel = v_inertial - omega x r
+        # For Earth rotation about z-axis: omega x r = [-omega*y, omega*x, 0]
+        vx_rel = vx + omega * y
+        vy_rel = vy - omega * x
+        vz_rel = vz
+        
+        # Relative velocity magnitude
+        v_rel = hy.sqrt(vx_rel**2 + vy_rel**2 + vz_rel**2)
+        
+        # Satellite parameters (runtime via hy.par[])
+        Cd_A = hy.par[param_start_idx]      # Drag coefficient * area [m^2]
+        mass = hy.par[param_start_idx + 1]  # Satellite mass [kg]
+        
+        # Convert Cd*A to km^2 for unit consistency
+        Cd_A_km = Cd_A / 1e6  # m^2 -> km^2
+        
+        # Drag acceleration: a_drag = -(1/2) * rho * (Cd*A/m) * v_rel * v_rel_vec
+        # Factor: -(1/2) * rho * (Cd*A/m) * v_rel
+        drag_factor = -0.5 * rho * Cd_A_km / mass * v_rel
+        
+        a_drag_x = drag_factor * vx_rel
+        a_drag_y = drag_factor * vy_rel
+        a_drag_z = drag_factor * vz_rel
+        
+        # Parameter information
+        param_info = {
+            'param_map': [
+                ('Cd_A', param_start_idx),
+                ('mass', param_start_idx + 1)
+            ],
+            'description': {
+                'Cd_A': 'Drag coefficient times reference area [m^2]',
+                'mass': 'Satellite mass [kg]'
+            }
+        }
+        
+        return a_drag_x, a_drag_y, a_drag_z, param_info
+
+    def _build_cr3bp_eom(self, x, y, z, vx, vy, vz):
+        """Build CR3BP equations in rotating frame."""
+        # Mass ratio (nondimensional)
+        mu = self._mass_ratio
+        assert mu is not None # validated in _compute_CR3BP_params
+        # Distances to primaries (in rotating frame)
+        r1 = hy.sqrt((x + mu)**2 + y**2 + z**2)
+        r2 = hy.sqrt((x - 1.0 + mu)**2 + y**2 + z**2)
+        # Pseudo-potential U (includes centrifugal effect)
+        U = 0.5 * (x**2 + y**2) + (1.0 - mu) / r1 + mu / r2
+        
+        # Equations of motion in rotating frame
+        sys = [
+            (x, vx),
+            (y, vy),
+            (z, vz),
+            (vx, 2.0 * vy + hy.diff(U, x)),   
+            (vy, -2.0 * vx + hy.diff(U, y)), 
+            (vz, hy.diff(U, z))
+        ]
+        
+        # CR3BP has no runtime parameters (everything is nondimensional)
+        param_info = {
+            'param_map': [],
+            'description': {}
+        }
+        
+        return sys, param_info
+    
+    def _compile_integrator(self):
+        """
+        Compile Heyoka integrator (expensive operation).
+        
+        This performs automatic differentiation and LLVM compilation,
+        which takes 1-5 seconds depending on system complexity.
+        """
+        if self._cached_integrator is not None:
+            return  # Already compiled
+        
+        # Create dummy parameters for compilation
+        n_params = len(self._param_info['param_map'])
+        dummy_params = [0.0] * n_params
+        
+        # Print message for long compilation
+        msg = f"Compiling {self._base_type.value} integrator"
+        if self._perturbations:
+            msg += f" with {', '.join(self._perturbations)}"
+        print(msg + "...")
+        
+        # EXPENSIVE: Compile integrator
+        self._cached_integrator = hy.taylor_adaptive(
+            sys=self._cached_eom,
+            state=[0.0] * 6,  # Dummy state
+            pars=dummy_params,
+        )
+        print(f"Compilation complete")
+
+    def _compile_var_integrator(self, order=1):
+        """Compile variational integrator (expensive, done lazily)."""
+        if self._cached_var_integrator is not None:
+            return  # Already compiled
+        
+        if order > 1:
+            raise ValueError("Higher order State Transition Tensors not supported yet.")
+        
+        vsys = hy.var_ode_sys(
+            self._cached_eom,
+            hy.var_args.vars,
+            order=order
+        )
+        
+        # Same parameter structure as base integrator
+        n_params = len(self._param_info['param_map'])
+        dummy_params = [0.0] * n_params
+        
+        print(f"Compiling variational integrator (order={order})...")
+        self._cached_var_integrator = hy.taylor_adaptive(
+            sys=vsys,
+            state=[0.0] * 6,
+            pars=dummy_params,
+            compact_mode=True  # CRITICAL for variational
+        )
+        self._var_order = order
+        print("Variational compilation complete")
+    
+    def compile(self):
+        """
+        Explicitly compile integrator if not already compiled.
+        
+        Compilation occurs immediately on instance creation by default
+        Call this method to compile if initializing with compile=False
+        
+        Returns
+        -------
+        self
+            Returns self for method chaining
+        """
+        self._compile_integrator()
+        return self
+    
+    def compile_var(self, order=1):
+        """
+        Explicitly compile variational ODE integrator if not already compiled.
+        
+        This is not compiled by default, and is only necessary if STM output is needed.
+        The propagator will auto-compile this if an STM is requested in the propagation.
+        
+        Returns
+        -------
+        self
+            Returns self for method chaining
+        """
+        self._compile_var_integrator(order=order)
+        return self
     
     # ========== PROPAGATION ==========
     def propagate(
         self, 
         initial_state: "OrbitalElements | np.ndarray", 
         t_start: float, 
-        t_end: float, 
+        t_end: float,
+        with_stm: bool = False,
+        stm_order: int = 1,
         satellite: Optional[Satellite] = None
     ) -> "Trajectory":
         """
@@ -394,22 +744,52 @@ class System:
             Start time [s]
         t_end : float
             End time [s]
+        with_stm : bool, optional
+            If True, propagate State Transition Matrix alongside trajectory.
+            Enables get_stm() method on returned Trajectory object.
+            Default: False
+        stm_order : int, optional
+            Order of variational equations (1 or 2). Order 1 computes the
+            State Transition Matrix (6x6). Order 2 additionally computes
+            State Transition Tensors (6x6x6) for second-order sensitivity
+            analysis. Only used if with_stm=True.
+            Default: 1
         satellite : Satellite, optional
             Satellite object containing physical properties (mass, drag 
             coefficient, cross-sectional area, inertia tensor). Required 
             if system has perturbations that depend on satellite properties
             (e.g., drag). For systems without perturbations, can be None.
         
-        Returns
+        
+       Returns
         -------
         Trajectory
-            Trajectory object containing dense output
+            Trajectory object containing dense output. If with_stm=True,
+            the Trajectory will support get_stm(t) method to query the
+            State Transition Matrix at any time t.
+            
+        Notes
+        -----
+        State Transition Matrix propagation increases computational cost:
+        - Compilation time: 2-5x longer due to symbolic differentiation
+        - Memory: State vector size increases from 6 to 42 elements (order=1)
+        or 258 elements (order=2)
+        - Integration speed: Minimal overhead during propagation
+
+        The STM is automatically initialized to the identity matrix at t_start.
         """
-        # Ensure compiled
-        if not self.is_compiled:
-            self._compile_integrator()
-        # Get integrator
-        ta = self._cached_integrator
+        # Select integrator
+        if with_stm:
+            # Compile variational if needed
+            if (self._cached_var_integrator is None or 
+                self._var_order != stm_order):
+                self._compile_var_integrator(order=stm_order)
+            ta = self._cached_var_integrator
+        else:
+            # Ensure base compiled
+            if not self.is_compiled:
+                self._compile_integrator()
+            ta = self._cached_integrator
         # Assert for type checker (should always be true after compile)
         assert ta is not None, "Integrator should be compiled"
 
@@ -460,9 +840,15 @@ class System:
                 f"{[name for name, _ in self._param_info['param_map']]}"
             )
         
-        # Set initial conditions
-        ta.time = t_start
-        ta.state[:] = state_array
+       # Set initial conditions
+        ta.time = float(t_start)
+        ta.state[:6] = state_array
+
+        if with_stm:
+            # Initialize STM to identity
+            ta.state[6:42] = np.eye(6).flatten()
+            if stm_order == 2:
+                ta.state[42:] = 0.0  # Initialize STT to zero
         
         # Propagate until ending time
         traj = ta.propagate_until(t_end, c_output=True)[4]
@@ -487,7 +873,9 @@ class System:
                 f"This may indicate a severe integration failure."
             )
 
-        return Trajectory(self,traj,t_start,t_end)
+        # Return Trajectory with STM info if present
+        return Trajectory(self, traj, t_start, t_end, 
+                        stm_order=stm_order if with_stm else None)
 
     def _process_satellite(self, satellite: Satellite) -> np.ndarray:
         """
@@ -974,304 +1362,6 @@ class System:
         self._L3.flags.writeable = False
         self._L4.flags.writeable = False
         self._L5.flags.writeable = False
-    
-    def _build_eom(self):
-        """
-        Build symbolic Heyoka equations of motion for this system.
-        
-        Creates symbolic expressions for the equations of motion based on
-        the system's base dynamics (2-body or CR3BP) and any perturbations
-        (J2, drag).
-        
-        Returns
-        -------
-        sys : list of (var, rhs) tuples
-            Heyoka ODE system definition ready for taylor_adaptive()
-        param_info : dict
-            Information about runtime parameters:
-            - 'param_map': list of (name, index) tuples for hy.par[] array
-            - 'description': dict with human-readable parameter descriptions
-        
-        Notes
-        -----
-        - System parameters (Î¼, J2, atmospheric params) are hardcoded into
-        the symbolic expressions since they're part of the immutable System
-        - Satellite parameters (Cd*A, mass) use hy.par[] for runtime binding,
-        allowing one System to propagate multiple satellites
-        - State vector order: [x, y, z, vx, vy, vz] (km, km/s)
-        """
-        # Create symbolic state variables
-        x, y, z, vx, vy, vz = hy.make_vars("x", "y", "z", "vx", "vy", "vz")
-        
-        # Build equations based on system type
-        if self._base_type == SysType.TWO_BODY:
-            sys, param_info = self._build_2body_eom(x, y, z, vx, vy, vz)
-        elif self._base_type == SysType.CR3BP:
-            sys, param_info = self._build_cr3bp_eom(x, y, z, vx, vy, vz)
-        else:
-            raise NotImplementedError(
-                f"build_eom() not yet implemented for {self._base_type}"
-            )
-        
-        return sys, param_info
-
-    def _build_2body_eom(self, x, y, z, vx, vy, vz):
-        """Build 2-body equations with optional perturbations."""
-        # Position magnitude
-        r = hy.sqrt(x**2 + y**2 + z**2)
-        # Gravitational parameter (hardcoded from System)
-        mu = self._primary_body.mu
-        
-        # Base gravitational acceleration
-        a_grav_x = -mu * x / r**3
-        a_grav_y = -mu * y / r**3
-        a_grav_z = -mu * z / r**3
-        
-        # Start with gravitational acceleration then add perturbations
-        a_total_x = a_grav_x
-        a_total_y = a_grav_y
-        a_total_z = a_grav_z
-        
-        # Parameter tracking
-        param_map = []
-        param_desc = {}
-        next_param_idx = 0
-        
-        # Add perturbations
-        if "J2" in self._perturbations:
-            a_J2_x, a_J2_y, a_J2_z = self._build_J2_perturbation(
-                x, y, z, r, mu
-            )
-            a_total_x = a_total_x + a_J2_x
-            a_total_y = a_total_y + a_J2_y
-            a_total_z = a_total_z + a_J2_z
-        
-        if "J3" in self._perturbations:
-            a_J3_x, a_J3_y, a_J3_z = self._build_J3_perturbation(
-                x, y, z, r, mu
-            )
-            a_total_x = a_total_x + a_J3_x
-            a_total_y = a_total_y + a_J3_y
-            a_total_z = a_total_z + a_J3_z
-        
-        if "drag" in self._perturbations:
-            a_drag_x, a_drag_y, a_drag_z, drag_params = self._build_drag_perturbation(
-                x, y, z, vx, vy, vz, r, next_param_idx
-            )
-            a_total_x = a_total_x + a_drag_x
-            a_total_y = a_total_y + a_drag_y
-            a_total_z = a_total_z + a_drag_z
-            
-            # Add drag parameters to map
-            param_map.extend(drag_params['param_map'])
-            param_desc.update(drag_params['description'])
-            next_param_idx += len(drag_params['param_map'])
-        
-        # Assemble system
-        sys = [
-            (x, vx),
-            (y, vy),
-            (z, vz),
-            (vx, a_total_x),
-            (vy, a_total_y),
-            (vz, a_total_z)
-        ]
-        
-        param_info = {
-            'param_map': param_map,
-            'description': param_desc
-        }
-        
-        return sys, param_info
-
-    def _build_J2_perturbation(self, x, y, z, r, mu):
-        """Build J2 perturbation acceleration terms."""
-        J2 = self._primary_body.J2
-        R = self._primary_body.radius
-        assert J2 is not None # validated in _compute_params
-        # J2 perturbation (zonal harmonic)
-        # Common factor: (3/2) * J2 * mu * R^2 / r^5
-        factor = 1.5 * J2 * mu * R**2 / r**5
-        # Acceleration components
-        # a_J2 = factor * [x(5z^2/r^2 - 1), y(5z^2/r^2 - 1), z(5z^2/r^2 - 3)]
-        z2_r2 = z**2 / r**2
-        
-        a_J2_x = factor * x * (5.0 * z2_r2 - 1.0)
-        a_J2_y = factor * y * (5.0 * z2_r2 - 1.0)
-        a_J2_z = factor * z * (5.0 * z2_r2 - 3.0)
-        
-        return a_J2_x, a_J2_y, a_J2_z
-    
-    def _build_J3_perturbation(self, x, y, z, r, mu):
-        """Build J3 perturbation acceleration terms."""
-        J3 = self._primary_body.J3
-        R = self._primary_body.radius
-        assert J3 is not None # validated in _compute_params
-
-        z2_r2 = z**2 / r**2
-
-        # Common factor for x and y components
-        # a_J3_x = (5/2) * mu * J3 * R^3 * x * z / r^7 * (7*z^2/r^2 - 3)
-        factor_xy = 2.5 * J3 * mu * R**3 * z / r**7
-
-        a_J3_x = factor_xy * x * (7.0 * z2_r2 - 3.0)
-        a_J3_y = factor_xy * y * (7.0 * z2_r2 - 3.0)
-        
-        # z component uses a separate factoring
-        # a_J3_z =  (mu*J3*R^3/r^5) * (1.5 - 15*z2_r2 + 17.5*z2_r2^2)
-        factor_z = mu * J3 * R**3 / r**5
-        a_J3_z = factor_z * (1.5 - 15.0 * z2_r2 + 17.5 * z2_r2**2)
-        
-        return a_J3_x, a_J3_y, a_J3_z
-
-    def _build_drag_perturbation(self, x, y, z, vx, vy, vz, r, param_start_idx):
-        """
-        Build atmospheric drag perturbation.
-
-        Uses exponential atmosphere model and accounts for Earth rotation.
-        Drag parameters (Cd*A, mass) are extracted from Satellite object
-        during propagation and passed via hy.par[] array.
-
-        Parameters
-        ----------
-        param_start_idx : int
-            Starting index for hy.par[] array
-
-        Returns
-        -------
-        a_drag_x, a_drag_y, a_drag_z : symbolic expressions
-            Drag acceleration components
-        param_info : dict
-            Parameter mapping information with keys:
-            - 'param_map': [('Cd_A', idx), ('mass', idx)]
-            - 'description': Human-readable parameter descriptions
-        """
-        # Atmospheric parameters (hardcoded from System)
-        rho0 = self._atmosphere.rho0  # kg/mÂ³
-        H = self._atmosphere.H  # m
-        r0 = self._atmosphere.r0  # m
-        omega = self._primary_body.rotation_rate  # rad/s
-        
-        # Convert atmospheric params to km (package standard)
-        # Density will be kg/km^3, scale height in km
-        rho0_km = rho0 * 1e9  # kg/m^3 -> kg/km^3
-        H_km = H / 1000.0  # m -> km
-        r0_km = r0 / 1000.0  # m -> km
-        
-        # Altitude-dependent density (exponential model)
-        # rho(r) = rho0 * exp(-(r - r0)/H)
-        rho = rho0_km * hy.exp(-(r - r0_km) / H_km)
-        
-        # Velocity relative to rotating atmosphere
-        # v_rel = v_inertial - omega x r
-        # For Earth rotation about z-axis: omega x r = [-omega*y, omega*x, 0]
-        vx_rel = vx + omega * y
-        vy_rel = vy - omega * x
-        vz_rel = vz
-        
-        # Relative velocity magnitude
-        v_rel = hy.sqrt(vx_rel**2 + vy_rel**2 + vz_rel**2)
-        
-        # Satellite parameters (runtime via hy.par[])
-        Cd_A = hy.par[param_start_idx]      # Drag coefficient * area [m^2]
-        mass = hy.par[param_start_idx + 1]  # Satellite mass [kg]
-        
-        # Convert Cd*A to km^2 for unit consistency
-        Cd_A_km = Cd_A / 1e6  # m^2 -> km^2
-        
-        # Drag acceleration: a_drag = -(1/2) * rho * (Cd*A/m) * v_rel * v_rel_vec
-        # Factor: -(1/2) * rho * (Cd*A/m) * v_rel
-        drag_factor = -0.5 * rho * Cd_A_km / mass * v_rel
-        
-        a_drag_x = drag_factor * vx_rel
-        a_drag_y = drag_factor * vy_rel
-        a_drag_z = drag_factor * vz_rel
-        
-        # Parameter information
-        param_info = {
-            'param_map': [
-                ('Cd_A', param_start_idx),
-                ('mass', param_start_idx + 1)
-            ],
-            'description': {
-                'Cd_A': 'Drag coefficient times reference area [m^2]',
-                'mass': 'Satellite mass [kg]'
-            }
-        }
-        
-        return a_drag_x, a_drag_y, a_drag_z, param_info
-
-    def _build_cr3bp_eom(self, x, y, z, vx, vy, vz):
-        """Build CR3BP equations in rotating frame."""
-        # Mass ratio (nondimensional)
-        mu = self._mass_ratio
-        assert mu is not None # validated in _compute_CR3BP_params
-        # Distances to primaries (in rotating frame)
-        r1 = hy.sqrt((x + mu)**2 + y**2 + z**2)
-        r2 = hy.sqrt((x - 1.0 + mu)**2 + y**2 + z**2)
-        # Pseudo-potential U (includes centrifugal effect)
-        U = 0.5 * (x**2 + y**2) + (1.0 - mu) / r1 + mu / r2
-        
-        # Equations of motion in rotating frame
-        sys = [
-            (x, vx),
-            (y, vy),
-            (z, vz),
-            (vx, 2.0 * vy + hy.diff(U, x)),   
-            (vy, -2.0 * vx + hy.diff(U, y)), 
-            (vz, hy.diff(U, z))
-        ]
-        
-        # CR3BP has no runtime parameters (everything is nondimensional)
-        param_info = {
-            'param_map': [],
-            'description': {}
-        }
-        
-        return sys, param_info
-    
-    def _compile_integrator(self):
-        """
-        Compile Heyoka integrator (expensive operation).
-        
-        This performs automatic differentiation and LLVM compilation,
-        which takes 1-5 seconds depending on system complexity.
-        """
-        if self._cached_integrator is not None:
-            return  # Already compiled
-        
-        # Create dummy parameters for compilation
-        n_params = len(self._param_info['param_map'])
-        dummy_params = [0.0] * n_params
-        
-        # Print message for long compilation
-        msg = f"Compiling {self._base_type.value} integrator"
-        if self._perturbations:
-            msg += f" with {', '.join(self._perturbations)}"
-        print(msg + "...")
-        
-        # EXPENSIVE: Compile integrator
-        self._cached_integrator = hy.taylor_adaptive(
-            sys=self._cached_eom,
-            state=[0.0] * 6,  # Dummy state
-            pars=dummy_params,
-        )
-        print(f"Compilation complete")
-    
-    def compile(self):
-        """
-        Explicitly compile integrator if not already compiled.
-        
-        Compilation occurs immediately on instance creation by default
-        Call this method to compile if initializing with compile=False
-        
-        Returns
-        -------
-        self
-            Returns self for method chaining
-        """
-        self._compile_integrator()
-        return self
 
     # ========== SPECIAL METHODS ==========
     def __del__(self):
