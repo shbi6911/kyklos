@@ -15,7 +15,7 @@ import numpy as np
 import plotly.graph_objects as go
 from kyklos import (
     System, EARTH, MOON, EARTH_STD_ATMO,
-    OE, OEType, Trajectory, Satellite
+    OE, OEType, Trajectory, Satellite, earth_2body
 )
 
 
@@ -430,6 +430,343 @@ class TestPlotting:
         traj2.add_to_plot(fig, color='blue', name='Orbit 2')
         
         assert len(fig.data) == 2  # Two trajectories # type: ignore
+
+class TestTrajectoryOutputIndependence:
+    """
+    Test that all Trajectory output methods return independent copies.
+    
+    This tests for the Heyoka buffer aliasing bug where consecutive
+    scalar queries could overwrite each other if .copy() wasn't used.
+    """
+    
+    @pytest.fixture
+    def system(self):
+        """Create a simple 2-body Earth system for testing."""
+        return earth_2body()
+    
+    @pytest.fixture
+    def initial_state(self):
+        """Create initial conditions for a circular LEO orbit."""
+        return OE(
+            a=6378.0 + 400.0,  # 400 km altitude
+            e=0.001,
+            i=np.radians(51.6),
+            omega=0.0,
+            w=0.0,
+            nu=0.0
+        )
+    
+    @pytest.fixture
+    def traj_with_stm(self, system, initial_state):
+        """Trajectory with STM enabled for testing."""
+        return system.propagate(initial_state, 0.0, 5400.0, with_stm=True)
+    
+    @pytest.fixture
+    def traj_no_stm(self, system, initial_state):
+        """Trajectory without STM for testing."""
+        return system.propagate(initial_state, 0.0, 5400.0, with_stm=False)
+    
+    # ========== Scalar State Queries ==========
+    
+    def test_state_at_raw_independence(self, traj_no_stm):
+        """Test state_at_raw returns independent copies."""
+        t1, t2 = 0.0, 2700.0
+        
+        # Query at t1
+        state1 = traj_no_stm.state_at_raw(t1)
+        state1_original = state1.copy()  # Save for comparison
+        
+        # Query at t2 (should not modify state1)
+        state2 = traj_no_stm.state_at_raw(t2)
+        
+        # Verify state1 unchanged
+        np.testing.assert_array_equal(
+            state1, state1_original,
+            err_msg="state_at_raw(t1) was modified by subsequent query"
+        )
+        
+        # Verify states are different (orbit has evolved)
+        assert not np.allclose(state1, state2), \
+            "States at different times should differ"
+    
+    def test_state_at_independence(self, traj_no_stm):
+        """Test state_at returns independent OrbitalElements."""
+        t1, t2 = 0.0, 2700.0
+        
+        # Query at t1
+        oe1 = traj_no_stm.state_at(t1)
+        oe1_elements_original = oe1.elements.copy()
+        
+        # Query at t2
+        oe2 = traj_no_stm.state_at(t2)
+        
+        # Verify oe1.elements unchanged
+        np.testing.assert_array_equal(
+            oe1.elements, oe1_elements_original,
+            err_msg="state_at(t1).elements was modified by subsequent query"
+        )
+        
+        # Verify states are different
+        assert not np.allclose(oe1.elements, oe2.elements)
+    
+    def test_state_full_independence(self, traj_with_stm):
+        """Test state_full returns independent copies."""
+        t1, t2 = 0.0, 2700.0
+        
+        # Query at t1
+        full1 = traj_with_stm.state_full(t1)
+        full1_original = full1.copy()
+        
+        # Query at t2
+        full2 = traj_with_stm.state_full(t2)
+        
+        # Verify full1 unchanged
+        np.testing.assert_array_equal(
+            full1, full1_original,
+            err_msg="state_full(t1) was modified by subsequent query"
+        )
+        
+        # Verify states are different
+        assert not np.allclose(full1, full2)
+    
+    def test_callable_interface_independence(self, traj_no_stm):
+        """Test __call__ returns independent OrbitalElements."""
+        t1, t2 = 0.0, 2700.0
+        
+        # Query at t1 using callable
+        oe1 = traj_no_stm(t1)
+        oe1_elements_original = oe1.elements.copy()
+        
+        # Query at t2
+        oe2 = traj_no_stm(t2)
+        
+        # Verify oe1.elements unchanged
+        np.testing.assert_array_equal(
+            oe1.elements, oe1_elements_original,
+            err_msg="traj(t1).elements was modified by subsequent query"
+        )
+        
+        # Verify states are different
+        assert not np.allclose(oe1.elements, oe2.elements)
+    
+    # ========== Array State Queries ==========
+    
+    def test_evaluate_raw_scalar_independence(self, traj_no_stm):
+        """Test evaluate_raw with scalar input returns independent copy."""
+        t1, t2 = 0.0, 2700.0
+        
+        # Scalar queries
+        state1 = traj_no_stm.evaluate_raw(t1)
+        state1_original = state1.copy()
+        
+        state2 = traj_no_stm.evaluate_raw(t2)
+        
+        # Verify state1 unchanged
+        np.testing.assert_array_equal(
+            state1, state1_original,
+            err_msg="evaluate_raw(scalar) result was modified"
+        )
+        
+        assert not np.allclose(state1, state2)
+    
+    def test_evaluate_raw_array_independence(self, traj_no_stm):
+        """Test evaluate_raw with array input returns independent copy."""
+        times1 = np.array([0.0, 1000.0])
+        times2 = np.array([2000.0, 3000.0])
+        
+        # Array queries
+        states1 = traj_no_stm.evaluate_raw(times1)
+        states1_original = states1.copy()
+        
+        states2 = traj_no_stm.evaluate_raw(times2)
+        
+        # Verify states1 unchanged
+        np.testing.assert_array_equal(
+            states1, states1_original,
+            err_msg="evaluate_raw(array) result was modified"
+        )
+        
+        # Verify they're different
+        assert not np.allclose(states1, states2)
+    
+    def test_evaluate_independence(self, traj_no_stm):
+        """Test evaluate returns independent OrbitalElements list."""
+        times = [0.0, 2700.0]
+        
+        # Get list of OrbitalElements
+        oe_list = traj_no_stm.evaluate(times)
+        oe0_elements_original = oe_list[0].elements.copy()
+        
+        # Subsequent query
+        _ = traj_no_stm.evaluate([1000.0, 4000.0])
+        
+        # Verify first element unchanged
+        np.testing.assert_array_equal(
+            oe_list[0].elements, oe0_elements_original,
+            err_msg="evaluate() OrbitalElements was modified"
+        )
+    
+    def test_sample_raw_independence(self, traj_no_stm):
+        """Test sample_raw returns independent copy."""
+        # First sample
+        states1 = traj_no_stm.sample_raw(n_points=5)
+        states1_original = states1.copy()
+        
+        # Second sample (different n_points to get different data)
+        states2 = traj_no_stm.sample_raw(n_points=10)
+        
+        # Verify states1 unchanged
+        np.testing.assert_array_equal(
+            states1, states1_original,
+            err_msg="sample_raw() result was modified"
+        )
+    
+    def test_sample_independence(self, traj_no_stm):
+        """Test sample returns independent OrbitalElements list."""
+        # First sample
+        oe_list1 = traj_no_stm.sample(n_points=5)
+        oe0_elements_original = oe_list1[0].elements.copy()
+        
+        # Second sample
+        _ = traj_no_stm.sample(n_points=10)
+        
+        # Verify first element unchanged
+        np.testing.assert_array_equal(
+            oe_list1[0].elements, oe0_elements_original,
+            err_msg="sample() OrbitalElements was modified"
+        )
+    
+    def test_evaluate_full_scalar_independence(self, traj_with_stm):
+        """Test evaluate_full with scalar returns independent copy."""
+        t1, t2 = 0.0, 2700.0
+        
+        full1 = traj_with_stm.evaluate_full(t1)
+        full1_original = full1.copy()
+        
+        full2 = traj_with_stm.evaluate_full(t2)
+        
+        np.testing.assert_array_equal(
+            full1, full1_original,
+            err_msg="evaluate_full(scalar) was modified"
+        )
+        
+        assert not np.allclose(full1, full2)
+    
+    def test_evaluate_full_array_independence(self, traj_with_stm):
+        """Test evaluate_full with array returns independent copy."""
+        times1 = np.array([0.0, 1000.0])
+        times2 = np.array([2000.0, 3000.0])
+        
+        full1 = traj_with_stm.evaluate_full(times1)
+        full1_original = full1.copy()
+        
+        full2 = traj_with_stm.evaluate_full(times2)
+        
+        np.testing.assert_array_equal(
+            full1, full1_original,
+            err_msg="evaluate_full(array) was modified"
+        )
+    
+    def test_sample_full_independence(self, traj_with_stm):
+        """Test sample_full returns independent copy."""
+        full1 = traj_with_stm.sample_full(n_points=5)
+        full1_original = full1.copy()
+        
+        full2 = traj_with_stm.sample_full(n_points=10)
+        
+        np.testing.assert_array_equal(
+            full1, full1_original,
+            err_msg="sample_full() was modified"
+        )
+    
+    # ========== STM-Specific Queries ==========
+    
+    def test_get_stm_independence(self, traj_with_stm):
+        """Test get_stm returns independent copies (original bug)."""
+        t1, t2 = 0.0, 2700.0
+        
+        # This is the original failing pattern
+        stm1 = traj_with_stm.get_stm(t1)
+        stm1_original = stm1.copy()
+        
+        stm2 = traj_with_stm.get_stm(t2)
+        
+        # Verify stm1 unchanged (this was failing before)
+        np.testing.assert_array_equal(
+            stm1, stm1_original,
+            err_msg="get_stm(t1) was modified by get_stm(t2) - BUFFER ALIASING!"
+        )
+        
+        # Verify STMs are different (STM evolves)
+        assert not np.allclose(stm1, stm2)
+        
+        # Verify stm1 is still identity at t0
+        np.testing.assert_allclose(stm1, np.eye(6), rtol=1e-14)
+    
+    def test_evaluate_stm_scalar_independence(self, traj_with_stm):
+        """Test evaluate_stm with scalar returns independent copy."""
+        t1, t2 = 0.0, 2700.0
+        
+        stm1 = traj_with_stm.evaluate_stm(t1)
+        stm1_original = stm1.copy()
+        
+        stm2 = traj_with_stm.evaluate_stm(t2)
+        
+        np.testing.assert_array_equal(
+            stm1, stm1_original,
+            err_msg="evaluate_stm(scalar) was modified"
+        )
+        
+        assert not np.allclose(stm1, stm2)
+    
+    def test_evaluate_stm_array_independence(self, traj_with_stm):
+        """Test evaluate_stm with array returns independent copy."""
+        times1 = np.array([0.0, 1000.0])
+        times2 = np.array([2000.0, 3000.0])
+        
+        stms1 = traj_with_stm.evaluate_stm(times1)
+        stms1_original = stms1.copy()
+        
+        stms2 = traj_with_stm.evaluate_stm(times2)
+        
+        np.testing.assert_array_equal(
+            stms1, stms1_original,
+            err_msg="evaluate_stm(array) was modified"
+        )
+    
+    def test_sample_stm_independence(self, traj_with_stm):
+        """Test sample_stm returns independent copy."""
+        stms1 = traj_with_stm.sample_stm(n_points=5)
+        stms1_original = stms1.copy()
+        
+        stms2 = traj_with_stm.sample_stm(n_points=10)
+        
+        np.testing.assert_array_equal(
+            stms1, stms1_original,
+            err_msg="sample_stm() was modified"
+        )
+    
+    def test_mixed_query_pattern_independence(self, traj_with_stm):
+        """Test mixing different query types doesn't cause aliasing."""
+        # This tests the exact pattern that was failing
+        stms_sampled = traj_with_stm.sample_stm(n_points=10)
+        stms_sampled_original = stms_sampled.copy()
+        
+        # Mix of queries
+        _ = traj_with_stm.get_stm(1000.0)
+        _ = traj_with_stm.state_at_raw(2000.0)
+        stm_scalar = traj_with_stm.get_stm(0.0)
+        
+        # Verify nothing was corrupted
+        np.testing.assert_array_equal(
+            stms_sampled, stms_sampled_original,
+            err_msg="Mixed queries corrupted sample_stm result"
+        )
+        
+        np.testing.assert_allclose(
+            stm_scalar, np.eye(6), rtol=1e-14,
+            err_msg="get_stm(0.0) corrupted after mixed queries"
+        )
 
 
 if __name__ == "__main__":

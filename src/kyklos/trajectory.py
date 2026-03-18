@@ -151,7 +151,8 @@ class Trajectory:
     def state_at_raw(self, t: float) -> np.ndarray:
         """Get raw state array at time t """
         self._validate_time(t)
-        return self._output(float(t))[:6]  # Heyoka needs float input
+        # return output at time t and copy to avoid aliasing
+        return self._output(float(t))[:6].copy()  # Heyoka needs float input
     
     def evaluate_raw(self, times: Union[float, np.ndarray, list]) -> np.ndarray:
         """
@@ -221,20 +222,21 @@ class Trajectory:
         # Extract STM (indices 6:42 for 6-state system)
         stm_flat = full_state[6:42]
         
-        # Reshape to 6x6 matrix
-        return stm_flat.reshape(6, 6)
+        # Reshape to 6x6 matrix and copy to avoid aliasing
+        return stm_flat.reshape(6, 6).copy()
     
     def state_full(self, t: float) -> np.ndarray:
         """Get raw state array at time t, including STM if present"""
         if self._stm_order is None:
             warnings.warn(
-            "Trajectory does not have STM enabled. "
-            "Use state_at_raw() instead for non-STM trajectories.",
-            UserWarning,
-            stacklevel=2
+                "Trajectory does not have STM enabled. "
+                "Use state_at_raw() instead for non-STM trajectories.",
+                UserWarning,
+                stacklevel=2
         )
         self._validate_time(t)
-        return self._output(float(t))  # Heyoka needs float input
+        # return a copy of output at time t to avoid aliasing
+        return self._output(float(t)).copy()  # Heyoka needs float input
     
     def evaluate_stm(self, times: Union[float, np.ndarray, list]) -> np.ndarray:
         """
@@ -288,10 +290,10 @@ class Trajectory:
         """
         if self._stm_order is None:
             warnings.warn(
-            "Trajectory does not have STM enabled. "
-            "Use evaluate_raw() instead for non-STM trajectories.",
-            UserWarning,
-            stacklevel=2
+                "Trajectory does not have STM enabled. "
+                "Use evaluate_raw() instead for non-STM trajectories.",
+                UserWarning,
+                stacklevel=2
         )
         # Handle scalar input
         if isinstance(times, (int, float)):
@@ -348,10 +350,10 @@ class Trajectory:
         """
         if self._stm_order is None:
             warnings.warn(
-            "Trajectory does not have STM enabled. "
-            "Use evaluate_raw() instead for non-STM trajectories.",
-            UserWarning,
-            stacklevel=2
+                "Trajectory does not have STM enabled. "
+                "Use evaluate_raw() instead for non-STM trajectories.",
+                UserWarning,
+                stacklevel=2
         )
         
         if n_points < 2:
