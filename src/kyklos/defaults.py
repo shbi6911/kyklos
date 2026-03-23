@@ -19,15 +19,13 @@ Examples
 """
 import numpy as np
 from .orbital_elements import OrbitalElements
-from .system import System, BodyParams, AtmoParams
+from .system import System, BodyParams, AtmoParams, PeriodicOrbit
 
 """
 Predefined Solar System bodies for System creation
 Values taken from Vallado, Fundamentals of Astrdynamics, Fifth Edition, 2022, Appendix D
 Units referenced to km (i.e. mu = km^3/s^2)
 """
-# Pre-defined common bodies for convenience
-
 MERCURY = BodyParams(
     mu=2.2032e4,
     radius=2439.0,
@@ -144,12 +142,19 @@ MOLNIYA_ORBIT = OrbitalElements(
     omega=np.radians(100), w=np.radians(270), nu=0, mu=EARTH.mu
 )
 
-LYAPUNOV_ORBIT = OrbitalElements([0.787904556873149,0,0,0,0.419844640800615,0],
-                                 'cr3bp',mu=0.012150581477176512
+LYAPUNOV_ORBIT = PeriodicOrbit(
+    state=OrbitalElements([0.787904556873149, 0, 0, 0, 0.419844640800615, 0],
+                          'cr3bp', mu=0.012150581477176512),
+    period=2.691579583023370,
+    name='L1 Lyapunov'
 )
 
-GATEWAY_ORBIT = OrbitalElements([1.02199359562483,0,-0.182077530534944,
-                                 0,-0.103195530587244,0],'cr3bp',mu=0.012150581477176512
+GATEWAY_ORBIT = PeriodicOrbit(
+    state=OrbitalElements([1.02199359562483, 0, -0.182077530534944,
+                           0, -0.103195530587244, 0], 'cr3bp',
+                          mu=0.012150581477176512),
+    period=1.51074317459736,
+    name='NRHO (Gateway)'
 )
 
 def earth_2body(compile=True):
@@ -214,7 +219,7 @@ def earth_drag(compile=True):
     -----
     Drag propagation requires satellite parameters (mass, Cd*A) to be
     provided to the propagate() method. The standard atmosphere model
-    uses ρ₀ = 1.225 kg/m³ at sea level with scale height H = 8.5 km.
+    uses rho0 = 1.225 kg/m^3 at sea level with scale height H = 8.5 km.
     """
     return System(
         '2body', EARTH,
@@ -245,10 +250,10 @@ def earth_moon_cr3bp(compile=True):
     The system uses nondimensional units where:
     - Characteristic length L* = 384,400 km (Earth-Moon distance)
     - Characteristic time T* = 375,700 s
-    - Mass ratio μ = 0.01215 (Moon mass / total system mass)
+    - Mass ratio mu = 0.01215 (Moon mass / total system mass)
     
     State vectors should be nondimensional. Origin is at the system
-    barycenter with primaries at x = ±(μ, 1-μ).
+    barycenter with primaries at x = (-mu, 1 - mu).
     """
     return System(
         '3body', EARTH, MOON,
@@ -277,10 +282,10 @@ def earth_sun_cr3bp(compile=True):
     The system uses nondimensional units where:
     - Characteristic length L* = 149,597,870.7 km (1 AU distance)
     - Characteristic time T* = 5,022,635.6 s
-    - Mass ratio μ = 3.00348e-6 (Earth mass / total system mass)
+    - Mass ratio mu = 3.00348e-6 (Earth mass / total system mass)
     
     State vectors should be nondimensional. Origin is at the system
-    barycenter with primaries at x = ±(μ, 1-μ).
+    barycenter with primaries at x = (-mu, 1 - mu).
     """
     return System(
         '3body', SUN, EARTH,

@@ -15,13 +15,129 @@ from .config import config
 
 class Trajectory:
     """
-    A trajectory segment with continuous-time state access.
-    
-    Attributes:
-        system: Reference to parent System (immutable)
-        output: continuous output function object from hy.taylor_adaptive()
-        t0: Start time
-        tf: End time
+    A trajectory segment with continuous-time state access via dense output.
+
+    Trajectory wraps the continuous output object returned by Heyoka's
+    Taylor series integrator. Rather than storing a fixed grid of states, 
+    it stores the underlying Taylor polynomial coefficients, so state evaluation at any
+    time is a cheap evaluation -- not an interpolation.
+
+    Trajectory objects are not constructed directly. They are returned by
+    System.propagate() and by the Trajectory.extend() and Trajectory.slice()
+    methods. The associated System is immutable and stored by reference.
+
+    State Vector Convention
+    -----------------------
+    The base state is always a 6-element vector [x, y, z, vx, vy, vz].
+    For 2-body systems this is in km and km/s (ECI Cartesian).
+    For CR3BP systems this is nondimensional (position in L_star, velocity
+    in L_star/T_star). When an STM is present, the integrator state is
+    extended to 42 elements (6 base + 36 flattened STM) for order=1.
+
+    State Transition Matrix (STM)
+    ------------------------------
+    If the Trajectory was propagated with with_stm=True, the STM
+    Phi(t, t0) is stored alongside the state in the continuous output.
+    Phi is initialized to the identity at t0 and integrated forward via
+    the variational equations.
+
+    Sampling API Summary
+    --------------------
+    All sampling methods come in three variants based on return type:
+
+    OrbitalElements variants (wrap result in OrbitalElements objects):
+        state_at(t)           -- single time, returns OrbitalElements
+        evaluate(times)       -- scalar or array, returns OrbitalElements
+                                 or list of OrbitalElements
+        sample(n_points)      -- uniform grid, returns list of OrbitalElements
+
+    Raw array variants (return plain NumPy arrays, for plotting or analysis):
+        state_at_raw(t)       -- single time, returns shape (6,)
+        evaluate_raw(times)   -- scalar or array, returns (6,) or (n, 6)
+        sample_raw(n_points)  -- uniform grid, returns (n, 6)
+
+    STM variants (only valid if Trajectory has STM):
+        get_stm(t)            -- single time, returns (6, 6)
+        evaluate_stm(times)   -- scalar or array, returns (6, 6) or (n, 6, 6)
+        sample_stm(n_points)  -- uniform grid, returns (n, 6, 6)
+
+    Full state variants (base state + STM if present, otherwise warns):
+        state_full(t)         -- single time, returns full integrator state
+        evaluate_full(times)  -- scalar or array, returns full integrator state
+        sample_full(n_points) -- uniform grid, returns full integrator state
+
+    Trajectory Manipulation
+    -----------------------
+    extend(new_tf)            -- continue propagation beyond current tf,
+                                 returns new Trajectory from [tf, new_tf]
+    slice(t_start, t_end)     -- re-propagate a sub-interval, returns new
+                                 Trajectory from [t_start, t_end]
+
+    Both methods preserve STM settings, but the STM is reinitialized.  With or without 
+    an STM, a new Trajectory object is returned. The original is unchanged.
+
+    Parameters
+    ----------
+    system : System
+        The dynamical environment used to generate this trajectory.
+        Stored by reference; System is intended to be immutable so that associated 
+        Trajectories remain valid.
+    output : heyoka continuous output object
+        Dense output returned by taylor_adaptive.propagate_until() with
+        c_output=True. Stores Taylor polynomial coefficients over the
+        integration interval.
+    t0 : float
+        Start time of the propagated interval [s for 2-body, nd for CR3BP]
+    tf : float
+        End time of the propagated interval [s for 2-body, nd for CR3BP]
+    stm_order : int or None, optional
+        Order of the variational equations used during propagation.
+        1 means first-order STM is present (6x6 Phi). None means no STM.
+        Default: None
+
+    Attributes
+    ----------
+    system : System
+        Reference to parent System (read-only)
+    t0 : float
+        Trajectory start time (read-only)
+    tf : float
+        Trajectory end time (read-only)
+    duration : float
+        Total propagated time span tf - t0 (read-only)
+
+    Examples
+    --------
+    Basic propagation and state access:
+
+    >>> sys = earth_2body()
+    >>> orbit = OE(a=7000, e=0.01, i=0.5, omega=0, w=0, nu=0)
+    >>> traj = sys.propagate(orbit, 0, 5400)
+    >>> state = traj.state_at(2700)          # midpoint state as OrbitalElements
+    >>> state = traj(2700)                   # callable syntax, equivalent
+    >>> arr = traj.state_at_raw(2700)        # midpoint as raw (6,) array
+
+    Uniform sampling:
+
+    >>> states = traj.sample(n_points=500)   # list of OrbitalElements
+    >>> arr = traj.sample_raw(n_points=500)  # (500, 6) NumPy array
+
+    STM propagation:
+
+    >>> traj_stm = sys.propagate(orbit, 0, 5400, with_stm=True)
+    >>> phi = traj_stm.get_stm(2700)         # (6, 6) STM at t=2700 s
+    >>> phis = traj_stm.sample_stm(100)      # (100, 6, 6) STM history
+
+    Export and visualization:
+
+    >>> df = traj.to_dataframe(n_points=1000)
+    >>> fig = traj.plot_3d()
+
+    See Also
+    --------
+    System.propagate : Primary method for creating Trajectory objects
+    Trajectory.extend : Extend propagation beyond current tf
+    Trajectory.slice : Extract a sub-interval as a new Trajectory
     """
     # ========== CONSTRUCTION ==========
     def __init__(self, system, output, t0, tf, stm_order=None):
@@ -535,7 +651,8 @@ class Trajectory:
     def plot_3d(self, n_points: int | None = None, show_body: bool = True, 
             body_color: str | None = None, traj_color: str | None = None,
             body_opacity: float | None = None, 
-            proximity_threshold: float | None = None) -> go.Figure:
+            proximity_threshold: float | None = None,
+            renderer: str | None = None) -> go.Figure:
         """
         Create 3D plot of trajectory with optional central body.
         
@@ -555,14 +672,16 @@ class Trajectory:
                 If None, uses config.DEFAULT_BODY_OPACITY (default: None)
             proximity_threshold: float, optional
                 Show body if trajectory within this many radii.
-                If None, uses config.PROXIMITY_THRESHOLD
+                If None, uses config.PROXIMITY_THRESHOLD (default: 10)
+            renderer: str, optional
+                controls the Plotly renderer used to display plots
+                if None, uses config.RENDERER (default: 'browser')
             
         Returns:
             Plotly Figure object
         """
         from .system import SysType
         import plotly.io as pio
-        pio.renderers.default = 'browser'
 
         # Apply config defaults where user didn't specify
         if n_points is None:
@@ -575,6 +694,8 @@ class Trajectory:
             body_opacity = config.DEFAULT_BODY_OPACITY
         if proximity_threshold is None:
             proximity_threshold = config.PROXIMITY_THRESHOLD
+        if renderer is None:
+            pio.renderers.default = config.RENDERER
         
         # Sample trajectory
         states = self.sample_raw(n_points=n_points)

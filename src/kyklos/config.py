@@ -48,7 +48,7 @@ class KyklosConfig:
     ----------
     EQUALITY_RTOL : float
         Relative tolerance for floating-point equality comparisons.
-        Default: 1e-12 (approximately millimeter-level at LEO distances)
+        Default: 1e-12 
     EQUALITY_ATOL : float
         Absolute tolerance for floating-point equality comparisons.
         Default: 1e-14
@@ -92,6 +92,9 @@ class KyklosConfig:
         Show celestial body if trajectory within this many body radii.
         Only affects CR3BP plotting.
         Default: 10.0
+    RENDERER : str
+        default renderer used by Plotly when displaying plots
+        Default: 'browser'
     """
     
     # Numerical tolerance for equality comparisons
@@ -117,6 +120,7 @@ class KyklosConfig:
     DEFAULT_TRAJ_COLOR_ADD: str = 'blue'
     DEFAULT_BODY_OPACITY: float = 0.6
     PROXIMITY_THRESHOLD: float = 10.0
+    RENDERER: str = 'browser'
 
     @property
     def HASH_DECIMALS(self) -> int:
@@ -134,7 +138,6 @@ class KyklosConfig:
         int
             Number of decimal places for hash rounding
         """
-        import math
         magnitude = -math.floor(math.log10(self.EQUALITY_ATOL))
         return max(magnitude - 2, 0)  # At least 0 decimals
     

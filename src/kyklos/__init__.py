@@ -38,7 +38,7 @@ Celestial Body Parameters
 
 # Core classes
 from .orbital_elements import OrbitalElements, OrbitalElements as OE, OEType
-from .system import System, BodyParams, AtmoParams, SysType
+from .system import System, BodyParams, AtmoParams, PeriodicOrbit, SysType
 from .satellite import Satellite, Satellite as Sat
 from .trajectory import Trajectory, Trajectory as Traj
 from .utils import Timer
@@ -78,7 +78,8 @@ __all__ = [
     "OrbitalElements",
     "System",
     "BodyParams",
-    "AtmoParams", 
+    "AtmoParams",
+    "PeriodicOrbit", 
     "Satellite",
     "Trajectory",
     "OEType",

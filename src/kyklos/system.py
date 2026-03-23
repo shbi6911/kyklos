@@ -130,6 +130,37 @@ class AtmoParams:
         if self.r0 <= 0:
             raise ValueError(f"Reference radius must be positive, got {self.r0}")
 
+# temporary home for this class until a periodic orbits/families module is set up
+@dataclass(frozen=True)
+class PeriodicOrbit:
+    """
+    Initial conditions and period for a periodic CR3BP orbit.
+    
+    The period is a dynamical property that cannot be computed from the
+    state vector alone -- it must be determined numerically and stored here.
+    
+    Parameters
+    ----------
+    state : OrbitalElements
+        Initial conditions (CR3BP nondimensional elements)
+    period : float
+        Nondimensional time for one complete period
+    name : str, optional
+        Human-readable identifier (e.g. 'L1 Lyapunov')
+    jacobi : float, optional
+        Jacobi constant (useful for orbit family identification)
+    """
+    state: OrbitalElements
+    period: float
+    name: str = ""
+    jacobi: Optional[float] = None
+    
+    def __post_init__(self):
+        if self.period <= 0:
+            raise ValueError(f"Period must be positive, got {self.period}")
+        if self.state.element_type.value != 'cr3bp':
+            raise ValueError("PeriodicOrbit requires CR3BP elements")
+
 class _BodyParamsWithND:
         """
         Wrapper for BodyParams that adds nondimensional radius property.
@@ -1280,16 +1311,16 @@ class System:
         # Characteristic length (distance between primaries)
         self._L_star = self._distance
         
-        # Total gravitational parameter [kmÂ³/sÂ²]
+        # Total gravitational parameter [km^3/s^2]
         mu_total = self._primary_body.mu + self._secondary_body.mu
         
-        # Mass ratio: Î¼ = mâ‚‚/(mâ‚+mâ‚‚) = Î¼â‚‚/(Î¼â‚+Î¼â‚‚)
+        # Mass ratio: mu = m_1 / (m_1 + m_2) = mu_1 / (mu_1 + mu_2)
         self._mass_ratio = self._secondary_body.mu / mu_total
         
-        # Characteristic time: T* = sqrt(L*Â³/Î¼_total)
+        # Characteristic time: T* = sqrt(L*^3 / mu_total)
         self._T_star = np.sqrt(self._L_star**3 / mu_total)
         
-        # Mean motion: n = 2Ï€/T* = sqrt(Î¼_total/L*Â³)
+        # Mean motion: n  = sqrt(mu_total/L*^3)
         self._n_mean = np.sqrt(mu_total / self._L_star**3)
 
     def _compute_lagrange_points(self):
@@ -1377,10 +1408,10 @@ class System:
             if self._perturbations:
                 parts.append(f"perturbations={self._perturbations}")
         else:  # 3body
-            parts.append(f"mu_1‚={self._primary_body.mu:.3e}")
-            parts.append(f"mu_2‚={self._secondary_body.mu:.3e}")
-            parts.append(f"L*={self._L_star:.3e} km")
-            parts.append(f"mu={self._mass_ratio:.6f}")
+            parts.append(f"mu_1 ={self._primary_body.mu:.3e}")
+            parts.append(f"mu_2 ={self._secondary_body.mu:.3e}")
+            parts.append(f"L* ={self._L_star:.3e} km")
+            parts.append(f"mu ={self._mass_ratio:.6f}")
         
         return ", ".join(parts) + ")"
 

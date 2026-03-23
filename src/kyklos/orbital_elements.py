@@ -27,7 +27,7 @@ class OrbitalElements:
     new instance to change
     """
     # Default gravitational parameter (Earth)
-    DEFAULT_MU = 3.986004415e5  # km³/s²
+    DEFAULT_MU = 3.986004415e5  # km^3/s^2
     
     # ========== CONSTRUCTION ==========
     def __init__(self, elements=None, element_type=None, validate=True, 
