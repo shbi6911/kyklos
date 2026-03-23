@@ -724,22 +724,116 @@ def plot_random_timing_comparison(scipy_times, heyoka_times):
     return fig
 
 # ============================================================================
+# User Input Parameters
+# ============================================================================
+def get_user_inputs():
+    """
+    Prompt user for benchmark configuration parameters.
+    
+    Returns
+    -------
+    dict
+        Configuration parameters
+    """
+    print("="*70)
+    print("Benchmark Configuration")
+    print("="*70)
+    
+    # Integration tolerances
+    print("\n1. Integration Tolerances (for SciPy only, no effect on Heyoka)")
+    print("   Tighter tolerances improve accuracy but slow down integration.")
+    print("   Recommended range: rtol=1e-8 to 1e-14, atol=1e-10 to 1e-16")
+    
+    while True:
+        try:
+            rtol_input = input("   Relative tolerance [1e-12]: ").strip()
+            rtol = float(rtol_input) if rtol_input else 1e-12
+            if rtol <= 0:
+                print("   Error: Tolerance must be positive")
+                continue
+            break
+        except ValueError:
+            print("   Error: Please enter a valid number (e.g., 1e-12)")
+    
+    while True:
+        try:
+            atol_input = input("   Absolute tolerance [1e-14]: ").strip()
+            atol = float(atol_input) if atol_input else 1e-14
+            if atol <= 0:
+                print("   Error: Tolerance must be positive")
+                continue
+            break
+        except ValueError:
+            print("   Error: Please enter a valid number (e.g., 1e-14)")
+    
+    # Number of random trajectories
+    print("\n2. Random Trajectory Count")
+    print("   Total orbits = 3 x this number (across 3 spatial regions)")
+    print("   Typical range: 5-50 (larger = better statistics, longer runtime)")
+    
+    while True:
+        try:
+            n_orb_input = input("   Trajectories per region [10]: ").strip()
+            n_orb = int(n_orb_input) if n_orb_input else 10
+            if n_orb <= 0:
+                print("   Error: Must be a positive integer")
+                continue
+            break
+        except ValueError:
+            print("   Error: Please enter a valid integer")
+    
+    # Random trajectory integration time
+    print("\n3. Random Trajectory Duration")
+    print("   Nondimensional time units in CR3BP")
+    print("   Typical range: 10-50 (higher = longer runtimes)")
+    
+    while True:
+        try:
+            rand_time_input = input("   Integration time [25]: ").strip()
+            rand_time = float(rand_time_input) if rand_time_input else 25.0
+            if rand_time <= 0:
+                print("   Error: Time must be positive")
+                continue
+            break
+        except ValueError:
+            print("   Error: Please enter a valid number")
+    
+    # Summary
+    print("\n" + "="*70)
+    print("Configuration Summary:")
+    print(f"  Tolerances: rtol={rtol:.0e}, atol={atol:.0e}")
+    print(f"  Random orbits: {3*n_orb} total ({n_orb} per region)")
+    print(f"  Integration time: {rand_time} TU ({rand_time:.2f} nondimensional units)")
+    print("="*70)
+    
+    confirm = input("\nProceed with these settings? [Y/n]: ").strip().lower()
+    if confirm and confirm != 'y':
+        print("Benchmark cancelled.")
+        import sys
+        sys.exit(0)
+    
+    return {
+        'rtol': rtol,
+        'atol': atol,
+        'n_orb': n_orb,
+        'rand_time': rand_time
+    }
+
+# ============================================================================
 # Script Entry Point
 # ============================================================================
 
 if __name__ == "__main__":
 
-    # customize some script properties
-    # change this variable if saving figures is desired
-    save_figs = False
-    # alter integration tolerances for the SciPy integrator (no effect on Heyoka)
-    # the user is encouraged to run the script multiple times with different
-    # tolerances, to see the time-accuracy tradeoff
-    rtol = 1e-12
-    atol = 1e-14
-    # change number of random trajectories (3x this number will be run)
-    n_orb = 10
-    rand_time = 25  #nondimensional integration time for all random trajectories
+    # Customize script properties
+    save_figs = False  # Set to True to save figures instead of displaying
+    
+    # Get user inputs
+    config = get_user_inputs()
+    rtol = config['rtol']
+    atol = config['atol']
+    n_orb = config['n_orb']
+    rand_time = config['rand_time']
 
     # Run benchmarks
     results, detailed, system, test_cases = run_benchmarks(rtol=rtol, atol=atol)
