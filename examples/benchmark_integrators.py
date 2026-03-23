@@ -735,8 +735,8 @@ if __name__ == "__main__":
     # alter integration tolerances for the SciPy integrator (no effect on Heyoka)
     # the user is encouraged to run the script multiple times with different
     # tolerances, to see the time-accuracy tradeoff
-    rtol = 1e-14
-    atol = 1e-16
+    rtol = 1e-12
+    atol = 1e-14
     # change number of random trajectories (3x this number will be run)
     n_orb = 10
     rand_time = 25  #nondimensional integration time for all random trajectories

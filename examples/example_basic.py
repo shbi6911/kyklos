@@ -1,7 +1,7 @@
 from kyklos import earth_j2, earth_moon_cr3bp, earth_2body, OrbitalElements
 import numpy as np
 
-# Create Earth system with J2 perturbation
+# Create Earth system with J2 perturbation (using factory default function)
 sys = earth_j2()
 
 # Define initial orbit (LEO with modest eccentricity)
