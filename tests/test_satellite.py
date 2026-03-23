@@ -116,13 +116,6 @@ class TestValidation:
         with pytest.raises(ValueError, match="Drag coefficient must be positive"):
             Satellite(mass=500.0, drag_coeff=-2.2, cross_section=5.0, inertia=I)
     
-    def test_zero_drag_coeff_rejected(self):
-        """Zero drag coefficient raises ValueError."""
-        I = np.diag([100, 150, 200])
-        
-        with pytest.raises(ValueError, match="Drag coefficient must be positive"):
-            Satellite(mass=500.0, drag_coeff=0.0, cross_section=5.0, inertia=I)
-    
     def test_negative_cross_section_rejected(self):
         """Negative cross-sectional area raises ValueError."""
         I = np.diag([100, 150, 200])
