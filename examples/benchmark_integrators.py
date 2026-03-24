@@ -136,9 +136,9 @@ def get_test_cases():
     # use Kyklos default trajectories LYAPUNOV_ORBIT (an L1 Lyapunov periodic orbit)
     # and GATEWAY_ORBIT (a 9:2 synodic resonant L2 Near Rectilinear Halo Orbit)
     test_cases = {
-        'L1 Lyapunov (5 periods)': {
+        'L1 Lyapunov (3 periods)': {
             'state': LYAPUNOV_ORBIT.state.elements,
-            't_end': 5.0 * LYAPUNOV_ORBIT.period,
+            't_end': 3.0 * LYAPUNOV_ORBIT.period,
             'description': 'unstable periodic orbit around L1'
         },
         'L2 Halo (10 periods)': {

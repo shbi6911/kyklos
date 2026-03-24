@@ -143,18 +143,19 @@ MOLNIYA_ORBIT = OrbitalElements(
 )
 
 LYAPUNOV_ORBIT = PeriodicOrbit(
-    state=OrbitalElements([0.787904556873149, 0, 0, 0, 0.419844640800615, 0],
+    state=OrbitalElements([0.787904556873149, -4.4190929837396e-28, 0, 
+                           -2.8389919479581e-15, 0.419844640800615, 0],
                           'cr3bp', mu=0.012150581477176512),
     period=2.691579583023370,
     name='L1 Lyapunov'
 )
 
 GATEWAY_ORBIT = PeriodicOrbit(
-    state=OrbitalElements([1.02199359562483, 0, -0.182077530534944,
-                           0, -0.103195530587244, 0], 'cr3bp',
-                          mu=0.012150581477176512),
-    period=1.51074317459736,
-    name='NRHO (Gateway)'
+    state=OrbitalElements([1.02199359562483, 6.4331268586775e-24, -0.182077530534944,
+                        1.54184910480928e-14, -0.103195530587244, 1.78907594356382e-12],
+                        'cr3bp', mu=0.012150581477176512),
+                        period=1.51074317459736,
+                        name='NRHO (Gateway)'
 )
 
 def earth_2body(compile=True):
