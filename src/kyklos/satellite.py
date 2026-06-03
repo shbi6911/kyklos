@@ -27,6 +27,7 @@ class Satellite:
         Satellite identifier
     """
     
+    # ========== CONSTRUCTION ==========
     def __init__(
         self,
         mass: float,
@@ -83,6 +84,7 @@ class Satellite:
         I = np.diag([mass, mass, mass])  # Placeholder
         return cls(mass=mass, drag_coeff=Cd, cross_section=A, inertia=I, name=name)
     
+    # ========== PROPERTY ACCESS ==========
     @property
     def mass(self) -> float:
         """Satellite mass [kg]"""
@@ -118,6 +120,7 @@ class Satellite:
         """Satellite identifier"""
         return self._name
     
+    # ========== SPECIAL METHODS ==========
     def __repr__(self) -> str:
         name_str = f"'{self.name}'" if self.name else "unnamed"
         return (f"Satellite({name_str}, mass={self.mass:.2f} kg, "

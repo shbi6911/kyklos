@@ -1377,13 +1377,13 @@ class System:
         x_L3 = opt.brentq(eq_func, L3_a, L3_b, xtol=1e-14)
         
         # L4, L5: equilateral triangles (analytic)
-        L4 = np.array([0.5 - mu, np.sqrt(3)/2, 0.0])
-        L5 = np.array([0.5 - mu, -np.sqrt(3)/2, 0.0])
+        L4 = np.array([0.5 - mu, np.sqrt(3)/2, 0.0, 0.0, 0.0, 0.0])
+        L5 = np.array([0.5 - mu, -np.sqrt(3)/2, 0.0, 0.0, 0.0, 0.0])
         
         # Store as nondimensional arrays (read-only)
-        self._L1 = np.array([x_L1, 0.0, 0.0])
-        self._L2 = np.array([x_L2, 0.0, 0.0])
-        self._L3 = np.array([x_L3, 0.0, 0.0])
+        self._L1 = np.array([x_L1, 0.0, 0.0, 0.0, 0.0, 0.0])
+        self._L2 = np.array([x_L2, 0.0, 0.0, 0.0, 0.0, 0.0])
+        self._L3 = np.array([x_L3, 0.0, 0.0, 0.0, 0.0, 0.0])
         self._L4 = L4
         self._L5 = L5
         
