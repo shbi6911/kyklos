@@ -6,12 +6,15 @@ import numpy as np
 import pandas as pd
 import warnings
 from typing import Union, Optional, Dict, List, Tuple, Any, TYPE_CHECKING
+from abc import ABC, abstractmethod
 import heyoka as hy
 import plotly.graph_objects as go
 from .orbital_elements import OrbitalElements, OEType
+from __future__ import annotations
 if TYPE_CHECKING:
     from .system import System
 from .config import config
+from .utils import validation_error
 
 class Trajectory:
     """
@@ -874,3 +877,607 @@ class Trajectory:
         ))
         
         return fig
+
+ # Node class, used by Trajectory to define state mappings between segments
+
+class Node(ABC):
+    """
+    Abstract base class for trajectory nodes.
+    
+    A Node represents a point in a trajectory at which a state mapping
+    may occur. The mapping may be trivial (identity, for null nodes) or
+    represent a physical event such as an impulsive maneuver.
+    
+    Subclasses
+    ----------
+    BoundaryNode : start or end of a Trajectory
+    JunctionNode : internal node in a Trajectory, shared between
+                   two adjacent segments
+    
+    Notes
+    -----
+    Node is abstract and cannot be instantiated directly. Subclasses must
+    implement pre_state and post_state. Derived quantities (delta_v,
+    state_defect) are implemented here in terms of those abstract
+    properties and are inherited for free.
+    """
+    
+    # ========== CONSTRUCTION ==========
+    def __init__(self, time: float):
+        """
+        Parameters
+        ----------
+        time : float
+            Time at which this node occurs [s or nondimensional]
+        """
+        self._time = float(time)
+    
+    # ========== PROPERTY ACCESS ==========
+    @property
+    def time(self) -> float:
+        """Time at which this node occurs."""
+        return self._time
+    
+    @property
+    @abstractmethod
+    def pre_state(self) -> Optional[np.ndarray]:
+        """
+        State on the incoming side of this node [km, km/s].
+        None if this node has no incoming segment (e.g. a start boundary).
+        """
+        ...
+    
+    @property
+    @abstractmethod
+    def post_state(self) -> Optional[np.ndarray]:
+        """
+        State on the outgoing side of this node [km, km/s].
+        None if this node has no outgoing segment (e.g. an end boundary).
+        """
+        ...
+    
+    @property
+    def delta_v(self) -> Optional[np.ndarray]:
+        """
+        Velocity change at this node [km/s].
+        None if either pre_state or post_state is unavailable.
+        """
+        if self.pre_state is None or self.post_state is None:
+            return None
+        return self.post_state[3:6] - self.pre_state[3:6]
+    
+    @property
+    def state_defect(self) -> Optional[np.ndarray]:
+        """
+        Full 6-element state discontinuity at this node.
+        Zero vector for a continuous node. None if either side unavailable.
+        """
+        if self.pre_state is None or self.post_state is None:
+            return None
+        return self.post_state - self.pre_state
+    
+    # ========== VALIDATION ==========
+    @staticmethod
+    def _validate_state(state: np.ndarray, name: str = 'state') -> np.ndarray:
+        """
+        Validate and condition a state vector.
+        
+        Parameters
+        ----------
+        state : array-like
+            Candidate state vector
+        name : str, optional
+            Name for error messages (default: 'state')
+            
+        Returns
+        -------
+        np.ndarray
+            Validated 6-element float array
+        """
+        state = np.asarray(state, dtype=float)
+        if state.shape != (6,):
+            raise ValueError(
+                f"{name} must be a 6-element vector, got shape {state.shape}"
+            )
+        if not np.all(np.isfinite(state)):
+            raise ValueError(f"{name} contains NaN or Inf values")
+        return state
+
+# ========== BOUNDARY NODES ==========
+class BoundaryNode(Node):
+    """
+    Abstract base for nodes at the start or end of a Trajectory segment.
+    
+    A BoundaryNode has physical state on exactly one side. The other side
+    returns None, reflecting the absence of a connected segment.
+    
+    Subclasses
+    ----------
+    StartBoundaryNode : node at t0 of a Trajectory, post_state populated
+    EndBoundaryNode : node at tf of a Trajectory, pre_state populated
+    ImpulsiveBoundaryNode : node carrying maneuver context on both sides
+    """
+    pass
+
+
+class StartBoundaryNode(BoundaryNode):
+    """
+    Node at the start of a Trajectory segment.
+    
+    Carries the initial state of the segment as post_state. pre_state
+    is None, reflecting the absence of an incoming segment. Used as
+    the default start node when no maneuver context is needed.
+    
+    Parameters
+    ----------
+    time : float
+        Start time of the trajectory segment [s or nondimensional]
+    post_state : array-like
+        Initial state vector [x, y, z, vx, vy, vz] [km, km/s]
+    """
+    
+    def __init__(self, time: float, post_state: np.ndarray):
+        super().__init__(time)
+        self._post_state = self._validate_state(post_state, 'post_state')
+        self._post_state = self._post_state.copy()
+        self._post_state.flags.writeable = False
+    
+    @property
+    def pre_state(self) -> None:
+        """No incoming segment. Always None."""
+        return None
+    
+    @property
+    def post_state(self) -> np.ndarray:
+        """Initial state of the trajectory segment [km, km/s]."""
+        return self._post_state
+    
+    def __repr__(self) -> str:
+        return f"StartBoundaryNode(t={self.time:.6g})"
+
+
+class EndBoundaryNode(BoundaryNode):
+    """
+    Node at the end of a Trajectory segment.
+    
+    Carries the final state of the segment as pre_state. post_state
+    is None, reflecting the absence of an outgoing segment. Used as
+    the default end node when no maneuver context is needed.
+    
+    Parameters
+    ----------
+    time : float
+        End time of the trajectory segment [s or nondimensional]
+    pre_state : array-like
+        Final state vector [x, y, z, vx, vy, vz] [km, km/s]
+    """
+    
+    def __init__(self, time: float, pre_state: np.ndarray):
+        super().__init__(time)
+        self._pre_state = self._validate_state(pre_state, 'pre_state')
+        self._pre_state = self._pre_state.copy()
+        self._pre_state.flags.writeable = False
+    
+    @property
+    def pre_state(self) -> np.ndarray:
+        """Final state of the trajectory segment [km, km/s]."""
+        return self._pre_state
+    
+    @property
+    def post_state(self) -> None:
+        """No outgoing segment. Always None."""
+        return None
+    
+    def __repr__(self) -> str:
+        return f"EndBoundaryNode(t={self.time:.6g})"
+    
+class ImpulsiveBoundaryNode(BoundaryNode):
+    """
+    Boundary node carrying maneuver context for trajectory expansion.
+    
+    Used when a trajectory segment begins or ends with a known impulsive
+    burn and the pre-burn state should be preserved to allow future
+    expansion into a multi-segment Trajectory.
+    
+    Accepts any two of pre_state, post_state, and delta_v. The third
+    is derived. Position continuity is always enforced: an impulsive
+    maneuver changes only velocity, not position.
+    
+    Parameters
+    ----------
+    time : float
+        Time at which the maneuver occurs [s or nondimensional]
+    pre_state : array-like, optional
+        State before the maneuver [x, y, z, vx, vy, vz] [km, km/s]
+    post_state : array-like, optional
+        State after the maneuver [x, y, z, vx, vy, vz] [km, km/s]
+    delta_v : array-like, optional
+        Velocity change vector [dvx, dvy, dvz] [km/s]
+    
+    Notes
+    -----
+    Exactly two of pre_state, post_state, delta_v must be provided.
+    Derivation rules:
+      pre_state  + delta_v   -> post_state = pre_state + [0, 0, 0, delta_v]
+      post_state + delta_v   -> pre_state  = post_state - [0, 0, 0, delta_v]
+      pre_state  + post_state -> delta_v   = post_state[3:6] - pre_state[3:6]
+                                (position continuity enforced)
+    
+    For nodes with full state discontinuity, use FreeJunctionNode instead.
+    """
+    
+    def __init__(self, time: float,
+                 pre_state: Optional[np.ndarray] = None,
+                 post_state: Optional[np.ndarray] = None,
+                 delta_v: Optional[np.ndarray] = None):
+        super().__init__(time)
+        
+        # Count provided arguments
+        n_provided = sum(x is not None for x in [pre_state, post_state, delta_v])
+        if n_provided != 2:
+            raise ValueError(
+                f"Exactly two of pre_state, post_state, delta_v must be "
+                f"provided. Got {n_provided}."
+            )
+        
+        # Validate delta_v if provided
+        if delta_v is not None:
+            delta_v = np.asarray(delta_v, dtype=float)
+            if delta_v.shape != (3,):
+                raise ValueError(
+                    f"delta_v must be a 3-element vector, "
+                    f"got shape {delta_v.shape}"
+                )
+            if not np.all(np.isfinite(delta_v)):
+                raise ValueError("delta_v contains NaN or Inf values")
+        
+        # Derive missing quantity
+        if pre_state is not None and delta_v is not None:
+            # pre_state + delta_v -> post_state
+            # Position continuity enforced by construction
+            pre_state = self._validate_state(pre_state, 'pre_state')
+            dv_full = np.concatenate([np.zeros(3), delta_v])
+            post_state = pre_state + dv_full
+        
+        elif post_state is not None and delta_v is not None:
+            # post_state + delta_v -> pre_state
+            # Position continuity enforced by construction
+            post_state = self._validate_state(post_state, 'post_state')
+            dv_full = np.concatenate([np.zeros(3), delta_v])
+            pre_state = post_state - dv_full
+        
+        else:
+            # pre_state + post_state -> delta_v
+            # Position continuity must be explicitly checked
+            assert pre_state is not None and post_state is not None
+            pre_state = self._validate_state(pre_state, 'pre_state')
+            post_state = self._validate_state(post_state, 'post_state')
+            pos_discont = np.linalg.norm(post_state[:3] - pre_state[:3])
+            if not np.allclose(pre_state[:3], post_state[:3],
+                               rtol=config.EQUALITY_RTOL,
+                               atol=config.EQUALITY_ATOL):
+                raise ValueError(
+                    f"Position must be continuous for an impulsive maneuver. "
+                    f"Position discontinuity: {pos_discont:.6e} km. "
+                    f"Use FreeJunctionNode for nodes with position discontinuity."
+                )
+        
+        # Store as immutable arrays
+        self._pre_state = pre_state.copy()
+        self._pre_state.flags.writeable = False
+        self._post_state = post_state.copy()
+        self._post_state.flags.writeable = False
+    
+    @property
+    def pre_state(self) -> np.ndarray:
+        """State before the maneuver [km, km/s]."""
+        return self._pre_state
+    
+    @property
+    def post_state(self) -> np.ndarray:
+        """State after the maneuver [km, km/s]."""
+        return self._post_state
+    
+    @property
+    def delta_v(self) -> np.ndarray:  # never None in this subclass
+        """Velocity change at this node [km/s]."""
+        return self._post_state[3:6] - self._pre_state[3:6]
+    
+    def __repr__(self) -> str:
+        dv_mag = np.linalg.norm(self.delta_v)
+        return (f"ImpulsiveBoundaryNode(t={self.time:.6g}, "
+                f"|dv|={dv_mag:.6g} km/s)")
+
+class JunctionNode(Node):
+    """
+    Abstract base for nodes internal to a multi-segment Trajectory.
+    
+    A JunctionNode sits between two adjacent trajectory segments and
+    always has physical state on both sides. Unlike BoundaryNode,
+    neither pre_state nor post_state is ever None.
+    
+    Adds maneuver_jacobian() as a required abstract method, since the
+    Jacobian is only meaningful when segments exist on both sides.
+    Narrows return types of pre_state, post_state, delta_v, and
+    state_defect to np.ndarray, removing Optional from the base class
+    signatures.
+    
+    Subclasses
+    ----------
+    NullJunctionNode : continuous junction, no maneuver
+    ImpulsiveJunctionNode : velocity discontinuity, position continuous
+    FreeJunctionNode : full state discontinuity, for shooting iterates
+    """
+    
+    @property
+    @abstractmethod
+    def pre_state(self) -> np.ndarray:
+        """State on the incoming side [km, km/s]. Never None."""
+        ...
+    
+    @property
+    @abstractmethod
+    def post_state(self) -> np.ndarray:
+        """State on the outgoing side [km, km/s]. Never None."""
+        ...
+    
+    @property
+    def delta_v(self) -> np.ndarray:
+        """Velocity change at this node [km/s]. Never None."""
+        return self.post_state[3:6] - self.pre_state[3:6]
+    
+    @property
+    def state_defect(self) -> np.ndarray:
+        """Full 6-element state discontinuity. Never None."""
+        return self.post_state - self.pre_state
+    
+    @abstractmethod
+    def maneuver_jacobian(self) -> np.ndarray:
+        """
+        Sensitivity of post_state to pre_state.
+        
+        Used for STM composition across this junction in a
+        multi-segment Trajectory.
+        
+        Returns
+        -------
+        np.ndarray
+            6x6 matrix M = d(post_state)/d(pre_state)
+        """
+        ...
+
+
+class NullJunctionNode(JunctionNode):
+    """
+    Continuous junction with no maneuver.
+    
+    Used when two segments connect smoothly — for example, when a
+    single trajectory is split at an interior time, or when segments
+    connect across a model boundary with matching states. pre_state
+    and post_state are conceptually identical, and mathematically close 
+    within a small tolerance, set by package config.
+    
+    Parameters
+    ----------
+    time : float
+        Junction time [s or nondimensional]
+    state : array-like
+        Continuous state at the junction [x, y, z, vx, vy, vz] [km, km/s]
+    """
+    
+    def __init__(self, time: float,
+             pre_state: np.ndarray,
+             post_state: np.ndarray):
+        super().__init__(time)
+        self._pre_state = self._validate_state(pre_state, 'pre_state')
+        self._post_state = self._validate_state(post_state, 'post_state')
+        if not np.allclose(pre_state, post_state,
+                   rtol=config.EQUALITY_RTOL,
+                   atol=config.EQUALITY_ATOL):
+            defect_mag = np.linalg.norm(post_state - pre_state)
+            validation_error(
+                f"NullJunctionNode states differ by {defect_mag:.3e}. "
+                f"For intentional discontinuities use ImpulsiveJunctionNode "
+                f"or FreeJunctionNode."
+            )
+        self._pre_state = pre_state.copy()
+        self._pre_state.flags.writeable = False
+        self._post_state = post_state.copy()
+        self._post_state.flags.writeable = False
+    
+    @property
+    def pre_state(self) -> np.ndarray:
+        """State on the incoming side [km, km/s]."""
+        return self._pre_state
+    
+    @property
+    def post_state(self) -> np.ndarray:
+        """State on the outgoing side [km, km/s]."""
+        return self._post_state
+    
+    def maneuver_jacobian(self) -> np.ndarray:
+        """Identity matrix — no maneuver, no state sensitivity."""
+        return np.eye(6)
+    
+    def __repr__(self) -> str:
+        return f"NullJunctionNode(t={self.time:.6g})"
+
+
+class ImpulsiveJunctionNode(JunctionNode):
+    """
+    Junction node representing a fixed impulsive maneuver.
+    
+    Accepts any two of pre_state, post_state, and delta_v. The third
+    is derived. Position continuity is enforced: an impulsive maneuver
+    changes only velocity, not position.
+    
+    Parameters
+    ----------
+    time : float
+        Time of the maneuver [s or nondimensional]
+    pre_state : array-like, optional
+        State before the maneuver [x, y, z, vx, vy, vz] [km, km/s]
+    post_state : array-like, optional
+        State after the maneuver [x, y, z, vx, vy, vz] [km, km/s]
+    delta_v : array-like, optional
+        Velocity change vector [dvx, dvy, dvz] [km/s]
+    
+    Notes
+    -----
+    Exactly two of pre_state, post_state, delta_v must be provided.
+    Derivation rules:
+      pre_state  + delta_v    -> post_state = pre_state + [0, 0, 0, delta_v]
+      post_state + delta_v    -> pre_state  = post_state - [0, 0, 0, delta_v]
+      pre_state  + post_state -> delta_v   = post_state[3:6] - pre_state[3:6]
+                                 (position continuity enforced)
+    
+    The maneuver Jacobian is identity for a fixed burn — the delta_v
+    does not depend on the incoming state. For state-dependent maneuvers,
+    a future subclass will provide the appropriate Jacobian.
+    """
+    
+    def __init__(self, time: float,
+                 pre_state: Optional[np.ndarray] = None,
+                 post_state: Optional[np.ndarray] = None,
+                 delta_v: Optional[np.ndarray] = None):
+        super().__init__(time)
+        
+        n_provided = sum(x is not None for x in [pre_state, post_state, delta_v])
+        if n_provided != 2:
+            raise ValueError(
+                f"Exactly two of pre_state, post_state, delta_v must be "
+                f"provided. Got {n_provided}."
+            )
+        
+        if delta_v is not None:
+            delta_v = np.asarray(delta_v, dtype=float)
+            if delta_v.shape != (3,):
+                raise ValueError(
+                    f"delta_v must be a 3-element vector, "
+                    f"got shape {delta_v.shape}"
+                )
+            if not np.all(np.isfinite(delta_v)):
+                raise ValueError("delta_v contains NaN or Inf values")
+        
+        if pre_state is not None and delta_v is not None:
+            pre_state = self._validate_state(pre_state, 'pre_state')
+            dv_full = np.concatenate([np.zeros(3), delta_v])
+            post_state = pre_state + dv_full
+        
+        elif post_state is not None and delta_v is not None:
+            post_state = self._validate_state(post_state, 'post_state')
+            dv_full = np.concatenate([np.zeros(3), delta_v])
+            pre_state = post_state - dv_full
+        
+        else:
+            assert pre_state is not None and post_state is not None
+            pre_state = self._validate_state(pre_state, 'pre_state')
+            post_state = self._validate_state(post_state, 'post_state')
+            pos_discont = np.linalg.norm(post_state[:3] - pre_state[:3])
+            if not np.allclose(pre_state[:3], post_state[:3],
+                               rtol=config.EQUALITY_RTOL,
+                               atol=config.EQUALITY_ATOL):
+                raise ValueError(
+                    f"Position must be continuous for an impulsive maneuver. "
+                    f"Position discontinuity: {pos_discont:.6e} km. "
+                    f"Use FreeJunctionNode for nodes with position discontinuity."
+                )
+        
+        self._pre_state = pre_state.copy()
+        self._pre_state.flags.writeable = False
+        self._post_state = post_state.copy()
+        self._post_state.flags.writeable = False
+    
+    @property
+    def pre_state(self) -> np.ndarray:
+        """State before the maneuver [km, km/s]."""
+        return self._pre_state
+    
+    @property
+    def post_state(self) -> np.ndarray:
+        """State after the maneuver [km, km/s]."""
+        return self._post_state
+    
+    @property
+    def delta_v(self) -> np.ndarray:
+        """Velocity change at this node [km/s]."""
+        return self._post_state[3:6] - self._pre_state[3:6]
+    
+    def maneuver_jacobian(self) -> np.ndarray:
+        """
+        Identity matrix for a fixed impulsive burn.
+        
+        A fixed delta_v does not depend on the incoming state, so
+        d(post_state)/d(pre_state) = I.
+        """
+        return np.eye(6)
+    
+    def __repr__(self) -> str:
+        dv_mag = np.linalg.norm(self.delta_v)
+        return (f"ImpulsiveJunctionNode(t={self.time:.6g}, "
+                f"|dv|={dv_mag:.6g} km/s)")
+
+
+class FreeJunctionNode(JunctionNode):
+    """
+    Junction node with unconstrained state discontinuity.
+    
+    Both pre_state and post_state are specified independently, allowing
+    full state discontinuity including position. Used to represent
+    initial guesses for multiple shooting patch points, where the defect
+    at each junction is driven to zero by the corrector.
+    
+    Parameters
+    ----------
+    time : float
+        Junction time [s or nondimensional]
+    pre_state : array-like
+        State on the incoming side [x, y, z, vx, vy, vz] [km, km/s]
+    post_state : array-like
+        State on the outgoing side [x, y, z, vx, vy, vz] [km, km/s]
+    
+    Notes
+    -----
+    This is the only node type that permits position discontinuity.
+    A converged multiple shooting solution will have state_defect
+    near zero at every FreeJunctionNode, at which point the node
+    is equivalent to a NullJunctionNode or ImpulsiveJunctionNode
+    depending on whether a maneuver was intended.
+    """
+    
+    def __init__(self, time: float,
+                 pre_state: np.ndarray,
+                 post_state: np.ndarray):
+        super().__init__(time)
+        self._pre_state = self._validate_state(pre_state, 'pre_state')
+        self._pre_state = self._pre_state.copy()
+        self._pre_state.flags.writeable = False
+        self._post_state = self._validate_state(post_state, 'post_state')
+        self._post_state = self._post_state.copy()
+        self._post_state.flags.writeable = False
+    
+    @property
+    def pre_state(self) -> np.ndarray:
+        """State on the incoming side [km, km/s]."""
+        return self._pre_state
+    
+    @property
+    def post_state(self) -> np.ndarray:
+        """State on the outgoing side [km, km/s]."""
+        return self._post_state
+    
+    def maneuver_jacobian(self) -> np.ndarray:
+        """
+        Identity matrix.
+        
+        A FreeJunctionNode carries no defined maneuver, so the nominal
+        sensitivity of post_state to pre_state is identity. The shooting
+        corrector treats the defect as a constraint to eliminate rather
+        than a physical state change to differentiate through.
+        """
+        return np.eye(6)
+    
+    def __repr__(self) -> str:
+        defect_mag = np.linalg.norm(self.state_defect)
+        return (f"FreeJunctionNode(t={self.time:.6g}, "
+                f"|defect|={defect_mag:.6g})")
