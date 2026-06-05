@@ -1,14 +1,15 @@
 '''Development code for an orbital trajectory handling package
 Trajectory class definition
-created with the assistance of Claude Sonnet 4.5 by Anthropic'''
+created with the assistance of Claude Sonnet by Anthropic'''
 
 import numpy as np
 import pandas as pd
 import warnings
-from typing import Union, Optional, Dict, List, Tuple, Any, TYPE_CHECKING
-from abc import ABC, abstractmethod
 import heyoka as hy
 import plotly.graph_objects as go
+import bisect
+from typing import Union, Optional, Dict, List, Tuple, Any, TYPE_CHECKING
+from abc import ABC, abstractmethod
 from .orbital_elements import OrbitalElements, OEType
 from __future__ import annotations
 if TYPE_CHECKING:
@@ -18,16 +19,16 @@ from .utils import validation_error
 
 class Trajectory:
     """
-    A trajectory segment with continuous-time state access via dense output.
+    A trajectory with continuous-time state access via dense output.
 
-    Trajectory wraps the continuous output object returned by Heyoka's
-    Taylor series integrator. Rather than storing a fixed grid of states, 
-    it stores the underlying Taylor polynomial coefficients, so state evaluation at any
-    time is a cheap evaluation -- not an interpolation.
+    A Trajectory consists of one or more propagated segments connected
+    by JunctionNodes, bracketed by a StartBoundaryNode and EndBoundaryNode.
+    A single-segment trajectory is the degenerate case with no internal
+    junction nodes.
 
     Trajectory objects are not constructed directly. They are returned by
     System.propagate() and by the Trajectory.extend() and Trajectory.slice()
-    methods. The associated System is immutable and stored by reference.
+    methods.
 
     State Vector Convention
     -----------------------
@@ -39,64 +40,61 @@ class Trajectory:
 
     State Transition Matrix (STM)
     ------------------------------
-    If the Trajectory was propagated with with_stm=True, the STM
-    Phi(t, t0) is stored alongside the state in the continuous output.
-    Phi is initialized to the identity at t0 and integrated forward via
-    the variational equations.
+    If the Trajectory was propagated with with_stm=True, the STM is
+    stored in each segment's continuous output, initialized to identity
+    at the segment's own t0. Two STM interfaces are provided:
+
+    get_stm(t) returns the composite Phi(t, t0) across all segments and
+    junction maneuver Jacobians up to time t -- the full sensitivity of
+    the state at t to the initial state.
+
+    get_stm_seg(t) returns the segment-local Phi_k(t, t_k) referenced
+    to the start of whichever segment contains t -- used by the shooting
+    corrector, which works with individual segment STMs.
 
     Sampling API Summary
     --------------------
-    All sampling methods come in three variants based on return type:
-
-    OrbitalElements variants (wrap result in OrbitalElements objects):
+    OrbitalElements variants:
         state_at(t)           -- single time, returns OrbitalElements
-        evaluate(times)       -- scalar or array, returns OrbitalElements
-                                 or list of OrbitalElements
-        sample(n_points)      -- uniform grid, returns list of OrbitalElements
+        evaluate(times)       -- scalar or array of times
+        sample(n_points)      -- uniform grid
 
-    Raw array variants (return plain NumPy arrays, for plotting or analysis):
-        state_at_raw(t)       -- single time, returns shape (6,)
+    Raw array variants:
+        state_at_raw(t)       -- single time, returns (6,)
         evaluate_raw(times)   -- scalar or array, returns (6,) or (n, 6)
         sample_raw(n_points)  -- uniform grid, returns (n, 6)
 
-    STM variants (only valid if Trajectory has STM):
+    Composite STM variants (Phi referenced to t0):
         get_stm(t)            -- single time, returns (6, 6)
-        evaluate_stm(times)   -- scalar or array, returns (6, 6) or (n, 6, 6)
-        sample_stm(n_points)  -- uniform grid, returns (n, 6, 6)
+        evaluate_stm(times)   -- scalar or array
+        sample_stm(n_points)  -- uniform grid
 
-    Full state variants (base state + STM if present, otherwise warns):
-        state_full(t)         -- single time, returns full integrator state
-        evaluate_full(times)  -- scalar or array, returns full integrator state
-        sample_full(n_points) -- uniform grid, returns full integrator state
+    Segment-local STM variants (Phi referenced to segment t0):
+        get_stm_seg(t)            -- single time, returns (6, 6)
+        evaluate_stm_seg(times)   -- scalar or array
+        sample_stm_seg(n_points)  -- uniform grid
 
-    Trajectory Manipulation
-    -----------------------
-    extend(new_tf)            -- continue propagation beyond current tf,
-                                 returns new Trajectory from [tf, new_tf]
-    slice(t_start, t_end)     -- re-propagate a sub-interval, returns new
-                                 Trajectory from [t_start, t_end]
-
-    Both methods preserve STM settings, but the STM is reinitialized.  With or without 
-    an STM, a new Trajectory object is returned. The original is unchanged.
+    Full integrator state variants:
+        state_full(t)         -- single time, full Heyoka state vector
+        evaluate_full(times)  -- scalar or array
+        sample_full(n_points) -- uniform grid
 
     Parameters
     ----------
     system : System
         The dynamical environment used to generate this trajectory.
-        Stored by reference; System is intended to be immutable so that associated 
-        Trajectories remain valid.
-    output : heyoka continuous output object
-        Dense output returned by taylor_adaptive.propagate_until() with
-        c_output=True. Stores Taylor polynomial coefficients over the
-        integration interval.
-    t0 : float
-        Start time of the propagated interval [s for 2-body, nd for CR3BP]
-    tf : float
-        End time of the propagated interval [s for 2-body, nd for CR3BP]
+    outputs : list
+        List of Heyoka continuous output objects, one per segment.
+    start_node : BoundaryNode
+        Node at t0 of the trajectory.
+    end_node : BoundaryNode
+        Node at tf of the trajectory.
+    junction_nodes : list of JunctionNode, optional
+        Internal nodes between segments. len must equal len(outputs) - 1.
+        Default: empty list (single-segment trajectory).
     stm_order : int or None, optional
-        Order of the variational equations used during propagation.
-        1 means first-order STM is present (6x6 Phi). None means no STM.
-        Default: None
+        Order of variational equations. 1 = first-order STM. None = no STM.
+        Must be consistent across all segments. Default: None.
 
     Attributes
     ----------
@@ -143,31 +141,222 @@ class Trajectory:
     Trajectory.slice : Extract a sub-interval as a new Trajectory
     """
     # ========== CONSTRUCTION ==========
-    def __init__(self, system, output, t0, tf, stm_order=None):
+    def __init__(self, system, outputs, junction_nodes=None, stm_order=None,
+             start_node=None, end_node=None):
+        """
+        Parameters
+        ----------
+        system : System
+            The dynamical environment for this trajectory.
+        outputs : list or single Heyoka continuous output
+            Heyoka continuous output object(s), one per segment. A single
+            output is wrapped in a list automatically.
+        junction_nodes : list of JunctionNode, optional
+            Internal nodes between segments. Must contain len(outputs) - 1
+            elements. Default: empty list (single-segment trajectory).
+        stm_order : int or None, optional
+            Order of variational equations. 1 = first-order STM present.
+            None = no STM. Must be consistent across all segments.
+            Default: None.
+        start_node : BoundaryNode, optional
+            Node at trajectory start. If None, a StartBoundaryNode is
+            constructed from the first output. Default: None.
+        end_node : BoundaryNode, optional
+            Node at trajectory end. If None, an EndBoundaryNode is
+            constructed from the last output. Default: None.
+        """
+        n_segments = len(outputs)
+
+        if junction_nodes is None:
+            junction_nodes = [
+                Trajectory._infer_junction(outputs[k], outputs[k + 1])
+                for k in range(n_segments - 1)
+            ]
+        else:
+            # Explicitly provided — validate count and times
+            if len(junction_nodes) != n_segments - 1:
+                raise ValueError(
+                    f"Expected {n_segments - 1} junction node(s) for "
+                    f"{n_segments} segment(s), got {len(junction_nodes)}."
+                )
+            for k, node in enumerate(junction_nodes):
+                expected = float(outputs[k].bounds[-1])
+                if not np.isclose(node.time, expected,
+                                rtol=config.EQUALITY_RTOL,
+                                atol=config.EQUALITY_ATOL):
+                    raise ValueError(
+                        f"Junction node {k} time ({node.time:.6g}) does not match "
+                        f"segment {k} end time ({expected:.6g})."
+                    )
+
+        # Extract boundary times from Heyoka output objects.
+        # Use float() immediately to avoid holding references to Heyoka's
+        # internal numpy arrays, which may be overwritten on subsequent calls.
+        t0 = float(outputs[0].bounds[0])
+        tf = float(outputs[-1].bounds[-1])
+
+        # Validate time adjacency of consecutive segments
+        for k in range(n_segments - 1):
+            tf_k  = float(outputs[k].bounds[-1])
+            t0_k1 = float(outputs[k + 1].bounds[0])
+            if not np.isclose(tf_k, t0_k1,
+                            rtol=config.EQUALITY_RTOL,
+                            atol=config.EQUALITY_ATOL):
+                raise ValueError(
+                    f"Segment {k} end time ({tf_k:.6g}) does not match "
+                    f"segment {k + 1} start time ({t0_k1:.6g}). "
+                    f"Segments must be time-adjacent."
+                )
+
+        # Validate junction node times against segment boundaries
+        for k, node in enumerate(junction_nodes):
+            expected = float(outputs[k].bounds[-1])
+            if not np.isclose(node.time, expected,
+                            rtol=config.EQUALITY_RTOL,
+                            atol=config.EQUALITY_ATOL):
+                raise ValueError(
+                    f"Junction node {k} time ({node.time:.6g}) does not match "
+                    f"segment {k} end time ({expected:.6g})."
+                )
+
         self._system = system
-        self._output = output
-        self._t0 = t0
-        self._tf = tf
-        self._stm_order = stm_order  # None or 1 or 2
+        self._outputs = outputs
+        self._junction_nodes = list(junction_nodes)
+        self._stm_order = stm_order
+
+        # Construct default boundary nodes from outputs if not provided.
+        # Copy output arrays immediately to avoid Heyoka buffer aliasing.
+        if start_node is None:
+            initial_state = outputs[0](t0)[:6].copy()
+            self._start_node = StartBoundaryNode(t0, initial_state)
+        else:
+            if not np.isclose(start_node.time, t0,
+                              rtol=config.EQUALITY_RTOL,
+                              atol=config.EQUALITY_ATOL):
+                raise ValueError(
+                    f"start_node time ({start_node.time:.6g}) does not match "
+                    f"segment start time ({t0:.6g})."
+                )
+            self._start_node = start_node
+
+        if end_node is None:
+            final_state = outputs[-1](tf)[:6].copy()
+            self._end_node = EndBoundaryNode(tf, final_state)
+        else:
+            if not np.isclose(end_node.time, tf,
+                              rtol=config.EQUALITY_RTOL,
+                              atol=config.EQUALITY_ATOL):
+                raise ValueError(
+                    f"end_node time ({end_node.time:.6g}) does not match "
+                    f"segment end time ({tf:.6g})."
+                )
+            self._end_node = end_node
+
+        # Cache junction times for O(log n) segment dispatch
+        self._junction_times = [node.time for node in self._junction_nodes]
         
-    
     # ========== PROPERTY ACCESS ==========
     @property
-    def system(self) -> "System":
+    def system(self) -> System:
+        """The dynamical environment for this trajectory."""
         return self._system
     
     @property
-    def t0(self):
-        return self._t0
-    
+    def t0(self) -> float:
+        """Trajectory start time."""
+        return self._start_node.time
+
     @property
-    def tf(self):
-        return self._tf
-    
+    def tf(self) -> float:
+        """Trajectory end time."""
+        return self._end_node.time
+
     @property
-    def duration(self):
-        """Trajectory duration."""
+    def duration(self) -> float:
+        """Total time span tf - t0."""
         return self.tf - self.t0
+    
+    @property
+    def start_node(self) -> BoundaryNode:
+        """Node at the start of this trajectory."""
+        return self._start_node
+
+    @property
+    def end_node(self) -> BoundaryNode:
+        """Node at the end of this trajectory."""
+        return self._end_node
+
+    @property
+    def junction_nodes(self) -> list:
+        """
+        Internal junction nodes between segments.
+
+        Returns a defensive copy. Empty for single-segment trajectories.
+        """
+        return list(self._junction_nodes)
+
+    @property
+    def n_segments(self) -> int:
+        """Number of propagated segments."""
+        return len(self._outputs)
+
+    @property
+    def is_multisegment(self) -> bool:
+        """True if this trajectory contains more than one segment."""
+        return len(self._outputs) > 1
+
+    @property
+    def stm_order(self) -> Optional[int]:
+        """
+        Order of the variational equations used during propagation.
+        1 indicates a first-order STM is present. None means no STM.
+        """
+        return self._stm_order
+
+    @property
+    def has_stm(self) -> bool:
+        """True if this trajectory was propagated with an STM."""
+        return self._stm_order is not None
+    
+    @property
+    def times(self) -> list:
+        """
+        Structural node times for this trajectory.
+
+        Returns [t0, t_j1, ..., t_jN, tf] where t_j1...t_jN are junction
+        times. For a single-segment trajectory, returns [t0, tf].
+        """
+        return (
+            [self._start_node.time]
+            + [node.time for node in self._junction_nodes]
+            + [self._end_node.time]
+        )
+
+    @property
+    def n_steps(self) -> int | list[int]:
+        """
+        Number of integration steps per segment.
+
+        Returns a scalar int for single-segment trajectories, or a list
+        of ints for multi-segment trajectories.
+        """
+        if self.n_segments == 1:
+            return self._outputs[0].n_steps
+        return [output.n_steps for output in self._outputs]
+
+    @property
+    def step_times(self) -> np.ndarray:
+        """
+        Integration step times across all segments as a single sorted array.
+
+        Junction times that appear at the boundary of two adjacent segments
+        are deduplicated. Useful for inspecting integrator step distribution
+        and diagnosing integration quality across a multi-segment trajectory.
+        """
+        all_times = np.concatenate(
+            [output.times.copy() for output in self._outputs]
+        )
+        return np.unique(all_times)
     
     # ========== SAMPLING METHODS ==========
     def state_at(self, t: float, 
@@ -648,6 +837,50 @@ class Trajectory:
             OrbitalElements at time t
         """
         return self.state_at(t, element_type)
+    
+    # ========== STATIC METHODS ==========
+    @staticmethod
+    def _infer_junction(output_pre, output_post) -> JunctionNode:
+        """
+        Infer the appropriate JunctionNode type from adjacent segment endpoints.
+
+        Examines the state continuity at the junction time and returns the
+        most specific node type consistent with the observed discontinuity.
+
+        Parameters
+        ----------
+        output_pre : Heyoka continuous output
+            Output object for the incoming segment.
+        output_post : Heyoka continuous output
+            Output object for the outgoing segment.
+
+        Returns
+        -------
+        JunctionNode
+            NullJunctionNode if full state is continuous within tolerance.
+            ImpulsiveJunctionNode if position is continuous but velocity is not.
+            FreeJunctionNode if position is discontinuous.
+        """
+        t_junc = float(output_pre.bounds[-1])
+        pre_state  = output_pre(t_junc)[:6].copy()
+        post_state = output_post(t_junc)[:6].copy()
+
+        # Full state continuous
+        if np.allclose(pre_state, post_state,
+                    rtol=config.EQUALITY_RTOL,
+                    atol=config.EQUALITY_ATOL):
+            return NullJunctionNode(t_junc, pre_state, post_state)
+
+        # Position continuous, velocity discontinuous
+        if np.allclose(pre_state[:3], post_state[:3],
+                    rtol=config.EQUALITY_RTOL,
+                    atol=config.EQUALITY_ATOL):
+            return ImpulsiveJunctionNode(t_junc,
+                                        pre_state=pre_state,
+                                        post_state=post_state)
+
+        # Full state discontinuous
+        return FreeJunctionNode(t_junc, pre_state, post_state)
     
     # ========== PLOTTING ==========
     # these methods are temporary until a Visualization module is established
