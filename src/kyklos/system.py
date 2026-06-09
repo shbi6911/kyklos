@@ -9,7 +9,18 @@ from typing import Optional, Dict, List, Tuple, Any, Union
 from enum import Enum
 import heyoka as hy
 from .orbital_elements import OrbitalElements, OEType
-from .trajectory import Trajectory
+from .trajectory import (
+    Trajectory,
+    Node,
+    BoundaryNode,
+    StartBoundaryNode,
+    EndBoundaryNode,
+    ImpulsiveBoundaryNode,
+    JunctionNode,
+    NullJunctionNode,
+    ImpulsiveJunctionNode,
+    FreeJunctionNode
+)
 from .satellite import Satellite
 from .utils import validation_error
 from .config import config
@@ -750,164 +761,7 @@ class System:
         self._compile_var_integrator(order=order)
         return self
     
-    # ========== PROPAGATION ==========
-    def propagate(
-        self, 
-        initial_state: "OrbitalElements | np.ndarray", 
-        t_start: float, 
-        t_end: float,
-        with_stm: bool = False,
-        stm_order: int = 1,
-        satellite: Optional[Satellite] = None
-    ) -> "Trajectory":
-        """
-        Propagate from t_start to t_end with dense output.
-        
-        Uses Heyoka's continuous output to store Taylor series coefficients,
-        enabling high-accuracy state evaluation at any time in [t_start, t_end]
-        without re-integration.
-        
-        Parameters
-        ----------
-        initial_state : OrbitalElements or array_like
-            Initial state vector [x, y, z, vx, vy, vz] in km, km/s
-        t_start : float
-            Start time [s]
-        t_end : float
-            End time [s]
-        with_stm : bool, optional
-            If True, propagate State Transition Matrix alongside trajectory.
-            Enables get_stm() method on returned Trajectory object.
-            Default: False
-        stm_order : int, optional
-            Order of variational equations (1 or 2). Order 1 computes the
-            State Transition Matrix (6x6). Order 2 additionally computes
-            State Transition Tensors (6x6x6) for second-order sensitivity
-            analysis. Only used if with_stm=True.
-            Default: 1
-        satellite : Satellite, optional
-            Satellite object containing physical properties (mass, drag 
-            coefficient, cross-sectional area, inertia tensor). Required 
-            if system has perturbations that depend on satellite properties
-            (e.g., drag). For systems without perturbations, can be None.
-        
-        
-       Returns
-        -------
-        Trajectory
-            Trajectory object containing dense output. If with_stm=True,
-            the Trajectory will support get_stm(t) method to query the
-            State Transition Matrix at any time t.
-            
-        Notes
-        -----
-        State Transition Matrix propagation increases computational cost:
-        - Compilation time: 2-5x longer due to symbolic differentiation
-        - Memory: State vector size increases from 6 to 42 elements (order=1)
-        or 258 elements (order=2)
-        - Integration speed: Minimal overhead during propagation
-
-        The STM is automatically initialized to the identity matrix at t_start.
-        """
-        # Select integrator
-        if with_stm:
-            # Compile variational if needed
-            if (self._cached_var_integrator is None or 
-                self._var_order != stm_order):
-                self._compile_var_integrator(order=stm_order)
-            ta = self._cached_var_integrator
-        else:
-            # Ensure base compiled
-            if not self.is_compiled:
-                self._compile_integrator()
-            ta = self._cached_integrator
-        # Assert for type checker (should always be true after compile)
-        assert ta is not None, "Integrator should be compiled"
-
-        # cast input times explicitly to floats (required by heyoka)
-        t_start = float(t_start)
-        t_end = float(t_end)
-
-        # validate and condition input state to produce initial state vector
-        if isinstance(initial_state, OrbitalElements):
-            # Check for type mismatch between system and elements
-            if self._base_type == SysType.CR3BP:
-                # CR3BP systems require CR3BP elements
-                if initial_state.element_type != OEType.CR3BP:
-                    raise ValueError(
-                        f"CR3BP system requires CR3BP (nondimensional) elements. "
-                        f"Got {initial_state.element_type.value}. "
-                        f"Convert to nondimensional coordinates first."
-                    )
-                state_array = initial_state.elements
-            else:
-                # 2-body systems should not get CR3BP elements
-                if initial_state.element_type == OEType.CR3BP:
-                    raise ValueError(
-                        f"Cannot use CR3BP (nondimensional) elements with "
-                        f"{self._base_type.value} system. "
-                        f"Use Cartesian or Keplerian elements instead."
-                    )
-                # Convert to Cartesian for propagation
-                cart_state = initial_state.to_cartesian()
-                state_array = cart_state.elements
-        else:
-            # Raw array input
-            state_array = np.asarray(initial_state)
-            # Validate array input (OrbitalElements already validated)
-            if not np.all(np.isfinite(state_array)):
-                raise ValueError(
-                    f"Initial state contains NaN or Inf values: {state_array}"
-                )
-        
-        # Handle satellite parameters
-        if satellite is not None:
-            params_array = self._process_satellite(satellite)
-            ta.pars[:] = params_array
-        elif len(self._param_info['param_map']) > 0:
-            raise ValueError(
-                f"This system requires a Satellite object. "
-                f"The following properties are needed: "
-                f"{[name for name, _ in self._param_info['param_map']]}"
-            )
-        
-       # Set initial conditions
-        ta.time = float(t_start)
-        ta.state[:6] = state_array
-
-        if with_stm:
-            # Initialize STM to identity
-            ta.state[6:42] = np.eye(6).flatten()
-            if stm_order == 2:
-                ta.state[42:] = 0.0  # Initialize STT to zero
-        
-        # Propagate until ending time
-        traj = ta.propagate_until(t_end, c_output=True)[4]
-
-        # Check for integration failure
-        if not np.all(np.isfinite(ta.state)):
-            validation_error(
-                f"Integration failed: state became invalid during propagation.\n"
-                f"Initial state: {state_array}\n"
-                f"Final time: {ta.time}\n"
-                f"Final state: {ta.state}\n"
-                f"Likely causes:\n"
-                f"  - Initial position too close to central body\n"
-                f"  - Collision with central body during propagation\n"
-                f"  - Numerical instability in perturbation models"
-            )
-        
-        # Check that continuous output object produces a valid trajectory
-        if traj is None:
-            validation_error(
-                f"Integration produced no continuous output (c_output is None).\n"
-                f"This may indicate a severe integration failure."
-            )
-
-        # Return Trajectory with STM info if present
-        return Trajectory(self, traj, t_start, t_end, 
-                        stm_order=stm_order if with_stm else None)
-
+    # ========== PROPAGATION HELPERS ==========
     def _process_satellite(self, satellite: Satellite) -> np.ndarray:
         """
         Extract parameters from Satellite object for Heyoka integrator.
@@ -941,6 +795,507 @@ class System:
                     f"This may indicate a bug in the System implementation."
                 )
         return np.array(params)
+    
+    def _state_to_array(
+            self,
+            state: OrbitalElements | np.ndarray
+    ) -> np.ndarray:
+        """
+        Convert a single initial state to a validated 6-element float array.
+
+        Parameters
+        ----------
+        state : OrbitalElements or array-like
+            State to convert.
+
+        Returns
+        -------
+        np.ndarray
+            Shape (6,) float array [km, km/s].
+        """
+        if isinstance(state, OrbitalElements):
+            if self._base_type == SysType.CR3BP:
+                if state.element_type != OEType.CR3BP:
+                    raise ValueError(
+                        f"CR3BP system requires CR3BP (nondimensional) elements. "
+                        f"Got {state.element_type.value}. "
+                        f"Convert to nondimensional coordinates first."
+                    )
+                return state.elements.astype(float)
+            else:
+                if state.element_type == OEType.CR3BP:
+                    raise ValueError(
+                        f"Cannot use CR3BP (nondimensional) elements with "
+                        f"{self._base_type.value} system. "
+                        f"Use Cartesian or Keplerian elements instead."
+                    )
+                return state.to_cartesian().elements.astype(float)
+        else:
+            arr = np.asarray(state, dtype=float)
+            if arr.shape != (6,):
+                raise ValueError(
+                    f"State array must have shape (6,), got {arr.shape}."
+                )
+            if not np.all(np.isfinite(arr)):
+                raise ValueError(
+                    f"Initial state contains NaN or Inf values: {arr}"
+                )
+            return arr
+    
+    def _validate_times(self, times) -> np.ndarray:
+        """
+        Validate and convert a times sequence to a sorted float array.
+
+        Parameters
+        ----------
+        times : array-like
+            Sequence of boundary times. Must be 1D, length >= 2, and
+            strictly increasing (forward propagation only).
+
+        Returns
+        -------
+        np.ndarray
+            Validated float array of times.
+        """
+        times = np.asarray(times, dtype=float)
+        if times.ndim != 1 or len(times) < 2:
+            raise ValueError(
+                f"times must be a 1D sequence of length >= 2, "
+                f"got shape {times.shape}."
+            )
+        if not np.all(np.diff(times) > 0):
+            raise ValueError(
+                "times must be strictly increasing. "
+                "Backward propagation is not supported via propagate(). "
+                "Use Trajectory.extend_back() for backward extension."
+            )
+        return times
+    
+    def _propagate_single_output(
+            self,
+            state_array: np.ndarray,
+            t_start: float,
+            t_end: float,
+            with_stm: bool,
+            stm_order: int,
+            satellite: Satellite | None
+    ) -> Any:
+        """
+        Propagate one segment and return the Heyoka continuous output object.
+
+        This is the atomic integration operation used by all propagation
+        modes. It does not construct a Trajectory.
+
+        Parameters
+        ----------
+        state_array : np.ndarray
+            6-element initial state [km, km/s].
+        t_start : float
+            Segment start time.
+        t_end : float
+            Segment end time. Must be > t_start.
+        with_stm : bool
+            If True, propagate with variational equations.
+        stm_order : int
+            Order of variational equations.
+        satellite : Satellite or None
+            Satellite model for parameterised perturbations.
+
+        Returns
+        -------
+        Heyoka continuous output object
+        """
+        # Select integrator
+        if with_stm:
+            if (self._cached_var_integrator is None
+                    or self._var_order != stm_order):
+                self._compile_var_integrator(order=stm_order)
+            ta = self._cached_var_integrator
+        else:
+            if not self.is_compiled:
+                self._compile_integrator()
+            ta = self._cached_integrator
+        assert ta is not None
+
+        # Handle satellite parameters
+        if satellite is not None:
+            params_array = self._process_satellite(satellite)
+            ta.pars[:] = params_array
+        elif len(self._param_info['param_map']) > 0:
+            raise ValueError(
+                f"This system requires a Satellite object. "
+                f"The following properties are needed: "
+                f"{[name for name, _ in self._param_info['param_map']]}"
+            )
+
+        # Set initial conditions
+        ta.time = float(t_start)
+        ta.state[:6] = state_array
+        if with_stm:
+            ta.state[6:42] = np.eye(6).flatten()
+            if stm_order == 2:
+                ta.state[42:] = 0.0
+
+        # Propagate
+        c_out = ta.propagate_until(float(t_end), c_output=True)[4]
+
+        # Validate integration result
+        if not np.all(np.isfinite(ta.state)):
+            validation_error(
+                f"Integration failed: state became invalid during propagation.\n"
+                f"Initial state: {state_array}\n"
+                f"Final time: {ta.time}\n"
+                f"Final state: {ta.state}\n"
+                f"Likely causes:\n"
+                f"  - Initial position too close to central body\n"
+                f"  - Collision with central body during propagation\n"
+                f"  - Numerical instability in perturbation models"
+            )
+        if c_out is None:
+            validation_error(
+                "Integration produced no continuous output. "
+                "This may indicate a severe integration failure."
+            )
+
+        return c_out
+    
+    def _propagate_single(
+            self,
+            initial_state: OrbitalElements | np.ndarray | BoundaryNode,
+            times: np.ndarray,
+            with_stm: bool,
+            stm_order: int,
+            satellite: Satellite | None
+    ) -> Trajectory:
+        """Single-segment propagation. Handles BoundaryNode input."""
+        t_start, t_end = float(times[0]), float(times[1])
+        provided_start_node = None
+
+        if isinstance(initial_state, BoundaryNode):
+            if not np.isclose(initial_state.time, t_start,
+                            rtol=config.EQUALITY_RTOL,
+                            atol=config.EQUALITY_ATOL):
+                raise ValueError(
+                    f"BoundaryNode time ({initial_state.time:.6g}) does not "
+                    f"match times[0] ({t_start:.6g})."
+                )
+            if initial_state.post_state is None:
+                raise ValueError(
+                    "BoundaryNode provided as initial_state must have a post_state. "
+                    "Use StartBoundaryNode or ImpulsiveBoundaryNode"
+                )
+            state_array = self._state_to_array(initial_state.post_state)
+            provided_start_node = initial_state
+        else:
+            state_array = self._state_to_array(initial_state)
+
+        c_out = self._propagate_single_output(
+            state_array, t_start, t_end, with_stm, stm_order, satellite
+        )
+
+        return Trajectory(
+            self, [c_out],
+            stm_order=stm_order if with_stm else None,
+            start_node=provided_start_node   # None -> auto-construct
+        )
+    
+    def _propagate_multi(
+            self,
+            initial_states: list[OrbitalElements | np.ndarray] | np.ndarray,
+            times: np.ndarray,
+            with_stm: bool,
+            stm_order: int,
+            satellite: Satellite | None
+    ) -> Trajectory:
+        """
+        Multi-Segment Input Mode 1: multi-segment propagation from arrays.
+
+        Each segment is propagated independently from its given initial
+        state. Junction nodes are inferred automatically from the actual
+        propagated states via Trajectory._infer_junction.
+        """
+        # Normalise initial_states to a list of individual states
+        if isinstance(initial_states, np.ndarray):
+            if initial_states.ndim != 2 or initial_states.shape[1] != 6:
+                raise ValueError(
+                    f"2D initial_state must have shape (n_seg, 6), "
+                    f"got {initial_states.shape}."
+                )
+            states_list = [initial_states[k] for k in range(len(initial_states))]
+        else:
+            states_list = initial_states
+
+        n_seg = len(times) - 1
+        if len(states_list) != n_seg:
+            raise ValueError(
+                f"initial_state has {len(states_list)} element(s) but "
+                f"times implies {n_seg} segment(s) (len(times) - 1 = {n_seg})."
+            )
+
+        # Propagate each segment
+        outputs = []
+        for k in range(n_seg):
+            state_array = self._state_to_array(states_list[k])
+            t_s, t_e = float(times[k]), float(times[k + 1])
+            c_out = self._propagate_single_output(
+                state_array, t_s, t_e, with_stm, stm_order, satellite
+            )
+            outputs.append(c_out)
+
+        # Trajectory constructor auto-infers junction nodes from outputs
+        return Trajectory(
+            self, outputs,
+            stm_order=stm_order if with_stm else None
+        )
+    
+    def _propagate_from_nodes(
+            self,
+            nodes: list,
+            with_stm: bool,
+            stm_order: int,
+            satellite: Satellite | None
+    ) -> Trajectory:
+        """
+        Multi-Segment Input Mode 2: node-based propagation.
+
+        Times and initial states are extracted from the node list. Junction
+        nodes are recreated from actual integration results, preserving the
+        design intent (delta-v, state jump) from the input nodes while
+        updating pre-states to reflect true dynamics.
+        """
+        # Structural validation
+        if len(nodes) < 2:
+            raise ValueError(
+                f"nodes must contain at least 2 elements, got {len(nodes)}."
+            )
+
+        if (not isinstance(nodes[0], BoundaryNode)
+                or nodes[0].post_state is None):
+            raise ValueError(
+                "nodes[0] must be a StartBoundaryNode or ImpulsiveBoundaryNode "
+                "(must have a post_state defining the trajectory start)."
+            )
+
+        if (not isinstance(nodes[-1], BoundaryNode)
+                or nodes[-1].pre_state is None):
+            raise ValueError(
+                "nodes[-1] must be an EndBoundaryNode or ImpulsiveBoundaryNode "
+                "(must have a pre_state defining the trajectory end)."
+            )
+
+        for k, node in enumerate(nodes[1:-1], start=1):
+            if not isinstance(node, JunctionNode):
+                raise ValueError(
+                    f"nodes[{k}] must be a JunctionNode, "
+                    f"got {type(node).__name__}."
+                )
+
+        n_seg = len(nodes) - 1
+
+        # Propagate each segment, recreating junction nodes from results
+        outputs = []
+        new_junction_nodes = []
+        current_post_state = nodes[0].post_state   # start from first node
+
+        for k in range(n_seg):
+            state_array = self._state_to_array(current_post_state)
+            t_start = float(nodes[k].time)
+            t_end   = float(nodes[k + 1].time)
+
+            if t_end <= t_start:
+                raise ValueError(
+                    f"Segment {k} has t_end ({t_end:.6g}) <= t_start "
+                    f"({t_start:.6g}). All segments must propagate forward."
+                )
+
+            c_out = self._propagate_single_output(
+                state_array, t_start, t_end, with_stm, stm_order, satellite
+            )
+            outputs.append(c_out)
+
+            # Recreate junction node for all but the final boundary
+            if k < n_seg - 1:
+                orig = nodes[k + 1]   # JunctionNode (validated above)
+                actual_pre = c_out(float(t_end))[:6].copy()
+
+                if isinstance(orig, NullJunctionNode):
+                    new_node = NullJunctionNode(
+                        t_end, actual_pre, actual_pre.copy()
+                    )
+                    current_post_state = actual_pre
+
+                elif isinstance(orig, ImpulsiveJunctionNode):
+                    post = actual_pre.copy()
+                    post[3:6] += orig.delta_v
+                    new_node = ImpulsiveJunctionNode(
+                        t_end, pre_state=actual_pre, post_state=post
+                    )
+                    current_post_state = post
+
+                elif isinstance(orig, FreeJunctionNode):
+                    # Warn if actual pre_state is inconsistent with nominal
+                    discrepancy = np.linalg.norm(
+                        actual_pre - orig.pre_state
+                    )
+                    if (config.STRICT_VALIDATION
+                            and discrepancy > config.EQUALITY_ATOL):
+                        warnings.warn(
+                            f"FreeJunctionNode at nodes[{k + 1}]: propagated "
+                            f"pre_state differs from nominal by "
+                            f"{discrepancy:.3e}. Node updated with actual "
+                            f"integration result. Set STRICT_VALIDATION=False "
+                            f"to silence this warning.",
+                            UserWarning,
+                            stacklevel=3
+                        )
+                    # Preserve user's post_state — it defines the next segment
+                    new_node = FreeJunctionNode(
+                        t_end, actual_pre, orig.post_state
+                    )
+                    current_post_state = orig.post_state
+
+                else:
+                    raise TypeError(
+                        f"Unrecognised JunctionNode type at nodes[{k + 1}]: "
+                        f"{type(orig).__name__}"
+                    )
+
+                new_junction_nodes.append(new_node)
+
+        return Trajectory(
+            self, outputs,
+            junction_nodes=new_junction_nodes,
+            stm_order=stm_order if with_stm else None,
+            start_node=nodes[0]   # preserve user's start boundary node
+        )
+    
+    # ========== PROPAGATION ==========
+    def propagate(
+            self,
+            initial_state: (OrbitalElements | np.ndarray
+                            | BoundaryNode | list | None) = None,
+            times: list | np.ndarray | None = None,
+            *,
+            nodes: list | None = None,
+            with_stm: bool = False,
+            stm_order: int = 1,
+            satellite: Satellite | None = None
+    ) -> Trajectory:
+        """
+        Propagate trajectories with dense output.
+
+        Three input modes are supported:
+
+        **Single segment** :
+        Provide a single initial_state and times=[t_start, t_end].
+        initial_state may be OrbitalElements, np.ndarray, or a BoundaryNode.
+        If a BoundaryNode, times[0] must match the node time within tolerance.
+
+        **Multi-segment (Mode 1)**:
+        Provide a list of initial states and times of length n_seg + 1.
+        Each adjacent pair in times defines one segment.
+        len(initial_state) must equal len(times) - 1.
+        Nodes are inferred automatically from actual propagated states.
+
+        **Multi-segment Node-based (Mode 2)**:
+        Provide nodes=[StartBoundaryNode, Junction1, ..., EndBoundaryNode].
+        times and initial_state must be None.
+        Junction nodes are recreated from actual integration results,
+        preserving design intent (delta-v, state jump) from the input nodes.
+
+        Parameters
+        ----------
+        initial_state : OrbitalElements, np.ndarray, BoundaryNode, list, or None
+            Initial state(s). Single state for one segment, list of states
+            for multiple segments. Must be None when nodes is provided.
+        times : array-like or None
+            Boundary times of length n_seg + 1. For one segment: [t0, tf].
+            Must be strictly increasing. Must be None when nodes is provided.
+        nodes : list of Node, optional
+            [StartBoundaryNode, JunctionNode, ..., EndBoundaryNode] for
+            node-based propagation. Cannot be combined with initial_state
+            or times.
+        with_stm : bool, optional
+            If True, propagate State Transition Matrix via variational equations. 
+            Default: False.
+        stm_order : int, optional
+            Order of variational equations (1 = first-order STM). Default: 1.
+        satellite : Satellite or None, optional
+            Satellite object containing physical properties (mass, drag 
+            coefficient, cross-sectional area, inertia tensor). Required 
+            if system has perturbations that depend on satellite properties
+            (e.g., drag). For systems without perturbations, can be None.
+
+        Returns
+        -------
+        Trajectory
+
+        Raises
+        ------
+        ValueError
+            If both nodes and initial_state are provided, if inputs are
+            structurally inconsistent, or if integration fails.
+
+        Notes
+        -----
+        State Transition Matrix propagation increases computational cost:
+        - Compilation time: 2-5x longer due to symbolic differentiation
+        - Memory: State vector size increases from 6 to 42 elements (order=1)
+        or 258 elements (order=2)
+
+        The STM is automatically initialized to the identity matrix at each Node.
+        Trajectory has methods to query segment-local and composite STM.
+        """
+        # Mutual exclusivity check
+        if nodes is not None and initial_state is not None:
+            raise ValueError(
+                "Cannot provide both nodes and initial_state. "
+                "Use nodes alone for node-based propagation, or "
+                "initial_state with times for state-based propagation."
+            )
+
+        if nodes is not None and times is not None:
+            raise ValueError(
+                "Cannot provide times when using node-based propagation. "
+                "Times are determined from node timestamps."
+            )
+
+        # Mode 2: node-based
+        if nodes is not None:
+            return self._propagate_from_nodes(
+                nodes, with_stm, stm_order, satellite
+            )
+
+        # Modes 1 and single: require initial_state and times
+        if initial_state is None:
+            raise ValueError(
+                "Must provide either initial_state (with times) or nodes."
+            )
+        if times is None:
+            raise ValueError(
+                "times must be provided when using initial_state."
+            )
+
+        times_arr = self._validate_times(times)
+
+        # Detect single vs multi-segment from initial_state type
+        if (isinstance(initial_state, list)
+        or (isinstance(initial_state, np.ndarray)
+            and initial_state.ndim == 2)):
+            return self._propagate_multi(
+                initial_state, times_arr, with_stm, stm_order, satellite
+            )
+        else:
+            if len(times_arr) != 2:
+                raise ValueError(
+                    f"Single-segment propagation requires times of length 2 "
+                    f"[t_start, t_end], got length {len(times_arr)}. "
+                    f"For multi-segment propagation, provide initial_state "
+                    f"as a list."
+                )
+            return self._propagate_single(
+                initial_state, times_arr, with_stm, stm_order, satellite
+            )
 
     # ========== NONDIMENSIONALIZATION METHODS ==========
     def r2nd(self, r):

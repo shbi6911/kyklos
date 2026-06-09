@@ -95,6 +95,8 @@ class KyklosConfig:
     RENDERER : str
         default renderer used by Plotly when displaying plots
         Default: 'browser'
+    NODE_COLORS : dict
+        default color-coding used when plotting Nodes
     """
     
     # Numerical tolerance for equality comparisons
@@ -121,6 +123,15 @@ class KyklosConfig:
     DEFAULT_BODY_OPACITY: float = 0.6
     PROXIMITY_THRESHOLD: float = 10.0
     RENDERER: str = 'browser'
+    NODE_COLORS: dict[str, str] = {
+        'StartBoundaryNode':     '#2ecc71',
+        'EndBoundaryNode':       '#e74c3c',
+        'ImpulsiveBoundaryNode': '#f39c12',
+        'NullJunctionNode':      '#bdc3c7',
+        'ImpulsiveJunctionNode': '#e67e22',
+        'FreeJunctionNode':      '#9b59b6',
+    }
+
 
     @property
     def HASH_DECIMALS(self) -> int:
@@ -168,18 +179,19 @@ class KyklosConfig:
         lines.append(f"    SNAP_TO_ZERO_THRESHOLD = {self.SNAP_TO_ZERO_THRESHOLD}")
         lines.append(f"    SNAP_TO_CIRCULAR = {self.SNAP_TO_CIRCULAR}")
         lines.append(f"    SNAP_TO_EQUATORIAL = {self.SNAP_TO_EQUATORIAL}")
-        lines.append("  Integration:")
-        lines.append(f"    INTEGRATION_RTOL = {self.INTEGRATION_RTOL}")
-        lines.append(f"    INTEGRATION_ATOL = {self.INTEGRATION_ATOL}")
         lines.append("  Behavior:")
         lines.append(f"    STRICT_VALIDATION = {self.STRICT_VALIDATION}")
         lines.append(f"    DEFAULT_COMPILE = {self.DEFAULT_COMPILE}")
+        lines.append(f"    INSTANCE_WARNING_THRESHOLD = {self.INSTANCE_WARNING_THRESHOLD}")
         lines.append("  Plotting:")
         lines.append(f"    DEFAULT_PLOT_POINTS = {self.DEFAULT_PLOT_POINTS}")
         lines.append(f"    DEFAULT_BODY_COLOR = '{self.DEFAULT_BODY_COLOR}'")
         lines.append(f"    DEFAULT_TRAJ_COLOR = '{self.DEFAULT_TRAJ_COLOR}'")
+        lines.append(f"    DEFAULT_TRAJ_COLOR_ADD = '{self.DEFAULT_TRAJ_COLOR_ADD}'")
         lines.append(f"    DEFAULT_BODY_OPACITY = {self.DEFAULT_BODY_OPACITY}")
         lines.append(f"    PROXIMITY_THRESHOLD = {self.PROXIMITY_THRESHOLD}")
+        lines.append(f"    RENDERER = {self.RENDERER}")
+        lines.append(f"    NODE_COLORS = {self.NODE_COLORS}")
         return "\n".join(lines)
 
 

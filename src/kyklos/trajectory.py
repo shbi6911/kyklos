@@ -8,7 +8,7 @@ import warnings
 import heyoka as hy
 import plotly.graph_objects as go
 import bisect
-from typing import Union, Optional, Dict, List, Tuple, Any, TYPE_CHECKING
+from typing import Union, Optional, cast, Dict, List, Tuple, Any, TYPE_CHECKING
 from abc import ABC, abstractmethod
 from .orbital_elements import OrbitalElements, OEType
 from __future__ import annotations
@@ -359,536 +359,1332 @@ class Trajectory:
         return np.unique(all_times)
     
     # ========== SAMPLING METHODS ==========
-    def state_at(self, t: float, 
-                 element_type: Union[OEType, str, None] = None) -> OrbitalElements:
+
+    # ========== DISPATCH INFRASTRUCTURE ==========
+    def _find_segment(self, t: float | np.ndarray) -> int | np.ndarray:
         """
-        Get orbital state at specified time.
-        
-        Parameters:
-            t: Time to query (must be in [t0, tf])
-            element_type: Desired element type (defaults to system-appropriate type)
-                        Can be OEType enum or string ('cart', 'kep', 'equi', 'cr3bp')
-        """
-        self._validate_time(t)
-        state_array = self._output(float(t)) # Heyoka requires float input
-        
-        # Auto-detect type from system if not specified
-        if element_type is None:
-            from .system import SysType
-            if self.system.base_type == SysType.CR3BP:
-                element_type = OEType.CR3BP
-            else:
-                element_type = OEType.CARTESIAN
-        else:
-            # Parse string to enum if needed
-            element_type = OrbitalElements._parse_element_type(element_type)
-        
-        return OrbitalElements(state_array[:6], element_type, 
-                            validate=False, system=self.system)
-    
-    def evaluate(self, 
-                 times: Union[float, np.ndarray, list],
-                 element_type: Union[OEType, str, None] 
-                 = None) -> Union[OrbitalElements, list[OrbitalElements]]:
-        """
-        Evaluate trajectory at one or more times.
-        
-        Parameters:
-            times: Single time or array of times
-            element_type: Desired element type (defaults to system-appropriate type)
-                        Can be OEType enum or string ('cart', 'kep', 'equi', 'cr3bp')
-            
-        Returns:
-            Single OrbitalElements if times is scalar,
-            list of OrbitalElements if times is array-like
-        """
-        # Auto-detect type from system if not specified
-        if element_type is None:
-            from .system import SysType
-            if self.system.base_type == SysType.CR3BP:
-                element_type = OEType.CR3BP
-            else:
-                element_type = OEType.CARTESIAN
-        else:
-            # Parse string to enum if needed
-            element_type = OrbitalElements._parse_element_type(element_type)
-        # Handle scalar input
-        if isinstance(times, (int, float)):
-            return self.state_at(times, element_type=element_type)
-        
-        # Handle array input
-        times = np.asarray(times, dtype=float)
-        states_array = self._output(times)  # One vectorized call to Heyoka
-        return [OrbitalElements(row[:6], element_type, validate=False, 
-                                system=self.system) 
-                for row in states_array]
-    
-    def sample(self, element_type: Union[OEType, str, None] = None, 
-               n_points: int = 100) -> list[OrbitalElements]:
-        """
-        Uniformly sample trajectory in time.
-        
-        Parameters:
-            n_points: Number of points to sample (default: 100)
-            element_type: Desired element type (defaults to system-appropriate type)
-                        Can be OEType enum or string ('cart', 'kep', 'equi', 'cr3bp')
-            
-        Returns:
-            List of OrbitalElements uniformly spaced in time
-        """
-        if n_points < 2:
-            raise ValueError("n_points must be at least 2, use .state_at()")
-        # generate evenly spaced times array
-        times = np.linspace(self.t0, self.tf, n_points)
-         # Auto-detect type from system if not specified
-        if element_type is None:
-            from .system import SysType
-            if self.system.base_type == SysType.CR3BP:
-                element_type = OEType.CR3BP
-            else:
-                element_type = OEType.CARTESIAN
-        else:
-            # Parse string to enum if needed
-            element_type = OrbitalElements._parse_element_type(element_type)
-        
-        states_array = self._output(times)  # One vectorized call to Heyoka
-        return [OrbitalElements(row[:6], element_type, validate=False, 
-                                system=self.system) 
-                for row in states_array]
-    
-    def state_at_raw(self, t: float) -> np.ndarray:
-        """Get raw state array at time t """
-        self._validate_time(t)
-        # return output at time t and copy to avoid aliasing
-        return self._output(float(t))[:6].copy()  # Heyoka needs float input
-    
-    def evaluate_raw(self, times: Union[float, np.ndarray, list]) -> np.ndarray:
-        """
-        Evaluate at one or more times, returning raw arrays.
-        
-        Parameters:
-            times: Single time or array of times
-            
-        Returns:
-            State array of shape (6,) if times is scalar,
-            Array of shape (n_times, 6) if times is array-like
-        """
-        # Handle scalar input
-        if isinstance(times, (int, float)):
-            return self.state_at_raw(times)
-        
-        # Handle array input
-        times = np.asarray(times, dtype=float)
-        return self._output(times)[:, :6]
-    
-    def sample_raw(self, n_points: int = 100) -> np.ndarray:
-        """
-        Uniformly sample trajectory in time, returning raw arrays.
-        
-        Parameters:
-            n_points: Number of points to sample (default: 100)
-            
-        Returns:
-            Array of shape (n_points, 6) with uniformly spaced states
-        """
-        if n_points < 2:
-            raise ValueError("n_points must be at least 2, use .state_at_raw()")
-        
-        times = np.linspace(self.t0, self.tf, n_points)
-        return self._output(times)[:, :6]
-    
-    def get_stm(self, t: float) -> np.ndarray:
-        """
-        Get State Transition Matrix at time t.
-        
+        Return index of segment(s) containing time(s) t.
+
+        At exact junction times, the later segment is preferred.
+        Accepts scalar or array input, returning the corresponding type.
+
         Parameters
         ----------
-        t : float
-            Time at which to evaluate STM
-            
+        t : float or np.ndarray
+            Query time(s). Assumed within [t0, tf].
+
         Returns
         -------
+        int
+            Segment index, if t is scalar.
         np.ndarray
-            6x6 State Transition Matrix Phi(t, t0)
-            
-        Raises
-        ------
-        ValueError
-            If trajectory was not propagated with STM
+            Array of segment indices, if t is array.
         """
-        if self._stm_order is None:
-            raise ValueError(
-                "Trajectory not propagated with STM. "
-                "Use with_stm=True in System.propagate()"
-            )
-        
-        self._validate_time(t)
-        
-        # Query continuous output for full state
-        full_state = self._output(float(t))
-        
-        # Extract STM (indices 6:42 for 6-state system)
-        stm_flat = full_state[6:42]
-        
-        # Reshape to 6x6 matrix and copy to avoid aliasing
-        return stm_flat.reshape(6, 6).copy()
-    
-    def state_full(self, t: float) -> np.ndarray:
-        """Get raw state array at time t, including STM if present"""
-        if self._stm_order is None:
-            warnings.warn(
-                "Trajectory does not have STM enabled. "
-                "Use state_at_raw() instead for non-STM trajectories.",
-                UserWarning,
-                stacklevel=2
-        )
-        self._validate_time(t)
-        # return a copy of output at time t to avoid aliasing
-        return self._output(float(t)).copy()  # Heyoka needs float input
-    
-    def evaluate_stm(self, times: Union[float, np.ndarray, list]) -> np.ndarray:
-        """
-        Evaluate STM at one or more times.
-        
-        Parameters
-        ----------
-        times : float or array-like
-            Single time or array of times
-            
-        Returns
-        -------
-        np.ndarray
-            STM array of shape (6, 6) if times is scalar,
-            Array of shape (n_times, 6, 6) if times is array-like
-            
-        Raises
-        ------
-        ValueError
-            If trajectory was not propagated with STM
-        """
-        if self._stm_order is None:
-            raise ValueError(
-                "Trajectory not propagated with STM. "
-                "Use with_stm=True in System.propagate()"
-            )
-        
-        # Handle scalar input
-        if isinstance(times, (int, float)):
-            return self.get_stm(times)
-        
-        # Handle array input
-        times = np.asarray(times, dtype=float)
-        full_states = self._output(times)  # Shape: (n, 42)
-        stm_flat = full_states[:, 6:42]     # Shape: (n, 36)
-        
-        # Reshape to (n, 6, 6)
-        n_times = len(times)
-        return stm_flat.reshape(n_times, 6, 6)
-    
-    def evaluate_full(self, times: Union[float, np.ndarray, list]) -> np.ndarray:
-        """
-        Evaluate at one or more times, returning raw arrays, including STM if present.
-        
-        Parameters:
-            times: Single time or array of times
-            
-        Returns:
-            State array of shape (6,) if times is scalar,
-            Array of shape (n_times, 6) if times is array-like
-        """
-        if self._stm_order is None:
-            warnings.warn(
-                "Trajectory does not have STM enabled. "
-                "Use evaluate_raw() instead for non-STM trajectories.",
-                UserWarning,
-                stacklevel=2
-        )
-        # Handle scalar input
-        if isinstance(times, (int, float)):
-            return self.state_full(times)
-        
-        # Handle array input
-        times = np.asarray(times, dtype=float)
-        return self._output(times)
-    
-    def sample_stm(self, n_points: int = 100) -> np.ndarray:
-        """
-        Uniformly sample STM in time.
-        
-        Parameters
-        ----------
-        n_points : int, optional
-            Number of points to sample (default: 100)
-            
-        Returns
-        -------
-        np.ndarray
-            Array of shape (n_points, 6, 6) with uniformly spaced STMs
-            
-        Raises
-        ------
-        ValueError
-            If trajectory was not propagated with STM or if n_points < 2
-        """
-        if self._stm_order is None:
-            raise ValueError(
-                "Trajectory not propagated with STM. "
-                "Use with_stm=True in System.propagate()"
-            )
-        
-        if n_points < 2:
-            raise ValueError("n_points must be at least 2, use .get_stm()")
-        
-        times = np.linspace(self.t0, self.tf, n_points)
-        full_states = self._output(times)  # Shape: (n, 42)
-        stm_flat = full_states[:, 6:42]     # Shape: (n, 36)
-        
-        # Reshape to (n, 6, 6)
-        return stm_flat.reshape(n_points, 6, 6)
-    
-    def sample_full(self, n_points: int = 100) -> np.ndarray:
-        """
-        Uniformly sample trajectory in time, returning raw arrays, including STM.
-        
-        Parameters:
-            n_points: Number of points to sample (default: 100)
-            
-        Returns:
-            Array of shape (n_points, 6) with uniformly spaced states
-        """
-        if self._stm_order is None:
-            warnings.warn(
-                "Trajectory does not have STM enabled. "
-                "Use evaluate_raw() instead for non-STM trajectories.",
-                UserWarning,
-                stacklevel=2
-        )
-        
-        if n_points < 2:
-            raise ValueError("n_points must be at least 2, use .state_at_raw()")
-        
-        times = np.linspace(self.t0, self.tf, n_points)
-        return self._output(times)
-    
-    # ========== UTILITY METHODS ==========
+        if isinstance(t, (int, float)):
+            return bisect.bisect_right(self._junction_times, t)
+        return np.searchsorted(self._junction_times, t, side='right')
+
     def _validate_time(self, t: float):
-        """Validate that time is within trajectory bounds."""
+        """Raise ValueError if t is outside [t0, tf]."""
         t_min = min(self.t0, self.tf)
         t_max = max(self.t0, self.tf)
-        
         if not (t_min <= t <= t_max):
             raise ValueError(
                 f"Time {t} outside trajectory bounds [{self.t0}, {self.tf}]"
             )
-    
+
     def contains_time(self, t: float) -> bool:
-        """Check if time is within trajectory bounds."""
+        """Return True if t is within trajectory bounds."""
         return self.t0 <= t <= self.tf
-    
+
     def get_times(self, n_points: int = 100) -> np.ndarray:
         """Generate uniform time array spanning trajectory."""
         return np.linspace(self.t0, self.tf, n_points)
+
+    def _resolve_element_type(self, element_type: OEType | str | None) -> OEType:
+        """
+        Resolve element type, defaulting to the system-appropriate type.
+
+        Parameters
+        ----------
+        element_type : OEType, str, or None
+            Desired element type, or None to use system default.
+
+        Returns
+        -------
+        OEType
+            Resolved element type enum value.
+        """
+        if element_type is None:
+            from .system import SysType
+            if self.system.base_type == SysType.CR3BP:
+                return OEType.CR3BP
+            return OEType.CARTESIAN
+        return OrbitalElements._parse_element_type(element_type)
     
-    def to_dataframe(self, 
-                    times: Optional[np.ndarray] = None,
-                    n_points: int = 1000) -> pd.DataFrame:
+    # ========== RAW ARRAY SAMPLING ==========
+    def state_at_raw(self, t: float) -> np.ndarray:
         """
-        Export trajectory to pandas DataFrame.
-        
-        Parameters:
-            times: Specific times to evaluate. If None, uses uniform sampling.
-            n_points: Number of uniform samples if times not provided (default: 1000)
-            
-        Returns:
-            DataFrame with columns for time and state components
+        Get raw state array at time t.
+
+        Parameters
+        ----------
+        t : float
+            Time to query. Must be within [t0, tf].
+
+        Returns
+        -------
+        np.ndarray
+            State vector of shape (6,) [km, km/s].
         """
-        # Get evaluation times
+        self._validate_time(t)
+        seg_idx = self._find_segment(t)
+        return self._outputs[seg_idx](float(t))[:6].copy()
+
+    def evaluate_raw(self, times: float | np.ndarray | list) -> np.ndarray:
+        """
+        Evaluate state at one or more times, returning raw arrays.
+
+        Parameters
+        ----------
+        times : float or array-like
+            Single time or array of times. All must be within [t0, tf].
+
+        Returns
+        -------
+        np.ndarray
+            Shape (6,) for scalar input, (n, 6) for array input [km, km/s].
+        """
+        if isinstance(times, (int, float)):
+            return self.state_at_raw(times)
+
+        times = np.asarray(times, dtype=float)
+
+        # Fast path for single segment
+        if self.n_segments == 1:
+            return self._outputs[0](times)[:, :6]
+
+        # Multi-segment: group times by segment for batch evaluation
+        n_times = len(times)
+        result = np.empty((n_times, 6))
+        seg_indices = self._find_segment(times)
+
+        for seg_idx in range(self.n_segments):
+            mask = seg_indices == seg_idx
+            if not np.any(mask):
+                continue
+            result[mask] = self._outputs[seg_idx](times[mask])[:, :6]
+
+        return result
+
+    def sample_raw(self, n_points: int = 100) -> np.ndarray:
+        """
+        Uniformly sample trajectory in time, returning raw arrays.
+
+        Parameters
+        ----------
+        n_points : int, optional
+            Number of sample points. Must be >= 2. Default: 100.
+
+        Returns
+        -------
+        np.ndarray
+            Shape (n_points, 6) [km, km/s].
+        """
+        if n_points < 2:
+            raise ValueError(
+                "n_points must be at least 2. Use state_at_raw() for a "
+                "single time."
+            )
+        times = np.linspace(self.t0, self.tf, n_points)
+        return self.evaluate_raw(times)
+
+        # ========== ORBITAL ELEMENTS SAMPLING ==========
+    def state_at(self, t: float,
+                element_type: OEType | str | None = None) -> OrbitalElements:
+        """
+        Get orbital state at time t as OrbitalElements.
+
+        Parameters
+        ----------
+        t : float
+            Time to query. Must be within [t0, tf].
+        element_type : OEType, str, or None, optional
+            Desired element type. Defaults to system-appropriate type.
+
+        Returns
+        -------
+        OrbitalElements
+        """
+        raw = self.state_at_raw(t)
+        element_type = self._resolve_element_type(element_type)
+        return OrbitalElements(raw, element_type, validate=False,
+                            system=self.system)
+
+    def evaluate(self,
+                times: float | np.ndarray | list,
+                element_type: OEType | str | None = None
+                ) -> OrbitalElements | list:
+        """
+        Evaluate state at one or more times as OrbitalElements.
+
+        Parameters
+        ----------
+        times : float or array-like
+            Single time or array of times. All must be within [t0, tf].
+        element_type : OEType, str, or None, optional
+            Desired element type. Defaults to system-appropriate type.
+
+        Returns
+        -------
+        OrbitalElements or list of OrbitalElements
+        """
+        if isinstance(times, (int, float)):
+            return self.state_at(times, element_type)
+
+        element_type = self._resolve_element_type(element_type)
+        raw = self.evaluate_raw(times)
+        return [OrbitalElements(row, element_type, validate=False,
+                                system=self.system)
+                for row in raw]
+
+    def sample(self, element_type: OEType | str | None = None,
+            n_points: int = 100) -> list:
+        """
+        Uniformly sample trajectory in time as OrbitalElements.
+
+        Parameters
+        ----------
+        element_type : OEType, str, or None, optional
+            Desired element type. Defaults to system-appropriate type.
+        n_points : int, optional
+            Number of sample points. Must be >= 2. Default: 100.
+
+        Returns
+        -------
+        list of OrbitalElements
+        """
+        if n_points < 2:
+            raise ValueError(
+                "n_points must be at least 2. Use state_at() for a "
+                "single time."
+            )
+        times = np.linspace(self.t0, self.tf, n_points)
+        return cast(list, self.evaluate(times, element_type))
+    
+    # ========== VARIATIONAL ODE (STM) SAMPLING ==========
+    def _require_stm(self):
+        """Raise ValueError if trajectory was not propagated with STM."""
+        if self._stm_order is None:
+            raise ValueError(
+                "Trajectory not propagated with STM. "
+                "Use with_stm=True in System.propagate()."
+            )
+    
+    # ========== FULL STATE METHODS ==========
+    def state_full(self, t: float) -> np.ndarray:
+        """
+        Get raw integrator state at time t.
+
+        Returns the full Heyoka state vector, including the segment-local
+        STM if the trajectory was propagated with with_stm=True. The STM
+        portion is Phi_k(t, t_k), referenced to the start of the segment
+        containing t. For the composite Phi(t, t0), use get_stm().
+
+        Parameters
+        ----------
+        t : float
+            Time to query. Must be within [t0, tf].
+
+        Returns
+        -------
+        np.ndarray
+            Shape (6,) without STM, (42,) with first-order STM.
+        """
+        if not self.has_stm:
+            if config.STRICT_VALIDATION:
+                warnings.warn(
+                    "Trajectory does not have STM enabled. "
+                    "Use state_at_raw() for non-STM trajectories.",
+                    UserWarning,
+                    stacklevel=2
+                )
+        self._validate_time(t)
+        seg_idx = self._find_segment(t)
+        return self._outputs[seg_idx](float(t)).copy()
+
+    def evaluate_full(self, times: float | np.ndarray | list) -> np.ndarray:
+        """
+        Evaluate raw integrator state at one or more times.
+
+        Returns the full Heyoka state vector at each time, including the
+        segment-local STM if present. For a multi-segment trajectory, the
+        STM portion at time t is Phi_k(t, t_k), referenced to the start of
+        the segment containing t. For the composite Phi(t, t0), use
+        evaluate_stm().
+
+        Parameters
+        ----------
+        times : float or array-like
+            Single time or array of times. All must be within [t0, tf].
+
+        Returns
+        -------
+        np.ndarray
+            Shape (6,) or (42,) for scalar input.
+            Shape (n, 6) or (n, 42) for array input.
+        """
+        if not self.has_stm:
+            if config.STRICT_VALIDATION:
+                warnings.warn(
+                    "Trajectory does not have STM enabled. "
+                    "Use state_at_raw() for non-STM trajectories.",
+                    UserWarning,
+                    stacklevel=2
+                )
+        # handle scalar input by delegation
+        if isinstance(times, (int, float)):
+            return self.state_full(times)
+
+        times = np.asarray(times, dtype=float)
+
+        # Fast path for single segment
+        if self.n_segments == 1:
+            return self._outputs[0](times).copy()
+
+        # Multi-segment: dispatch by segment
+        # Determine full state width from stm_order
+        full_width = 42 if self._stm_order == 1 else 6
+        n_times = len(times)
+        result = np.empty((n_times, full_width))
+        seg_indices = self._find_segment(times)
+
+        for seg_idx in range(self.n_segments):
+            mask = seg_indices == seg_idx
+            if not np.any(mask):
+                continue
+            result[mask] = self._outputs[seg_idx](times[mask])
+
+        return result
+
+    def sample_full(self, n_points: int = 100) -> np.ndarray:
+        """
+        Uniformly sample raw integrator state in time.
+
+        Returns the full Heyoka state vector at each sample time, including
+        the segment-local STM if present. See evaluate_full() for details
+        on STM referencing.
+
+        Parameters
+        ----------
+        n_points : int, optional
+            Number of sample points. Must be >= 2. Default: 100.
+
+        Returns
+        -------
+        np.ndarray
+            Shape (n_points, 6) or (n_points, 42).
+        """
+        if not self.has_stm:
+            if config.STRICT_VALIDATION:
+                warnings.warn(
+                    "Trajectory does not have STM enabled. "
+                    "Use state_at_raw() for non-STM trajectories.",
+                    UserWarning,
+                    stacklevel=2
+                )
+        if n_points < 2:
+            raise ValueError(
+                "n_points must be at least 2. Use state_full() for a "
+                "single time."
+            )
+        times = np.linspace(self.t0, self.tf, n_points)
+        return self.evaluate_full(times)
+    
+    # ========== COMPOSITE STM METHODS ==========
+    def get_stm(self, t: float) -> np.ndarray:
+        """
+        Get composite STM at time t, referenced to trajectory t0.
+
+        Returns Phi(t, t0), the full sensitivity of the state at t to the
+        initial state. For multi-segment trajectories this is assembled by
+        chaining segment STMs through junction maneuver Jacobians:
+
+            Phi(t, t0) = Phi_k(t, t_k) @ M_{k-1} @ ... @ M_0 @ Phi_0(t_1, t_0)
+
+        where M_i = junction_nodes[i].maneuver_jacobian().
+
+        Parameters
+        ----------
+        t : float
+            Time at which to evaluate STM. Must be within [t0, tf].
+
+        Returns
+        -------
+        np.ndarray
+            6x6 composite STM Phi(t, t0).
+
+        Raises
+        ------
+        ValueError
+            If trajectory was not propagated with STM.
+        """
+        self._require_stm()
+        self._validate_time(t)
+        seg_idx = self._find_segment(t)
+
+        # Segment-local STM: Phi_k(t, t_k)
+        full_state = self._outputs[seg_idx](float(t))
+        stm_local = full_state[6:42].reshape(6, 6).copy()
+
+        if seg_idx == 0:
+            return stm_local
+
+        # Compose backwards through junctions to t0
+        composite = stm_local
+        for k in range(seg_idx - 1, -1, -1):
+            t_junc = self._junction_nodes[k].time
+            full_state_k = self._outputs[k](float(t_junc))
+            stm_k_terminal = full_state_k[6:42].reshape(6, 6).copy()
+            M_k = self._junction_nodes[k].maneuver_jacobian()
+            composite = composite @ M_k @ stm_k_terminal
+
+        return composite
+
+    def evaluate_stm(self, times: float | np.ndarray | list) -> np.ndarray:
+        """
+        Evaluate composite STM at one or more times.
+
+        Returns Phi(t, t0) at each time. See get_stm() for details on
+        the composition across junctions.
+
+        Parameters
+        ----------
+        times : float or array-like
+            Single time or array of times. All must be within [t0, tf].
+
+        Returns
+        -------
+        np.ndarray
+            Shape (6, 6) for scalar input.
+            Shape (n, 6, 6) for array input.
+
+        Raises
+        ------
+        ValueError
+            If trajectory was not propagated with STM.
+        """
+        self._require_stm()
+
+        # Handle scalar input by delegation
+        if isinstance(times, (int, float)):
+            return self.get_stm(times)
+
+        times = np.asarray(times, dtype=float)
+        n_times = len(times)
+
+        if self.n_segments == 1:
+            # Fast path: vectorized Heyoka call, no composition needed
+            full_states = self._outputs[0](times)
+            return full_states[:, 6:42].reshape(n_times, 6, 6)
+
+        # Multi-segment: composition requires per-time computation
+        return np.array([self.get_stm(t) for t in times])
+
+    def sample_stm(self, n_points: int = 100) -> np.ndarray:
+        """
+        Uniformly sample composite STM in time.
+
+        Returns Phi(t, t0) at uniformly spaced times. See get_stm() for
+        details on the composition across junctions.
+
+        Parameters
+        ----------
+        n_points : int, optional
+            Number of sample points. Must be >= 2. Default: 100.
+
+        Returns
+        -------
+        np.ndarray
+            Shape (n_points, 6, 6).
+
+        Raises
+        ------
+        ValueError
+            If trajectory was not propagated with STM.
+        """
+        self._require_stm()
+        if n_points < 2:
+            raise ValueError(
+                "n_points must be at least 2. Use get_stm() for a "
+                "single time."
+            )
+        times = np.linspace(self.t0, self.tf, n_points)
+        return self.evaluate_stm(times)
+    
+    # ========== SEGMENT-LOCAL STM METHODS ==========
+    def get_stm_seg(self, t: float) -> np.ndarray:
+        """
+        Get segment-local STM at time t, referenced to segment start.
+
+        Returns Phi_k(t, t_k) where t_k is the start time of the segment
+        containing t. For the composite Phi(t, t0), use get_stm().
+
+        Parameters
+        ----------
+        t : float
+            Time at which to evaluate STM. Must be within [t0, tf].
+
+        Returns
+        -------
+        np.ndarray
+            6x6 segment-local STM Phi_k(t, t_k).
+
+        Raises
+        ------
+        ValueError
+            If trajectory was not propagated with STM.
+        """
+        self._require_stm()
+        self._validate_time(t)
+        seg_idx = self._find_segment(t)
+        full_state = self._outputs[seg_idx](float(t))
+        return full_state[6:42].reshape(6, 6).copy()
+
+    def evaluate_stm_seg(self, times: float | np.ndarray | list) -> np.ndarray:
+        """
+        Evaluate segment-local STM at one or more times.
+
+        Returns Phi_k(t, t_k) at each time. For multi-segment trajectories,
+        times in different segments will have STMs referenced to different
+        t_k values. For the composite Phi(t, t0), use evaluate_stm().
+
+        Parameters
+        ----------
+        times : float or array-like
+            Single time or array of times. All must be within [t0, tf].
+
+        Returns
+        -------
+        np.ndarray
+            Shape (6, 6) for scalar input.
+            Shape (n, 6, 6) for array input.
+
+        Raises
+        ------
+        ValueError
+            If trajectory was not propagated with STM.
+        """
+        self._require_stm()
+
+        # Handle scalar input by delegation
+        if isinstance(times, (int, float)):
+            return self.get_stm_seg(times)
+
+        times = np.asarray(times, dtype=float)
+        n_times = len(times)
+
+        # Fast path for single segment
+        if self.n_segments == 1:
+            full_states = self._outputs[0](times)
+            return full_states[:, 6:42].reshape(n_times, 6, 6)
+
+        # Multi-segment: batch by segment, no composition needed
+        result = np.empty((n_times, 6, 6))
+        seg_indices = self._find_segment(times)
+
+        for seg_idx in range(self.n_segments):
+            mask = seg_indices == seg_idx
+            if not np.any(mask):
+                continue
+            n_seg = int(np.sum(mask))
+            full_states = self._outputs[seg_idx](times[mask])
+            result[mask] = full_states[:, 6:42].reshape(n_seg, 6, 6)
+
+        return result
+
+    def sample_stm_seg(self, n_points: int = 100) -> np.ndarray:
+        """
+        Uniformly sample segment-local STM in time.
+
+        Returns Phi_k(t, t_k) at uniformly spaced times. See
+        evaluate_stm_seg() for details on referencing across segments.
+
+        Parameters
+        ----------
+        n_points : int, optional
+            Number of sample points. Must be >= 2. Default: 100.
+
+        Returns
+        -------
+        np.ndarray
+            Shape (n_points, 6, 6).
+
+        Raises
+        ------
+        ValueError
+            If trajectory was not propagated with STM.
+        """
+        self._require_stm()
+        if n_points < 2:
+            raise ValueError(
+                "n_points must be at least 2. Use get_stm_seg() for a "
+                "single time."
+            )
+        times = np.linspace(self.t0, self.tf, n_points)
+        return self.evaluate_stm_seg(times)
+
+    def segment_terminal_stm(self, seg_idx: int) -> np.ndarray:
+        """
+        Get STM of segment seg_idx at its terminal time.
+
+        Returns Phi_k(t_{k+1}, t_k) -- the STM of segment k evaluated at
+        the junction or end time bounding that segment. Used by the shooting
+        corrector to assemble the defect Jacobian without querying by time.
+
+        Parameters
+        ----------
+        seg_idx : int
+            Segment index in [0, n_segments - 1].
+
+        Returns
+        -------
+        np.ndarray
+            6x6 terminal STM of the specified segment.
+
+        Raises
+        ------
+        ValueError
+            If trajectory was not propagated with STM, or seg_idx is
+            out of range.
+        """
+        self._require_stm()
+        if not 0 <= seg_idx < self.n_segments:
+            raise ValueError(
+                f"seg_idx {seg_idx} out of range "
+                f"[0, {self.n_segments - 1}]."
+            )
+        if seg_idx < self.n_segments - 1:
+            terminal_time = self._junction_nodes[seg_idx].time
+        else:
+            terminal_time = self._end_node.time
+
+        full_state = self._outputs[seg_idx](float(terminal_time))
+        return full_state[6:42].reshape(6, 6).copy()
+    
+    # ========== UTILITY METHODS ==========
+    def to_dataframe(self,
+                 times: np.ndarray | None = None,
+                 n_points: int = 1000) -> pd.DataFrame:
+        """
+        Export trajectory to a pandas DataFrame.
+
+        Parameters
+        ----------
+        times : np.ndarray, optional
+            Specific times to evaluate. If None, uses uniform sampling
+            over [t0, tf]. Default: None.
+        n_points : int, optional
+            Number of uniform samples if times not provided. Default: 1000.
+
+        Returns
+        -------
+        pd.DataFrame
+            Columns: time, segment, x, y, z, vx, vy, vz.
+            segment is the zero-indexed segment containing each time point,
+            consistent with the post-junction convention used throughout.
+        """
         if times is None:
             times = np.linspace(self.t0, self.tf, n_points)
         else:
             times = np.asarray(times, dtype=float)
-        
-        # Evaluate states to a numpy array
+
         states = self.evaluate_raw(times)
-        
-        # Build data dictionary using array slicing
-        data = {
-            'time': times,
-            'x': states[:, 0],
-            'y': states[:, 1],
-            'z': states[:, 2],
-            'vx': states[:, 3],
-            'vy': states[:, 4],
-            'vz': states[:, 5],
-        }
-        
-        return pd.DataFrame(data)
+        seg_indices = self._find_segment(times)
+
+        return pd.DataFrame({
+            'time':    times,
+            'segment': seg_indices,
+            'x':       states[:, 0],
+            'y':       states[:, 1],
+            'z':       states[:, 2],
+            'vx':      states[:, 3],
+            'vy':      states[:, 4],
+            'vz':      states[:, 5],
+        })
     
-    def extend(self, new_tf: float, **propagation_kwargs) -> 'Trajectory':
-        """
-        Extend trajectory by continuing propagation to a new final time.
-        
-        This creates a NEW Trajectory object that continues from the current
-        end state. The original trajectory is unchanged.
-        
-        Parameters:
-            new_tf: New final time (must be > current tf)
-        
-        Returns:
-            New Trajectory object spanning [self.tf, new_tf]
-            
-        Raises:
-            ValueError: If new_tf <= self.tf
-        """
-        if new_tf <= self.tf:
-            raise ValueError(f"new_tf ({new_tf}) must be > current tf ({self.tf})")
-        
-        # Ensure proper type for new tf
-        new_tf = float(new_tf)
-
-        # Get the final state of current trajectory
-        final_state = self.state_at(self.tf)
-
-        # Preserve STM settings from original trajectory
-        with_stm = self._stm_order is not None
-        stm_order = self._stm_order if with_stm else 1
-
-        # Extract satellite from kwargs if provided
-        satellite = propagation_kwargs.get('satellite', None)
-        
-        # Continue propagation from final state
-        return self._system.propagate(
-            final_state, 
-            self.tf, 
-            new_tf,
-            with_stm=with_stm,
-            stm_order=stm_order,
-            satellite=satellite
-        )
+    # ========== TRAJECTORY MANIPULATION ==========
     
-    def slice(self, t_start: float, t_end: float, **propagation_kwargs) -> 'Trajectory':
-        """
-        Extract a time window as a new Trajectory.
-        
-        Creates a new Trajectory object representing the same orbital motion
-        but over a smaller time interval.
-        
-        Parameters:
-            t_start: Start time of slice (must be >= self.t0)
-            t_end: End time of slice (must be <= self.tf)
-            
-        Returns:
-            New Trajectory object spanning [t_start, t_end]
-            
-        Raises:
-            ValueError: If slice bounds are invalid or outside trajectory bounds
-        """
-        # Validate bounds
-        if t_start >= t_end:
-            raise ValueError(f"t_start ({t_start}) must be < t_end ({t_end})")
-        
-        if t_start < self.t0 or t_end > self.tf:
-            raise ValueError(
-                f"Slice bounds [{t_start}, {t_end}] outside trajectory "
-                f"bounds [{self.t0}, {self.tf}]"
-            )
-        # Ensure proper type for input times
-        t_start = float(t_start)
-        t_end = float(t_end)
-
-        # Preserve STM settings from original trajectory
-        with_stm = self._stm_order is not None
-        stm_order = self._stm_order if with_stm else 1
-
-        # Extract satellite_params from kwargs if provided
-        satellite = propagation_kwargs.get('satellite', None)
-        
-        # set initial state 
-        new_initial_state = self.state_at(t_start)
-        # Create new Trajectory with same integrator but different time bounds
-        return self._system.propagate(
-            new_initial_state, 
-            t_start, 
-            t_end,
-            with_stm=with_stm,
-            stm_order=stm_order,
-            satellite=satellite
-        )
-
-    # ========== SPECIAL METHODS ==========
-    def __repr__(self):
-        return (f"Trajectory(system={self.system.primary_body.name}, "
-                f"t0={self.t0}, tf={self.tf}, duration={self.duration})")
-    
-    def __str__(self):
-        return (f"Trajectory around {self.system.primary_body.name}: "
-                f"t ∈ [{self.t0}, {self.tf}]")
-    
-    def __call__(self, t: float, element_type: Union[OEType, str, None] = None
-                 ) -> OrbitalElements:
-        """
-        Evaluate trajectory at time t.
-        Syntactic sugar for .state_at(t). Allows traj(t) syntax.
-        
-        Parameters:
-            t: Time to query
-            
-        Returns:
-            OrbitalElements at time t
-        """
-        return self.state_at(t, element_type)
-    
-    # ========== STATIC METHODS ==========
+    # ========== HELPER METHODS ==========
     @staticmethod
-    def _infer_junction(output_pre, output_post) -> JunctionNode:
+    def _boundary_from_junction(node: JunctionNode, role: str) -> BoundaryNode:
         """
-        Infer the appropriate JunctionNode type from adjacent segment endpoints.
+        Create a BoundaryNode from a JunctionNode.
 
-        Examines the state continuity at the junction time and returns the
-        most specific node type consistent with the observed discontinuity.
+        Used when a slice or segment extraction begins or ends at a junction.
+        ImpulsiveJunctionNode produces an ImpulsiveBoundaryNode preserving
+        full maneuver context. All other node types produce a plain boundary
+        using the appropriate side: post_state for 'start', pre_state for 'end'.
 
         Parameters
         ----------
-        output_pre : Heyoka continuous output
-            Output object for the incoming segment.
-        output_post : Heyoka continuous output
-            Output object for the outgoing segment.
+        node : JunctionNode
+            Source junction node.
+        role : str
+            'start' for a StartBoundaryNode, 'end' for an EndBoundaryNode.
+        """
+        if isinstance(node, ImpulsiveJunctionNode):
+            return ImpulsiveBoundaryNode(node.time,
+                                        pre_state=node.pre_state,
+                                        post_state=node.post_state)
+        if role == 'start':
+            return StartBoundaryNode(node.time, node.post_state)
+        return EndBoundaryNode(node.time, node.pre_state)
+    
+    @staticmethod
+    def _recreate_junction(node: JunctionNode) -> JunctionNode:
+        """
+        Create a new JunctionNode with identical data to the given node.
+
+        Used to produce fresh node objects during slice and segment_slice
+        rather than sharing references with the source trajectory.
+        """
+        if isinstance(node, NullJunctionNode):
+            return NullJunctionNode(node.time, node.pre_state, node.post_state)
+        if isinstance(node, ImpulsiveJunctionNode):
+            return ImpulsiveJunctionNode(node.time,
+                                        pre_state=node.pre_state,
+                                        post_state=node.post_state)
+        if isinstance(node, FreeJunctionNode):
+            return FreeJunctionNode(node.time, node.pre_state, node.post_state)
+        raise TypeError(f"Unrecognised JunctionNode type: {type(node).__name__}")
+    
+    def _back_and_forward_propagate(
+        self, new_t0: float, back_state: np.ndarray,
+        with_stm: bool, stm_order: int, satellite) -> object:
+        """
+        Produce a forward Heyoka output spanning [new_t0, self.t0].
+
+        Back-propagates from (self.t0, back_state) to find the state at
+        new_t0, then re-propagates forward. The backward probe propagation
+        uses no STM regardless of trajectory settings, since only the
+        terminal state is needed from it. The forward re-propagation
+        respects with_stm and stm_order.
+
+        Parameters
+        ----------
+        new_t0 : float
+            New start time. Must be less than self.t0.
+        back_state : np.ndarray
+            State to propagate backward from self.t0 [km, km/s].
+        with_stm : bool
+            Whether to propagate with STM on the forward pass.
+        stm_order : int
+            STM order for the forward pass.
+        satellite : Satellite or None
+            Satellite model for perturbations.
 
         Returns
         -------
-        JunctionNode
-            NullJunctionNode if full state is continuous within tolerance.
-            ImpulsiveJunctionNode if position is continuous but velocity is not.
-            FreeJunctionNode if position is discontinuous.
+        Heyoka continuous output object
+            Forward-propagated output for [new_t0, self.t0].
+
+        Notes
+        -----
+        This method performs two full propagations and is therefore more
+        expensive than a single forward propagation. The backward probe
+        result is discarded after state extraction.
         """
-        t_junc = float(output_pre.bounds[-1])
-        pre_state  = output_pre(t_junc)[:6].copy()
-        post_state = output_post(t_junc)[:6].copy()
+        # Step 1: Back-propagate to find the state at new_t0.
+        # Heyoka supports backward propagation when the target time is
+        # less than the initial time.
+        back_traj = self._system.propagate(
+            back_state, self.t0, new_t0,
+            with_stm=False,
+            satellite=satellite
+        )
+        state_at_new_t0 = back_traj.state_at_raw(new_t0)
 
-        # Full state continuous
-        if np.allclose(pre_state, post_state,
-                    rtol=config.EQUALITY_RTOL,
-                    atol=config.EQUALITY_ATOL):
-            return NullJunctionNode(t_junc, pre_state, post_state)
+        # Step 2: Re-propagate forward from the found initial conditions.
+        fwd_seg = self._system.propagate(
+            state_at_new_t0, new_t0, self.t0,
+            with_stm=with_stm, stm_order=stm_order, satellite=satellite
+        )
+        return fwd_seg._outputs[0]
+    
+    # ========== SLICING METHODS ==========
+    def segment_slice(self, start_idx: int, end_idx: int) -> Trajectory:
+        """
+        Extract a contiguous range of segments as a new Trajectory.
 
-        # Position continuous, velocity discontinuous
-        if np.allclose(pre_state[:3], post_state[:3],
-                    rtol=config.EQUALITY_RTOL,
-                    atol=config.EQUALITY_ATOL):
-            return ImpulsiveJunctionNode(t_junc,
+        Segments are selected by index. Both start_idx and end_idx are
+        inclusive. The extracted trajectory reuses the underlying Heyoka
+        output objects from the original for efficiency; all node objects
+        are recreated.
+
+        Parameters
+        ----------
+        start_idx : int
+            Index of the first segment to include. Must be >= 0.
+        end_idx : int
+            Index of the last segment to include (inclusive).
+            Must be >= start_idx and <= n_segments - 1.
+
+        Returns
+        -------
+        Trajectory
+            New Trajectory containing segments [start_idx, ..., end_idx].
+
+        Raises
+        ------
+        ValueError
+            If indices are out of range or start_idx > end_idx.
+        """
+        if not isinstance(start_idx, int) or not isinstance(end_idx, int):
+            raise TypeError("start_idx and end_idx must be integers.")
+        if not 0 <= start_idx <= end_idx <= self.n_segments - 1:
+            raise ValueError(
+                f"Segment indices [{start_idx}, {end_idx}] out of valid range "
+                f"[0, {self.n_segments - 1}]. Both endpoints are inclusive."
+            )
+
+        # Reuse Heyoka output objects for selected segments
+        outputs = self._outputs[start_idx:end_idx + 1]
+
+        # Recreate internal junction nodes as new objects.
+        # junction_nodes[k] sits between segment k and segment k+1, so
+        # internal junctions for segments [start_idx..end_idx] are
+        # junction_nodes[start_idx..end_idx-1].
+        junction_nodes = [
+            self._recreate_junction(self._junction_nodes[k])
+            for k in range(start_idx, end_idx)
+        ]
+
+        # Determine start boundary node
+        if start_idx == 0:
+            # Slice starts at the original trajectory boundary
+            start_node = self._start_node
+        else:
+            # Slice starts at what was an internal junction
+            start_node = self._boundary_from_junction(
+                self._junction_nodes[start_idx - 1], 'start'
+            )
+
+        # Determine end boundary node
+        if end_idx == self.n_segments - 1:
+            # Slice ends at the original trajectory boundary
+            end_node = self._end_node
+        else:
+            # Slice ends at what was an internal junction
+            end_node = self._boundary_from_junction(
+                self._junction_nodes[end_idx], 'end'
+            )
+
+        return Trajectory(
+            self._system,
+            outputs,
+            junction_nodes=junction_nodes,
+            stm_order=self._stm_order,
+            start_node=start_node,
+            end_node=end_node
+        )
+    
+    def slice(self, t_start: float, t_end: float,
+          **propagation_kwargs) -> Trajectory:
+        """
+        Extract a time interval as a new Trajectory by re-propagation.
+
+        The interval [t_start, t_end] may span multiple segments. Internal
+        junction nodes within the interval are preserved: their type and
+        maneuver data are carried through to the new trajectory, but new
+        node objects are constructed from the re-propagated states. This
+        ensures physical consistency even when t_start differs from the
+        original segment boundary.
+
+        If t_start or t_end coincides (within tolerance) with a junction
+        time, the junction's maneuver context is preserved in the resulting
+        boundary node. For ImpulsiveJunctionNode, this produces an
+        ImpulsiveBoundaryNode.
+
+        Parameters
+        ----------
+        t_start : float
+            Start of the extracted interval. Must be >= t0.
+        t_end : float
+            End of the extracted interval. Must be <= tf and > t_start.
+
+        Returns
+        -------
+        Trajectory
+            New re-propagated Trajectory spanning [t_start, t_end].
+
+        Raises
+        ------
+        ValueError
+            If bounds are invalid or outside the trajectory time range.
+        """
+        t_start, t_end = float(t_start), float(t_end)
+
+        if t_start >= t_end:
+            raise ValueError(
+                f"t_start ({t_start:.6g}) must be less than t_end ({t_end:.6g})."
+            )
+        if t_start < self.t0 or t_end > self.tf:
+            raise ValueError(
+                f"Slice bounds [{t_start:.6g}, {t_end:.6g}] fall outside "
+                f"trajectory bounds [{self.t0:.6g}, {self.tf:.6g}]."
+            )
+
+        with_stm  = self._stm_order is not None
+        stm_order = self._stm_order if self._stm_order is not None else 1
+        satellite = propagation_kwargs.get('satellite', None)
+
+        # Detect if t_start or t_end coincide with any junction time
+        def _find_coincident_junction(t: float) -> int | None:
+            return next(
+                (k for k, t_j in enumerate(self._junction_times)
+                if np.isclose(t, t_j,
+                            rtol=config.EQUALITY_RTOL,
+                            atol=config.EQUALITY_ATOL)),
+                None
+            )
+
+        start_junc_idx = _find_coincident_junction(t_start)
+        end_junc_idx   = _find_coincident_junction(t_end)
+
+        # Find internal junction indices strictly within (t_start, t_end).
+        # If t_start/t_end land on a junction, exclude that junction from
+        # internal nodes — it becomes a boundary node instead.
+        lo = (start_junc_idx + 1 if start_junc_idx is not None
+            else bisect.bisect_right(self._junction_times, t_start))
+        hi = (end_junc_idx if end_junc_idx is not None
+            else bisect.bisect_left(self._junction_times, t_end))
+        internal_indices = list(range(lo, hi))
+
+        # Build propagation intervals separated by internal junctions
+        t_splits = (
+            [t_start]
+            + [self._junction_times[k] for k in internal_indices]
+            + [t_end]
+        )
+
+        # Propagate each interval, applying junction maneuvers between them
+        outputs = []
+        current_state = self.state_at_raw(t_start)
+
+        for i, (t_s, t_e) in enumerate(zip(t_splits[:-1], t_splits[1:])):
+            seg = self._system.propagate(
+                current_state, t_s, t_e,
+                with_stm=with_stm,
+                stm_order=stm_order,
+                satellite=satellite
+            )
+            outputs.append(seg._outputs[0])
+
+            if i < len(internal_indices):
+                # Apply the maneuver from the original junction
+                orig_node = self._junction_nodes[internal_indices[i]]
+                pre_state = seg.state_at_raw(t_e)
+
+                if isinstance(orig_node, ImpulsiveJunctionNode):
+                    current_state = pre_state.copy()
+                    current_state[3:6] += orig_node.delta_v
+                elif isinstance(orig_node, FreeJunctionNode):
+                    current_state = pre_state + orig_node.state_defect
+                else:
+                    # NullJunctionNode: no state change
+                    current_state = pre_state.copy()
+
+        # Build new internal junction nodes from the re-propagated states
+        new_junction_nodes = []
+        for i, k in enumerate(internal_indices):
+            orig_node = self._junction_nodes[k]
+            t_j = self._junction_times[k]
+            pre_state = outputs[i](float(t_j))[:6].copy()
+
+            if isinstance(orig_node, ImpulsiveJunctionNode):
+                post_state = pre_state.copy()
+                post_state[3:6] += orig_node.delta_v
+                new_junction_nodes.append(
+                    ImpulsiveJunctionNode(t_j,
                                         pre_state=pre_state,
                                         post_state=post_state)
+                )
+            elif isinstance(orig_node, FreeJunctionNode):
+                post_state = pre_state + orig_node.state_defect
+                new_junction_nodes.append(
+                    FreeJunctionNode(t_j, pre_state, post_state)
+                )
+            else:
+                new_junction_nodes.append(
+                    NullJunctionNode(t_j, pre_state, pre_state.copy())
+                )
 
-        # Full state discontinuous
-        return FreeJunctionNode(t_junc, pre_state, post_state)
+        # Determine boundary nodes
+        start_node = (self._boundary_from_junction(
+                        self._junction_nodes[start_junc_idx], 'start')
+                    if start_junc_idx is not None
+                    else None)
+
+        end_node = (self._boundary_from_junction(
+                        self._junction_nodes[end_junc_idx], 'end')
+                    if end_junc_idx is not None
+                    else None)
+
+        return Trajectory(
+            self._system,
+            outputs,
+            junction_nodes=new_junction_nodes,
+            stm_order=self._stm_order,
+            start_node=start_node,
+            end_node=end_node
+        )
+
+    # ========== EXTENSION METHODS ==========
+    def extend(self, new_tf: float, junction=None,
+           **propagation_kwargs) -> Trajectory:
+        """
+        Extend trajectory forward in time by appending a new segment at the end.
+
+        The junction parameter controls how the new segment connects to the
+        current trajectory at tf. Behavior depends on junction type:
+
+        - None + EndBoundaryNode  : continuous propagation from end state.
+                                    NullJunctionNode inferred automatically.
+        - None + ImpulsiveBoundaryNode : stored maneuver data used directly.
+                                        ImpulsiveJunctionNode created from
+                                        the node's pre/post states.
+                                        Propagation starts from post_state.
+        - 3-element np.ndarray (delta_v) : impulsive burn applied at tf.
+                                            ImpulsiveJunctionNode constructed.
+                                            Propagation from post-burn state.
+        - JunctionNode instance   : explicit junction. Propagation from
+                                    junction.post_state.
+
+        Parameters
+        ----------
+        new_tf : float
+            New end time. Must be greater than current tf.
+        junction : None, np.ndarray, or JunctionNode, optional
+            Junction specification at the connection point. Default: None.
+
+        Returns
+        -------
+        Trajectory
+            New Trajectory with an additional segment appended.
+
+        Raises
+        ------
+        ValueError
+            If new_tf <= tf, or if a JunctionNode time does not match tf.
+        TypeError
+            If junction is not None, np.ndarray, or JunctionNode.
+        """
+        if new_tf <= self.tf:
+            raise ValueError(
+                f"new_tf ({new_tf:.6g}) must be greater than "
+                f"current tf ({self.tf:.6g})."
+            )
+        new_tf = float(new_tf)  # Heyoka requires float input
+
+        with_stm  = self._stm_order is not None
+        stm_order = self._stm_order if self._stm_order is not None else 1
+        satellite = propagation_kwargs.get('satellite', None)
+
+        # Determine initial state and junction node for the new segment
+        new_junction_node = None  # None triggers _infer_junction below
+
+        if junction is None:
+            if isinstance(self._end_node, ImpulsiveBoundaryNode):
+                initial_state    = self._end_node.post_state
+                new_junction_node = ImpulsiveJunctionNode(
+                    self.tf,
+                    pre_state=self._end_node.pre_state,
+                    post_state=self._end_node.post_state
+                )
+            else:
+                initial_state = self._end_node.pre_state
+
+        elif isinstance(junction, np.ndarray):
+            delta_v = np.asarray(junction, dtype=float)
+            if delta_v.shape != (3,):
+                raise ValueError(
+                    f"delta_v must be a 3-element vector, "
+                    f"got shape {delta_v.shape}."
+                )
+            pre_state  = self._end_node.pre_state
+            post_state = pre_state.copy()
+            post_state[3:6] += delta_v
+            initial_state    = post_state
+            new_junction_node = ImpulsiveJunctionNode(
+                self.tf,
+                pre_state=pre_state,
+                post_state=post_state
+            )
+
+        elif isinstance(junction, JunctionNode):
+            if not np.isclose(junction.time, self.tf,
+                            rtol=config.EQUALITY_RTOL,
+                            atol=config.EQUALITY_ATOL):
+                raise ValueError(
+                    f"JunctionNode time ({junction.time:.6g}) does not match "
+                    f"trajectory end time ({self.tf:.6g})."
+                )
+            initial_state    = junction.post_state
+            new_junction_node = junction
+
+        else:
+            raise TypeError(
+                f"junction must be None, a 3-element delta_v array, or a "
+                f"JunctionNode instance. Got {type(junction).__name__}."
+            )
+
+        # Propagate the new segment
+        new_seg = self._system.propagate(
+            initial_state, self.tf, new_tf,
+            with_stm=with_stm, stm_order=stm_order, satellite=satellite
+        )
+        new_output = new_seg._outputs[0]
+
+        # Build junction between current end and new segment
+        if new_junction_node is None:
+            new_junction_node = Trajectory._infer_junction(
+                self._outputs[-1], new_output
+            )
+
+        return Trajectory(
+            self._system,
+            self._outputs + [new_output],
+            junction_nodes=self._junction_nodes + [new_junction_node],
+            stm_order=self._stm_order,
+            start_node=self._start_node,
+            end_node=None   # auto-construct from new output
+        )
+
+
+    def extend_back(self, new_t0: float, junction=None,
+                    **propagation_kwargs) -> Trajectory:
+        """
+        Extend trajectory backward in time by prepending a new segment at the start.
+
+        Mirrors extend() but operates at the trajectory start. Because the
+        new segment must be a standard forward Heyoka output, this method
+        performs two propagations internally: a backward probe to find the
+        state at new_t0, then a forward re-propagation. This makes
+        extend_back() more expensive than extend().
+
+        Note: existing segments and nodes retain their original time stamps.
+        If self.t0 == 0.0, this forces new_t0 to be negative. A future fix
+        will re-propagate existing segments with adjusted node times once
+        System.propagate() accepts Node input, eliminating this constraint.
+
+        The junction parameter controls how the new segment connects at t0:
+
+        - None + StartBoundaryNode      : continuous back-propagation from
+                                        current start state.
+                                        NullJunctionNode inferred.
+        - None + ImpulsiveBoundaryNode  : back-propagation from pre_state.
+                                        ImpulsiveJunctionNode created from
+                                        the node's pre/post states.
+        - 3-element np.ndarray (delta_v): impulsive burn at t0.
+                                        pre_state = post_state - [0,0,0,dv].
+                                        Back-propagation from pre_state.
+        - JunctionNode instance         : explicit junction. Back-propagation
+                                        from junction.pre_state.
+
+        Parameters
+        ----------
+        new_t0 : float
+            New start time. Must be less than current t0.
+        junction : None, np.ndarray, or JunctionNode, optional
+            Junction specification at the connection point. Default: None.
+
+        Returns
+        -------
+        Trajectory
+            New Trajectory with an additional segment prepended.
+
+        Raises
+        ------
+        ValueError
+            If new_t0 >= t0, or if a JunctionNode time does not match t0.
+        TypeError
+            If junction is not None, np.ndarray, or JunctionNode.
+        """
+        if new_t0 >= self.t0:
+            raise ValueError(
+                f"new_t0 ({new_t0:.6g}) must be less than "
+                f"current t0 ({self.t0:.6g})."
+            )
+        new_t0 = float(new_t0) # Heyoka requires float input
+
+        with_stm  = self._stm_order is not None
+        stm_order = self._stm_order if self._stm_order is not None else 1
+        satellite = propagation_kwargs.get('satellite', None)
+
+        new_junction_node = None
+
+        if junction is None:
+            if isinstance(self._start_node, ImpulsiveBoundaryNode):
+                back_state       = self._start_node.pre_state
+                new_junction_node = ImpulsiveJunctionNode(
+                    self.t0,
+                    pre_state=self._start_node.pre_state,
+                    post_state=self._start_node.post_state
+                )
+            else:
+                back_state = self._start_node.post_state
+
+        elif isinstance(junction, np.ndarray):
+            delta_v = np.asarray(junction, dtype=float)
+            if delta_v.shape != (3,):
+                raise ValueError(
+                    f"delta_v must be a 3-element vector, "
+                    f"got shape {delta_v.shape}."
+                )
+            post_state = self._start_node.post_state
+            pre_state  = post_state.copy()
+            pre_state[3:6] -= delta_v
+            back_state       = pre_state
+            new_junction_node = ImpulsiveJunctionNode(
+                self.t0,
+                pre_state=pre_state,
+                post_state=post_state
+            )
+
+        elif isinstance(junction, JunctionNode):
+            if not np.isclose(junction.time, self.t0,
+                            rtol=config.EQUALITY_RTOL,
+                            atol=config.EQUALITY_ATOL):
+                raise ValueError(
+                    f"JunctionNode time ({junction.time:.6g}) does not match "
+                    f"trajectory start time ({self.t0:.6g})."
+                )
+            back_state       = junction.pre_state
+            new_junction_node = junction
+
+        else:
+            raise TypeError(
+                f"junction must be None, a 3-element delta_v array, or a "
+                f"JunctionNode instance. Got {type(junction).__name__}."
+            )
+
+        # Produce the new forward segment via back-and-forward propagation
+        new_output = self._back_and_forward_propagate(
+            new_t0, back_state, with_stm, stm_order, satellite
+        )
+
+        # Build junction between new segment and current start
+        if new_junction_node is None:
+            new_junction_node = Trajectory._infer_junction(
+                new_output, self._outputs[0]
+            )
+
+        return Trajectory(
+            self._system,
+            [new_output] + self._outputs,
+            junction_nodes=[new_junction_node] + self._junction_nodes,
+            stm_order=self._stm_order,
+            start_node=None,    # auto-construct from new output
+            end_node=self._end_node
+        )
+
+    # ========== SPECIAL METHODS ==========
+    def __repr__(self) -> str:
+        seg_str = f"{self.n_segments} segment{'s' if self.n_segments > 1 else ''}"
+        stm_str = f", stm_order={self._stm_order}" if self.has_stm else ""
+        return (
+            f"Trajectory(system={self._system.primary_body.name}, "
+            f"t0={self.t0:.6g}, tf={self.tf:.6g}, "
+            f"{seg_str}{stm_str})"
+        )
+
+    def __str__(self) -> str:
+        seg_str = f"{self.n_segments} segment{'s' if self.n_segments > 1 else ''}"
+        return (
+            f"Trajectory around {self._system.primary_body.name}: "
+            f"t in [{self.t0:.6g}, {self.tf:.6g}], {seg_str}"
+        )
+
+    def __call__(self, t: float,
+                element_type: OEType | str | None = None) -> OrbitalElements:
+        """
+        Evaluate trajectory at time t.
+        Syntactic sugar for state_at(t). Allows traj(t) syntax.
+
+        Parameters
+        ----------
+        t : float
+            Time to query. Must be within [t0, tf].
+        element_type : OEType, str, or None, optional
+            Desired element type. Defaults to system-appropriate type.
+
+        Returns
+        -------
+        OrbitalElements
+        """
+        return self.state_at(t, element_type)
+
+    def __len__(self) -> int:
+        """
+        Number of segments in this trajectory.
+
+        Allows len(traj) as a natural way to inspect multi-segment structure.
+        Single-segment trajectories return 1.
+        """
+        return self.n_segments
+
+    def __getitem__(self, seg_idx: int) -> Trajectory:
+        """
+        Access a single segment as a new Trajectory.
+
+        Equivalent to segment_slice(k, k). Supports negative indexing:
+        traj[-1] returns the last segment.
+
+        Parameters
+        ----------
+        seg_idx : int
+            Segment index. Negative values count from the end.
+
+        Returns
+        -------
+        Trajectory
+            Single-segment Trajectory for the requested segment.
+
+        Raises
+        ------
+        TypeError
+            If seg_idx is not an integer.
+        IndexError
+            If seg_idx is out of range.
+        """
+        if not isinstance(seg_idx, int):
+            raise TypeError(
+                f"Segment index must be an integer, "
+                f"got {type(seg_idx).__name__}."
+            )
+        # Support negative indexing
+        if seg_idx < 0:
+            seg_idx = self.n_segments + seg_idx
+        if not 0 <= seg_idx < self.n_segments:
+            raise IndexError(
+                f"Segment index {seg_idx} out of range for trajectory "
+                f"with {self.n_segments} segment(s)."
+            )
+        return self.segment_slice(seg_idx, seg_idx)
     
     # ========== PLOTTING ==========
     # these methods are temporary until a Visualization module is established
-    def plot_3d(self, n_points: int | None = None, show_body: bool = True, 
-            body_color: str | None = None, traj_color: str | None = None,
-            body_opacity: float | None = None, 
-            proximity_threshold: float | None = None,
-            renderer: str | None = None) -> go.Figure:
+    def plot_3d(self, n_points: int | None = None, 
+                      show_body: bool = True,
+                      show_nodes: bool = True,
+                      node_symbol: str = 'circle',
+                      traj_name: str | None = None, 
+                      body_color: str | None = None, 
+                      traj_color: str | None = None,
+                      body_opacity: float | None = None, 
+                      proximity_threshold: float | None = None,
+                      renderer: str | None = None) -> go.Figure:
         """
         Create 3D plot of trajectory with optional central body.
         
@@ -896,7 +1692,15 @@ class Trajectory:
             n_points : int, optional
                 Number of points to sample trajectory.
                 If None, uses config.DEFAULT_PLOT_POINTS (default: None)
-            show_body: Whether to show central body sphere (default: True)
+            show_body : bool, optional
+                Whether to show central body sphere (default: True)
+            show_nodes : bool, optional
+                Whether to plot trajectory Node locations (default: True)
+            node_symbol : str, optional
+                Plotly symbol to use for this Trajectory's Nodes (default: 'circle')
+            traj_name : str, optional
+                Label for this trajectory in the legend and hover text 
+                (default: Trajectory)
             body_color : str, optional
                 Color of central body.
                 If None, uses config.DEFAULT_BODY_COLOR (default: None)
@@ -1023,9 +1827,16 @@ class Trajectory:
             z=positions[:, 2],
             mode='lines',
             line=dict(color=traj_color, width=3),
-            name='Trajectory',
-            hovertemplate='x: %{x:.6f}<br>y: %{y:.6f}<br>z: %{z:.6f}<extra></extra>'
+            name=traj_name or 'Trajectory',
+            legendgroup='trajectory',
+            legendgrouptitle=dict(text='Trajectory'),
+            showlegend=True
         ))
+
+        # Add nodes if specified
+        if show_nodes:
+            for trace in self._build_node_traces(node_symbol, traj_name):
+                fig.add_trace(trace)
         
         # Set layout
         units = 'nd' if is_cr3bp else 'km'
@@ -1037,8 +1848,12 @@ class Trajectory:
                 aspectmode='data'
             ),
             title='CR3BP Trajectory' if is_cr3bp else 'Orbital Trajectory',
-            showlegend=True
+            showlegend=True,
+            legend=dict(groupclick='toggleitem')
         )
+
+        if renderer:
+            fig.show(renderer=renderer)
         
         return fig
 
@@ -1063,7 +1878,8 @@ class Trajectory:
 
     def add_to_plot(self, fig: go.Figure, 
                     n_points: int | None = None, color: str | None = None,
-                    name: Optional[str] = None, **kwargs) -> go.Figure:
+                    show_nodes: bool = True, node_symbol: str = 'diamond',
+                    traj_name: Optional[str] = None, **kwargs) -> go.Figure:
         """
         Add this trajectory to an existing Plotly figure.
         
@@ -1075,7 +1891,11 @@ class Trajectory:
             color: str, optional
                 Color of trajectory line.
                 If None, uses config.DEFAULT_TRAJ_COLOR_ADD (default: None)
-            name: Legend name for this trajectory (default: 'Trajectory N')
+            show_nodes : bool, optional
+                Whether to plot trajectory Node locations (default: True)
+            node_symbol : str, optional
+                Plotly symbol to use for this Trajectory's Nodes (default: 'diamond')
+            traj_name: Legend name for this trajectory (default: 'Trajectory N')
             **kwargs: Additional arguments passed to Scatter3d
             
         Returns:
@@ -1092,7 +1912,7 @@ class Trajectory:
         positions = np.array(states)[:, 0:3]  # Extract position components
         
         # Default name if not provided
-        if name is None:
+        if traj_name is None:
             # Count existing scatter3d traces
             n_existing = sum(1 for trace in fig.data if isinstance(trace, go.Scatter3d))
             name = f'Trajectory {n_existing + 1}'
@@ -1108,8 +1928,97 @@ class Trajectory:
             hovertemplate='x: %{x:.1f}<br>y: %{y:.1f}<br>z: %{z:.1f}<extra></extra>',
             **kwargs
         ))
+
+        # Add nodes if specified
+        if show_nodes:
+            existing_node_types = {
+                trace.name for trace in fig.data
+                if getattr(trace, 'legendgroup', None) == 'node_types'
+            }
+            for trace in self._build_node_traces(node_symbol, traj_name,
+                                                skip_legend_types=existing_node_types):
+                fig.add_trace(trace)
         
         return fig
+    
+    def _build_node_traces(
+        self,
+        node_symbol: str,
+        traj_name: str | None,
+        skip_legend_types: set | None = None) -> list:
+        """
+        Build Plotly Scatter3d traces for all nodes on this trajectory.
+
+        Node types are color-coded using the package config.NODE_COLORS scheme.
+        Each node type appears once in the legend regardless of how many
+        nodes of that type are present. All node traces are assigned to the
+        'node_types' legend group, producing a titled section in the legend
+        separate from the trajectory line.
+
+        Parameters
+        ----------
+        node_symbol : str
+            Plotly 3D marker symbol for this trajectory's nodes.
+            Different symbols allow visual distinction of nodes from
+            multiple trajectories on the same figure.
+        traj_name : str or None
+            Optional label prefix for node hover text.
+
+        Returns
+        -------
+        list
+            List of go.Scatter3d traces ready to add to a figure.
+        """
+
+        if skip_legend_types is None:
+            skip_legend_types = set()
+
+        all_nodes = (
+            [self._start_node]
+            + self._junction_nodes
+            + [self._end_node]
+        )
+
+        traces = []
+        plotted_types: set[str] = set()
+        first_node_overall = True
+
+        for node in all_nodes:
+            node_type = type(node).__name__
+            color = config.NODE_COLORS.get(node_type, '#000000')
+
+            # Position from pre_state where available, else post_state
+            if node.pre_state is not None:
+                pos = node.pre_state[:3]
+            else:
+                pos = node.post_state[:3]
+
+            prefix    = f"{traj_name}: " if traj_name else ""
+            hover     = f"{prefix}{node_type}<br>t = {node.time:.6g}"
+            show_leg = (node_type not in plotted_types and
+                        node_type not in skip_legend_types)
+            plotted_types.add(node_type)
+
+            traces.append(go.Scatter3d(
+                x=[pos[0]], y=[pos[1]], z=[pos[2]],
+                mode='markers',
+                marker=dict(
+                    color=color,
+                    size=8,
+                    symbol=node_symbol,
+                    line=dict(color='white', width=1)
+                ),
+                name=node_type,
+                text=[hover],
+                hovertemplate='%{text}<extra></extra>',
+                legendgroup='node_types',
+                legendgrouptitle=dict(text='Node Types')
+                            if first_node_overall else None,
+                showlegend=show_leg
+            ))
+            first_node_overall = False
+
+        return traces
 
  # Node class, used by Trajectory to define state mappings between segments
 
@@ -1420,6 +2329,50 @@ class ImpulsiveBoundaryNode(BoundaryNode):
         dv_mag = np.linalg.norm(self.delta_v)
         return (f"ImpulsiveBoundaryNode(t={self.time:.6g}, "
                 f"|dv|={dv_mag:.6g} km/s)")
+    
+    # ========== STATIC METHODS ==========
+    @staticmethod
+    def _infer_junction(output_pre, output_post) -> JunctionNode:
+        """
+        Infer the appropriate JunctionNode type from adjacent segment endpoints.
+
+        Examines the state continuity at the junction time and returns the
+        most specific node type consistent with the observed discontinuity.
+
+        Parameters
+        ----------
+        output_pre : Heyoka continuous output
+            Output object for the incoming segment.
+        output_post : Heyoka continuous output
+            Output object for the outgoing segment.
+
+        Returns
+        -------
+        JunctionNode
+            NullJunctionNode if full state is continuous within tolerance.
+            ImpulsiveJunctionNode if position is continuous but velocity is not.
+            FreeJunctionNode if position is discontinuous.
+        """
+        t_junc = float(output_pre.bounds[-1])
+        pre_state  = output_pre(t_junc)[:6].copy()
+        post_state = output_post(t_junc)[:6].copy()
+
+        # Full state continuous
+        if np.allclose(pre_state, post_state,
+                    rtol=config.EQUALITY_RTOL,
+                    atol=config.EQUALITY_ATOL):
+            return NullJunctionNode(t_junc, pre_state, post_state)
+
+        # Position continuous, velocity discontinuous
+        if np.allclose(pre_state[:3], post_state[:3],
+                    rtol=config.EQUALITY_RTOL,
+                    atol=config.EQUALITY_ATOL):
+            return ImpulsiveJunctionNode(t_junc,
+                                        pre_state=pre_state,
+                                        post_state=post_state)
+
+        # Full state discontinuous
+        return FreeJunctionNode(t_junc, pre_state, post_state)
 
 class JunctionNode(Node):
     """
@@ -1478,7 +2431,6 @@ class JunctionNode(Node):
             6x6 matrix M = d(post_state)/d(pre_state)
         """
         ...
-
 
 class NullJunctionNode(JunctionNode):
     """
