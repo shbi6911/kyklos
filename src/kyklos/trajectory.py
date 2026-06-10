@@ -2,20 +2,32 @@
 Trajectory class definition
 created with the assistance of Claude Sonnet by Anthropic'''
 
+from __future__ import annotations
+
 import numpy as np
 import pandas as pd
 import warnings
 import heyoka as hy
 import plotly.graph_objects as go
 import bisect
-from typing import Union, Optional, cast, Dict, List, Tuple, Any, TYPE_CHECKING
+from typing import Union, Optional, cast, Any, TYPE_CHECKING
+from numpy.typing import ArrayLike
 from abc import ABC, abstractmethod
 from .orbital_elements import OrbitalElements, OEType
-from __future__ import annotations
 if TYPE_CHECKING:
     from .system import System
 from .config import config
 from .utils import validation_error
+
+# ========== CONSTANTS ==========
+_NODE_COLORS = {
+    'StartBoundaryNode':     '#2ecc71',  # green
+    'EndBoundaryNode':       '#e74c3c',  # red
+    'ImpulsiveBoundaryNode': '#f39c12',  # orange
+    'NullJunctionNode':      '#bdc3c7',  # light gray
+    'ImpulsiveJunctionNode': '#e67e22',  # dark orange
+    'FreeJunctionNode':      '#9b59b6',  # purple
+}
 
 class Trajectory:
     """
@@ -1095,19 +1107,18 @@ class Trajectory:
         expensive than a single forward propagation. The backward probe
         result is discarded after state extraction.
         """
-        # Step 1: Back-propagate to find the state at new_t0.
-        # Heyoka supports backward propagation when the target time is
-        # less than the initial time.
-        back_traj = self._system.propagate(
+        # Step 1: Back-propagate to find state at new_t0.
+        # Bypasses system.propagate() to avoid _validate_times() rejecting
+        # backward time input. _propagate_single_output() calls Heyoka directly.
+        c_out_back = self._system._propagate_single_output(
             back_state, self.t0, new_t0,
-            with_stm=False,
-            satellite=satellite
+            with_stm=False, stm_order=1, satellite=satellite
         )
-        state_at_new_t0 = back_traj.state_at_raw(new_t0)
+        state_at_new_t0 = c_out_back(float(new_t0))[:6].copy()
 
-        # Step 2: Re-propagate forward from the found initial conditions.
+        # Step 2: Re-propagate forward [new_t0, self.t0] — valid forward propagation.
         fwd_seg = self._system.propagate(
-            state_at_new_t0, new_t0, self.t0,
+            state_at_new_t0, [new_t0, self.t0],
             with_stm=with_stm, stm_order=stm_order, satellite=satellite
         )
         return fwd_seg._outputs[0]
@@ -1274,7 +1285,7 @@ class Trajectory:
 
         for i, (t_s, t_e) in enumerate(zip(t_splits[:-1], t_splits[1:])):
             seg = self._system.propagate(
-                current_state, t_s, t_e,
+                current_state, [t_s, t_e],
                 with_stm=with_stm,
                 stm_order=stm_order,
                 satellite=satellite
@@ -1441,7 +1452,7 @@ class Trajectory:
 
         # Propagate the new segment
         new_seg = self._system.propagate(
-            initial_state, self.tf, new_tf,
+            initial_state, [self.tf, new_tf],
             with_stm=with_stm, stm_order=stm_order, satellite=satellite
         )
         new_output = new_seg._outputs[0]
@@ -1672,6 +1683,50 @@ class Trajectory:
                 f"with {self.n_segments} segment(s)."
             )
         return self.segment_slice(seg_idx, seg_idx)
+    
+    # ========== STATIC METHODS ==========
+    @staticmethod
+    def _infer_junction(output_pre, output_post) -> JunctionNode:
+        """
+        Infer the appropriate JunctionNode type from adjacent segment endpoints.
+
+        Examines the state continuity at the junction time and returns the
+        most specific node type consistent with the observed discontinuity.
+
+        Parameters
+        ----------
+        output_pre : Heyoka continuous output
+            Output object for the incoming segment.
+        output_post : Heyoka continuous output
+            Output object for the outgoing segment.
+
+        Returns
+        -------
+        JunctionNode
+            NullJunctionNode if full state is continuous within tolerance.
+            ImpulsiveJunctionNode if position is continuous but velocity is not.
+            FreeJunctionNode if position is discontinuous.
+        """
+        t_junc = float(output_pre.bounds[-1])
+        pre_state  = output_pre(t_junc)[:6].copy()
+        post_state = output_post(t_junc)[:6].copy()
+
+        # Full state continuous
+        if np.allclose(pre_state, post_state,
+                    rtol=config.EQUALITY_RTOL,
+                    atol=config.EQUALITY_ATOL):
+            return NullJunctionNode(t_junc, pre_state, post_state)
+
+        # Position continuous, velocity discontinuous
+        if np.allclose(pre_state[:3], post_state[:3],
+                    rtol=config.EQUALITY_RTOL,
+                    atol=config.EQUALITY_ATOL):
+            return ImpulsiveJunctionNode(t_junc,
+                                        pre_state=pre_state,
+                                        post_state=post_state)
+
+        # Full state discontinuous
+        return FreeJunctionNode(t_junc, pre_state, post_state)
     
     # ========== PLOTTING ==========
     # these methods are temporary until a Visualization module is established
@@ -1924,7 +1979,7 @@ class Trajectory:
             z=positions[:, 2],
             mode='lines',
             line=dict(color=color, width=3),
-            name=name,
+            name=traj_name,
             hovertemplate='x: %{x:.1f}<br>y: %{y:.1f}<br>z: %{z:.1f}<extra></extra>',
             **kwargs
         ))
@@ -1949,7 +2004,7 @@ class Trajectory:
         """
         Build Plotly Scatter3d traces for all nodes on this trajectory.
 
-        Node types are color-coded using the package config.NODE_COLORS scheme.
+        Node types are color-coded using the constant _NODE_COLORS scheme.
         Each node type appears once in the legend regardless of how many
         nodes of that type are present. All node traces are assigned to the
         'node_types' legend group, producing a titled section in the legend
@@ -1985,7 +2040,7 @@ class Trajectory:
 
         for node in all_nodes:
             node_type = type(node).__name__
-            color = config.NODE_COLORS.get(node_type, '#000000')
+            color = _NODE_COLORS.get(node_type, '#000000')
 
             # Position from pre_state where available, else post_state
             if node.pre_state is not None:
@@ -2020,7 +2075,7 @@ class Trajectory:
 
         return traces
 
- # Node class, used by Trajectory to define state mappings between segments
+# Node class, used by Trajectory to define state mappings between segments
 
 class Node(ABC):
     """
@@ -2100,7 +2155,7 @@ class Node(ABC):
     
     # ========== VALIDATION ==========
     @staticmethod
-    def _validate_state(state: np.ndarray, name: str = 'state') -> np.ndarray:
+    def _validate_state(state: ArrayLike, name: str = 'state') -> np.ndarray:
         """
         Validate and condition a state vector.
         
@@ -2329,50 +2384,6 @@ class ImpulsiveBoundaryNode(BoundaryNode):
         dv_mag = np.linalg.norm(self.delta_v)
         return (f"ImpulsiveBoundaryNode(t={self.time:.6g}, "
                 f"|dv|={dv_mag:.6g} km/s)")
-    
-    # ========== STATIC METHODS ==========
-    @staticmethod
-    def _infer_junction(output_pre, output_post) -> JunctionNode:
-        """
-        Infer the appropriate JunctionNode type from adjacent segment endpoints.
-
-        Examines the state continuity at the junction time and returns the
-        most specific node type consistent with the observed discontinuity.
-
-        Parameters
-        ----------
-        output_pre : Heyoka continuous output
-            Output object for the incoming segment.
-        output_post : Heyoka continuous output
-            Output object for the outgoing segment.
-
-        Returns
-        -------
-        JunctionNode
-            NullJunctionNode if full state is continuous within tolerance.
-            ImpulsiveJunctionNode if position is continuous but velocity is not.
-            FreeJunctionNode if position is discontinuous.
-        """
-        t_junc = float(output_pre.bounds[-1])
-        pre_state  = output_pre(t_junc)[:6].copy()
-        post_state = output_post(t_junc)[:6].copy()
-
-        # Full state continuous
-        if np.allclose(pre_state, post_state,
-                    rtol=config.EQUALITY_RTOL,
-                    atol=config.EQUALITY_ATOL):
-            return NullJunctionNode(t_junc, pre_state, post_state)
-
-        # Position continuous, velocity discontinuous
-        if np.allclose(pre_state[:3], post_state[:3],
-                    rtol=config.EQUALITY_RTOL,
-                    atol=config.EQUALITY_ATOL):
-            return ImpulsiveJunctionNode(t_junc,
-                                        pre_state=pre_state,
-                                        post_state=post_state)
-
-        # Full state discontinuous
-        return FreeJunctionNode(t_junc, pre_state, post_state)
 
 class JunctionNode(Node):
     """

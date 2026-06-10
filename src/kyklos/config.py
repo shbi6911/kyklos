@@ -123,15 +123,6 @@ class KyklosConfig:
     DEFAULT_BODY_OPACITY: float = 0.6
     PROXIMITY_THRESHOLD: float = 10.0
     RENDERER: str = 'browser'
-    NODE_COLORS: dict[str, str] = {
-        'StartBoundaryNode':     '#2ecc71',
-        'EndBoundaryNode':       '#e74c3c',
-        'ImpulsiveBoundaryNode': '#f39c12',
-        'NullJunctionNode':      '#bdc3c7',
-        'ImpulsiveJunctionNode': '#e67e22',
-        'FreeJunctionNode':      '#9b59b6',
-    }
-
 
     @property
     def HASH_DECIMALS(self) -> int:
@@ -191,7 +182,6 @@ class KyklosConfig:
         lines.append(f"    DEFAULT_BODY_OPACITY = {self.DEFAULT_BODY_OPACITY}")
         lines.append(f"    PROXIMITY_THRESHOLD = {self.PROXIMITY_THRESHOLD}")
         lines.append(f"    RENDERER = {self.RENDERER}")
-        lines.append(f"    NODE_COLORS = {self.NODE_COLORS}")
         return "\n".join(lines)
 
 

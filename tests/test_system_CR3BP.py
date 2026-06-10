@@ -276,7 +276,7 @@ class TestLagrangePoints:
         for i in range(1, 6):
             point = getattr(sys, f'L{i}')
             assert isinstance(point, np.ndarray)
-            assert point.shape == (3,)
+            assert point.shape == (6,)
     
     def test_lagrange_points_array_shape(self, earth_moon_system):
         """lagrange_points property returns (5, 3) array."""
@@ -284,7 +284,7 @@ class TestLagrangePoints:
         
         points = sys.lagrange_points
         assert isinstance(points, np.ndarray)
-        assert points.shape == (5, 3)
+        assert points.shape == (5, 6)
     
     def test_lagrange_points_array_order(self, earth_moon_system):
         """lagrange_points array has correct row order."""
@@ -301,9 +301,19 @@ class TestLagrangePoints:
         """L1, L2, L3 should have y=0, z=0."""
         sys = earth_moon_system
         
-        assert np.allclose(sys.L1[1:], [0.0, 0.0], atol=1e-14)
-        assert np.allclose(sys.L2[1:], [0.0, 0.0], atol=1e-14)
-        assert np.allclose(sys.L3[1:], [0.0, 0.0], atol=1e-14)
+        assert np.allclose(sys.L1[1:3], [0.0, 0.0], atol=1e-14)
+        assert np.allclose(sys.L2[1:3], [0.0, 0.0], atol=1e-14)
+        assert np.allclose(sys.L3[1:3], [0.0, 0.0], atol=1e-14)
+    
+    def test_lagrange_points_velocity_zero(self, earth_moon_system):
+        """L1, L2, L3, L4, L5 should have vx=0, vy=0, vz=0."""
+        sys = earth_moon_system
+        
+        assert np.allclose(sys.L1[3:6], [0.0, 0.0, 0.0], atol=1e-14)
+        assert np.allclose(sys.L2[3:6], [0.0, 0.0, 0.0], atol=1e-14)
+        assert np.allclose(sys.L3[3:6], [0.0, 0.0, 0.0], atol=1e-14)
+        assert np.allclose(sys.L4[3:6], [0.0, 0.0, 0.0], atol=1e-14)
+        assert np.allclose(sys.L5[3:6], [0.0, 0.0, 0.0], atol=1e-14)
     
     def test_triangular_points_symmetric(self, earth_moon_system):
         """L4 and L5 should be symmetric about x-axis."""
@@ -407,15 +417,15 @@ class TestLagrangePoints:
         d_primaries = np.linalg.norm(secondary_pos - primary_pos)
         
         # Distances from L4 to each primary should equal distance between primaries
-        d_L4_to_primary = np.linalg.norm(sys.L4 - primary_pos)
-        d_L4_to_secondary = np.linalg.norm(sys.L4 - secondary_pos)
+        d_L4_to_primary = np.linalg.norm(sys.L4[0:3] - primary_pos)
+        d_L4_to_secondary = np.linalg.norm(sys.L4[0:3] - secondary_pos)
         
         assert np.isclose(d_L4_to_primary, d_primaries, rtol=1e-12)
         assert np.isclose(d_L4_to_secondary, d_primaries, rtol=1e-12)
         
         # Same for L5
-        d_L5_to_primary = np.linalg.norm(sys.L5 - primary_pos)
-        d_L5_to_secondary = np.linalg.norm(sys.L5 - secondary_pos)
+        d_L5_to_primary = np.linalg.norm(sys.L5[0:3] - primary_pos)
+        d_L5_to_secondary = np.linalg.norm(sys.L5[0:3] - secondary_pos)
         
         assert np.isclose(d_L5_to_primary, d_primaries, rtol=1e-12)
         assert np.isclose(d_L5_to_secondary, d_primaries, rtol=1e-12)

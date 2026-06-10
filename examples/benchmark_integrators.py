@@ -282,7 +282,7 @@ def benchmark_heyoka(state0, t_end, system, rtol=1e-12, atol=1e-14):
     
     # Time the integration
     with Timer("Heyoka Propagation",verbose=False) as t:
-        traj = system.propagate(oe0, t_start, t_end)
+        traj = system.propagate(oe0, times=[t_start, t_end])
     
     # Compute accuracy metrics
     mu = system.mass_ratio
@@ -298,12 +298,9 @@ def benchmark_heyoka(state0, t_end, system, rtol=1e-12, atol=1e-14):
     C_sample = jacobi_constant(states_sample, mu)
     C_drift = np.max(np.abs(C_sample - C0))
     
-    # Note: Heyoka doesn't expose step count directly from continuous output
-    # The actual integration used adaptive steps, but we can't query it post-facto
-    
     return {
         'wall_time': t.elapsed,
-        'n_steps': None,  # Not available from Heyoka's continuous output
+        'n_steps': traj.n_steps,
         'C_error_final': C_error,
         'C_drift_max': C_drift,
         'trajectory': traj,
@@ -338,7 +335,7 @@ def benchmark_random_cases(system, n_orb, t_end, rtol=1e-10, atol=1e-12):
         with Timer(verbose=False) as t:
             traj = system.propagate(
                 OrbitalElements(state, 'cr3bp', validate=False, system=system),
-                0, t_end
+                [0, t_end]
             )
         heyoka_times.append(t.elapsed)
     
@@ -430,6 +427,7 @@ def run_benchmarks(rtol=1e-10, atol=1e-12):
         heyoka_results = benchmark_heyoka(state0, t_end, system, rtol=rtol, atol=atol)
         
         print(f"  Wall time: {heyoka_results['wall_time']:.4f} s")
+        print(f"  Steps: {heyoka_results['n_steps']}")
         print(f"  Final C error: {heyoka_results['C_error_final']:.2e}")
         print(f"  Max C drift: {heyoka_results['C_drift_max']:.2e}")
         
@@ -450,6 +448,7 @@ def run_benchmarks(rtol=1e-10, atol=1e-12):
             'Heyoka Time (s)': heyoka_results['wall_time'],
             'Speedup': speedup,
             'SciPy Steps': scipy_results['n_steps'],
+            'Heyoka Steps': heyoka_results['n_steps'],
             'SciPy C Error': scipy_results['C_drift_max'],
             'Heyoka C Error': heyoka_results['C_drift_max'],
             'Accuracy Improvement': accuracy_improvement

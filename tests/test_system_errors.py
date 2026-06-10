@@ -27,7 +27,7 @@ class TestInvalidInitialStates:
         
         # Should either raise during validation or propagation
         with pytest.raises((ValueError, RuntimeError)):
-            traj = sys.propagate(state_with_nan, t_start=0, t_end=100)
+            traj = sys.propagate(state_with_nan, times=[0,100])
     
     def test_inf_in_state_array(self):
         """Inf in state array should be handled gracefully."""
@@ -35,7 +35,7 @@ class TestInvalidInitialStates:
         state_with_inf = np.array([7000, np.inf, 0, 0, 0, 7.5])
         
         with pytest.raises((ValueError, RuntimeError)):
-            traj = sys.propagate(state_with_inf, t_start=0, t_end=100)
+            traj = sys.propagate(state_with_inf, times=[0,100])
     
     def test_zero_position_vector(self):
         """Zero position vector is unphysical."""
@@ -44,7 +44,7 @@ class TestInvalidInitialStates:
         
         # Should fail during propagation (singularity)
         with pytest.raises((ValueError, RuntimeError)):
-            traj = sys.propagate(state, t_start=0, t_end=100)
+            traj = sys.propagate(state, times=[0,100])
     
     def test_extremely_large_position(self):
         """Extremely large position should work (hyperbolic)."""
@@ -53,7 +53,7 @@ class TestInvalidInitialStates:
         state = np.array([1e6, 0, 0, 0, 1, 0])
         
         # Should work (hyperbolic orbit)
-        traj = sys.propagate(state, t_start=0, t_end=1000)
+        traj = sys.propagate(state, times=[0,1000])
         assert isinstance(traj, Trajectory)
     
     def test_extremely_small_position(self):
@@ -65,7 +65,7 @@ class TestInvalidInitialStates:
         # This might work numerically but is unphysical
         # At minimum should not crash
         try:
-            traj = sys.propagate(state, t_start=0, t_end=10)
+            traj = sys.propagate(state, times=[0,10])
             # If it works, trajectory should exist
             assert isinstance(traj, Trajectory)
         except (ValueError, RuntimeError):
@@ -84,27 +84,20 @@ class TestInvalidInitialStates:
 class TestExtremePropagationTimes:
     """Test propagation with unusual time configurations."""
     
-    def test_zero_duration(self):
-        """Propagation with t_start == t_end."""
+    def test_zero_duration_raises(self):
+        """Trajectory with t_start == t_end."""
         sys = System('2body', EARTH)
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         
-        traj = sys.propagate(orbit, t_start=100, t_end=100)
-        
-        assert traj.t0 == 100
-        assert traj.tf == 100
-        assert traj.duration == 0
-        
-        # Should be able to evaluate at the single time point
-        state = traj.state_at(100)
-        assert isinstance(state, OrbitalElements)
+        with pytest.raises(ValueError, match="strictly increasing"):
+            traj = sys.propagate(orbit, times=[100,100])
     
     def test_very_short_duration(self):
         """Propagation for very short time (microseconds)."""
         sys = System('2body', EARTH)
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         
-        traj = sys.propagate(orbit, t_start=0, t_end=1e-6)
+        traj = sys.propagate(orbit, times=[0,1e-6])
         
         assert traj.duration == 1e-6
         state = traj.state_at(5e-7)
@@ -118,7 +111,7 @@ class TestExtremePropagationTimes:
         # 1 year in seconds
         one_year = 365.25 * 24 * 3600
         
-        traj = sys.propagate(orbit, t_start=0, t_end=one_year)
+        traj = sys.propagate(orbit, times=[0,one_year])
         
         assert traj.tf == one_year
         # Should be evaluable
@@ -130,7 +123,7 @@ class TestExtremePropagationTimes:
         sys = System('2body', EARTH)
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         
-        traj = sys.propagate(orbit, t_start=-1e6, t_end=-1e6 + 100)
+        traj = sys.propagate(orbit, times=[-1e6,-1e6 + 100])
         
         assert traj.t0 == -1e6
         assert traj.duration == 100
@@ -143,7 +136,7 @@ class TestTrajectoryEvaluationErrors:
         """Evaluating before t0 raises error."""
         sys = System('2body', EARTH)
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
-        traj = sys.propagate(orbit, t_start=0, t_end=100)
+        traj = sys.propagate(orbit, times=[0,100])
         
         with pytest.raises(ValueError, match="outside trajectory bounds"):
             traj.state_at(-10)
@@ -152,7 +145,7 @@ class TestTrajectoryEvaluationErrors:
         """Evaluating after tf raises error."""
         sys = System('2body', EARTH)
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
-        traj = sys.propagate(orbit, t_start=0, t_end=100)
+        traj = sys.propagate(orbit, times=[0,100])
         
         with pytest.raises(ValueError, match="outside trajectory bounds"):
             traj.state_at(150)
@@ -161,7 +154,7 @@ class TestTrajectoryEvaluationErrors:
         """Evaluating exactly at t0 and tf works."""
         sys = System('2body', EARTH)
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
-        traj = sys.propagate(orbit, t_start=0, t_end=100)
+        traj = sys.propagate(orbit, times=[0,100])
         
         state_0 = traj.state_at(0)
         state_100 = traj.state_at(100)
@@ -173,10 +166,10 @@ class TestTrajectoryEvaluationErrors:
         """Slice with invalid bounds raises error."""
         sys = System('2body', EARTH)
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
-        traj = sys.propagate(orbit, t_start=0, t_end=100)
+        traj = sys.propagate(orbit, times=[0,100])
         
         # t_start >= t_end
-        with pytest.raises(ValueError, match="must be <"):
+        with pytest.raises(ValueError, match="must be less than"):
             traj.slice(50, 50)
         
         # Outside trajectory bounds
@@ -190,7 +183,7 @@ class TestTrajectoryEvaluationErrors:
         """Sample with n_points < 2 raises error."""
         sys = System('2body', EARTH)
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
-        traj = sys.propagate(orbit, t_start=0, t_end=100)
+        traj = sys.propagate(orbit, times=[0,100])
         
         with pytest.raises(ValueError, match="must be at least 2"):
             traj.sample(n_points=1)
@@ -204,8 +197,8 @@ class TestSystemReuse:
         sys = System('2body', EARTH)
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         
-        traj1 = sys.propagate(orbit, t_start=0, t_end=100)
-        traj2 = sys.propagate(orbit, t_start=0, t_end=100)
+        traj1 = sys.propagate(orbit, times=[0,100])
+        traj2 = sys.propagate(orbit, times=[0,100])
         
         # Different trajectory objects
         assert traj1 is not traj2
@@ -222,8 +215,8 @@ class TestSystemReuse:
         orbit2 = OE(a=8000, e=0.02, i=np.radians(30), 
                    omega=0, w=0, nu=0)
         
-        traj1 = sys.propagate(orbit1, t_start=0, t_end=100)
-        traj2 = sys.propagate(orbit2, t_start=0, t_end=100)
+        traj1 = sys.propagate(orbit1, times=[0,100])
+        traj2 = sys.propagate(orbit2, times=[0,100])
         
         # Interleave evaluations
         s1_a = traj1.state_at(20)
@@ -241,11 +234,11 @@ class TestSystemReuse:
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         
         # First propagation
-        traj1 = sys.propagate(orbit, t_start=0, t_end=100)
+        traj1 = sys.propagate(orbit, times=[0,100])
         
         # Simulate idle time (in real usage, this might be minutes/hours)
         # Here we just propagate again
-        traj2 = sys.propagate(orbit, t_start=0, t_end=100)
+        traj2 = sys.propagate(orbit, times=[0,100])
         
         assert isinstance(traj2, Trajectory)
 
@@ -261,7 +254,7 @@ class TestErrorMessageClarity:
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         
         with pytest.raises(ValueError) as exc_info:
-            sys.propagate(orbit, t_start=0, t_end=100)
+            sys.propagate(orbit, times=[0,100])
         
         # Should mention which parameters are needed
         error_msg = str(exc_info.value)
@@ -272,7 +265,7 @@ class TestErrorMessageClarity:
         """Out of bounds error has clear message."""
         sys = System('2body', EARTH)
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
-        traj = sys.propagate(orbit, t_start=0, t_end=100)
+        traj = sys.propagate(orbit, times=[0,100])
         
         with pytest.raises(ValueError) as exc_info:
             traj.state_at(150)
@@ -302,7 +295,7 @@ class TestNumericalEdgeCases:
         sys = System('2body', EARTH)
         orbit = OE(a=7000, e=0.0, i=0, omega=0, w=0, nu=0)
         
-        traj = sys.propagate(orbit, t_start=0, t_end=5400)
+        traj = sys.propagate(orbit, times=[0,5400])
         state = traj.state_at(2700)
         
         assert isinstance(state, OrbitalElements)
@@ -312,7 +305,7 @@ class TestNumericalEdgeCases:
         sys = System('2body', EARTH)
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         
-        traj = sys.propagate(orbit, t_start=0, t_end=5400)
+        traj = sys.propagate(orbit, times=[0,5400])
         state = traj.state_at(2700)
         
         assert isinstance(state, OrbitalElements)
@@ -323,7 +316,7 @@ class TestNumericalEdgeCases:
         orbit = OE(a=7000, e=0.01, i=np.radians(90), 
                   omega=0, w=0, nu=0)
         
-        traj = sys.propagate(orbit, t_start=0, t_end=5400)
+        traj = sys.propagate(orbit, times=[0,5400])
         state = traj.state_at(2700)
         
         assert isinstance(state, OrbitalElements)
@@ -334,7 +327,7 @@ class TestNumericalEdgeCases:
         orbit = OE(a=20000, e=0.9, i=np.radians(30),
                   omega=0, w=0, nu=0)
         
-        traj = sys.propagate(orbit, t_start=0, t_end=10000)
+        traj = sys.propagate(orbit, times=[0,10000])
         state = traj.state_at(5000)
         
         assert isinstance(state, OrbitalElements)
@@ -345,7 +338,7 @@ class TestNumericalEdgeCases:
         orbit = OE(a=7000, e=0.01, i=np.radians(120),
                   omega=0, w=0, nu=0)
         
-        traj = sys.propagate(orbit, t_start=0, t_end=5400)
+        traj = sys.propagate(orbit, times=[0,5400])
         state = traj.state_at(2700)
         
         assert isinstance(state, OrbitalElements)
@@ -364,7 +357,7 @@ class TestCR3BPEdgeCases:
         state = np.array([-sys.mass_ratio + 0.01, 0, 0, 0, 0.1, 0])
         
         try:
-            traj = sys.propagate(state, t_start=0, t_end=1)
+            traj = sys.propagate(state, times=[0,1])
             assert isinstance(traj, Trajectory)
         except (ValueError, RuntimeError):
             # Might reasonably fail due to singularity
@@ -380,7 +373,7 @@ class TestCR3BPEdgeCases:
         state = np.array([1 - sys.mass_ratio - 0.01, 0, 0, 0, 0.1, 0]) # type: ignore
         
         try:
-            traj = sys.propagate(state, t_start=0, t_end=1)
+            traj = sys.propagate(state, times=[0,1])
             assert isinstance(traj, Trajectory)
         except (ValueError, RuntimeError):
             pass
@@ -394,7 +387,7 @@ class TestCR3BPEdgeCases:
         # Far in z-direction
         state = np.array([0.5, 0, 2.0, 0, 0, 0.1])
         
-        traj = sys.propagate(state, t_start=0, t_end=5)
+        traj = sys.propagate(state, times=[0,5])
         assert isinstance(traj, Trajectory)
 
 

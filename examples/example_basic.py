@@ -17,7 +17,7 @@ orbit = OrbitalElements(
 
 # Propagate for 1 orbit (~97 minutes)
 period = orbit.orbital_period()
-traj = sys.propagate(orbit, t_start=0, t_end=period)
+traj = sys.propagate(orbit, times=[0,period])
 # The sys.propagate method converts the OrbitalElements
 # to a Cartesian state vector automatically.
 
@@ -42,7 +42,7 @@ state = OrbitalElements(
 )
 
 # Propagate in nondimensional time
-traj = sys.propagate(state, t_start=0, t_end=5)
+traj = sys.propagate(state, times=[0,5])
 
 # Sample trajectory at evenly spaced points
 states = traj.sample(n_points=5)
@@ -54,7 +54,6 @@ print(states_raw)
 
 # Visualize in 3D (uses default number of points, see KyklosConfig)
 fig = traj.plot_3d()
-fig.show()
 
 ### Working with Multiple Orbits
 
@@ -72,7 +71,7 @@ orbits = [
 
 # Propagate each orbit
 trajectories = [
-    sys.propagate(orb, 0, 7000)
+    sys.propagate(orb, [0, 7000])
     for orb in orbits
 ]
 

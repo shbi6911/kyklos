@@ -865,7 +865,7 @@ class System:
             )
         if not np.all(np.diff(times) > 0):
             raise ValueError(
-                "times must be strictly increasing. "
+                "Times must be strictly increasing. "
                 "Backward propagation is not supported via propagate(). "
                 "Use Trajectory.extend_back() for backward extension."
             )

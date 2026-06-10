@@ -199,15 +199,13 @@ class TestTwoBodyIntegration:
         if system_name == 'drag':
             traj = system.propagate(
                 initial_orbit, 
-                t_start=t_start, 
-                t_end=t_end,
+                times=[t_start, t_end],
                 satellite=SAT
             )
         else:
             traj = system.propagate(
                 initial_orbit,
-                t_start=t_start,
-                t_end=t_end
+                times=[t_start, t_end]
             )
         
         # Evaluate at MATLAB time points
@@ -287,8 +285,7 @@ class TestCR3BPIntegration:
         
         traj = system.propagate(
             initial_state,
-            t_start=t_start,
-            t_end=t_end
+            times=[t_start, t_end]
         )
         
         # Evaluate at MATLAB time points
@@ -351,7 +348,7 @@ class TestErrorGrowth:
         initial_orbit = ORBIT_MAP[orbit_name]
         system = earth_2body()
         
-        traj = system.propagate(initial_orbit, t_start=times[0], t_end=times[-1])
+        traj = system.propagate(initial_orbit, [times[0], times[-1]])
         kyklos_states = traj.evaluate_raw(times) #type: ignore
         
         # Compute error at each time point

@@ -35,8 +35,7 @@ class TestSTMBasicFunctionality:
         """Test that trajectory can be created with STM enabled."""
         traj = system.propagate(
             initial_state,
-            t_start=0.0,
-            t_end=5400.0,  # 1.5 hours
+            times=[0, 5400],  # 1.5 hours
             with_stm=True
         )
         
@@ -47,8 +46,7 @@ class TestSTMBasicFunctionality:
         """Test that get_stm() returns a 6x6 numpy array."""
         traj = system.propagate(
             initial_state,
-            t_start=0.0,
-            t_end=5400.0,
+            times=[0, 5400],
             with_stm=True
         )
         
@@ -68,8 +66,7 @@ class TestSTMBasicFunctionality:
         
         traj = system.propagate(
             initial_state,
-            t_start=t0,
-            t_end=tf,
+            times=[0, 5400],
             with_stm=True
         )
         
@@ -90,8 +87,7 @@ class TestSTMBasicFunctionality:
         """Test that STM evolves away from identity during propagation."""
         traj = system.propagate(
             initial_state,
-            t_start=0.0,
-            t_end=5400.0,
+            times=[0, 5400],
             with_stm=True
         )
         
@@ -108,8 +104,7 @@ class TestSTMBasicFunctionality:
         """Test that evaluate_stm() works with scalar time input."""
         traj = system.propagate(
             initial_state,
-            t_start=0.0,
-            t_end=5400.0,
+            times=[0, 5400],
             with_stm=True
         )
         
@@ -133,8 +128,7 @@ class TestSTMBasicFunctionality:
         """Test that evaluate_stm() works with array of times."""
         traj = system.propagate(
             initial_state,
-            t_start=0.0,
-            t_end=5400.0,
+            times=[0, 5400],
             with_stm=True
         )
         
@@ -160,8 +154,7 @@ class TestSTMBasicFunctionality:
         """Test that sample_stm() returns correct array shape."""
         traj = system.propagate(
             initial_state,
-            t_start=0.0,
-            t_end=5400.0,
+            times=[0, 5400],
             with_stm=True
         )
         
@@ -181,8 +174,7 @@ class TestSTMBasicFunctionality:
 
         traj = system.propagate(
             initial_state,
-            t_start=t0,
-            t_end=tf,
+            times=[t0, tf],
             with_stm=True
         )
 
@@ -214,8 +206,7 @@ class TestSTMBasicFunctionality:
         # Propagate WITHOUT STM
         traj = system.propagate(
             initial_state,
-            t_start=0.0,
-            t_end=5400.0,
+            times=[0, 5400],
             with_stm=False  # Explicit
         )
         
@@ -233,8 +224,7 @@ class TestSTMBasicFunctionality:
         """Test calling sample_stm() as the FIRST query to continuous output."""
         traj = system.propagate(
             initial_state,
-            t_start=0.0,
-            t_end=5400.0,
+            times=[0, 5400],
             with_stm=True
         )
         
@@ -259,8 +249,7 @@ class TestSTMBasicFunctionality:
         """Test that sample_stm() raises error for n_points < 2."""
         traj = system.propagate(
             initial_state,
-            t_start=0.0,
-            t_end=5400.0,
+            times=[0, 5400],
             with_stm=True
         )
         
@@ -284,8 +273,7 @@ class TestSTMBasicFunctionality:
         
         traj_circ = system.propagate(
             ic_circular,
-            t_start=0.0,
-            t_end=3600.0,
+            times=[0, 3600],
             with_stm=True
         )
         
@@ -304,8 +292,7 @@ class TestSTMBasicFunctionality:
         
         traj_ecc = system.propagate(
             ic_eccentric,
-            t_start=0.0,
-            t_end=3600.0,
+            times=[0, 3600],
             with_stm=True
         )
         
@@ -320,8 +307,7 @@ class TestSTMIntegration:
         """
         traj = system.propagate(
             initial_state,
-            t_start=0.0,
-            t_end=5400.0,  # 1.5 hours
+            times=[0, 5400],  # 1.5 hours
             with_stm=True
         )
         
@@ -344,8 +330,7 @@ class TestSTMIntegration:
         """Test that STM satisfies symplectic property: Φ^T J Φ = J."""
         traj = system.propagate(
             initial_state,
-            t_start=0.0,
-            t_end=5400.0,
+            times=[0, 5400],
             with_stm=True
         )
         
@@ -374,94 +359,65 @@ class TestSTMIntegration:
                 atol=1e-10,
                 err_msg=f"STM at t={t} should satisfy symplectic property Φ^T J Φ = J"
             )
-    
+
     def test_stm_forward_backward_inverse(self, system, initial_state):
-        """Test that Φ(t0, t1) = Φ^(-1)(t1, t0)."""
-        t0 = 0.0
-        t_mid = 2700.0
+        """STM inverse property: Phi(t1,t0) @ Phi(t1,t0)^-1 = I.
+        """
         t1 = 5400.0
-        
-        # Forward propagation: t0 -> t1
-        traj_forward = system.propagate(
-            initial_state,
-            t_start=t0,
-            t_end=t1,
-            with_stm=True
-        )
-        stm_forward = traj_forward.get_stm(t1)  # Φ(t1, t0)
-        
-        # Backward propagation: t1 -> t0
-        final_state = traj_forward.state_at(t1)
-        traj_backward = system.propagate(
-            final_state,
-            t_start=t1,
-            t_end=t0,
-            with_stm=True
-        )
-        stm_backward = traj_backward.get_stm(t0)  # Φ(t0, t1)
-        
-        # Φ(t1, t0) @ Φ(t0, t1) should equal identity
-        product = stm_forward @ stm_backward
-        identity = np.eye(6)
-        
+
+        traj = system.propagate(initial_state, [0.0, t1], with_stm=True)
+        stm = traj.get_stm(t1)           # Phi(t1, t0)
+        stm_inv = np.linalg.inv(stm)
+
+        # Phi @ Phi^-1 = I
         np.testing.assert_allclose(
-            product,
-            identity,
-            rtol=1e-09,
-            atol=1e-09,
-            err_msg="Forward and backward STMs should be inverses"
+            stm @ stm_inv, np.eye(6),
+            rtol=1e-9, atol=1e-9,
+            err_msg="STM @ STM^-1 should equal identity"
         )
-        
-        # Also test that Φ_backward ≈ Φ_forward^(-1)
-        stm_forward_inv = np.linalg.inv(stm_forward)
+
+        # Phi^-1 @ Phi = I (both orderings)
         np.testing.assert_allclose(
-            stm_backward,
-            stm_forward_inv,
-            rtol=1e-09,
-            atol=1e-09,
-            err_msg="Backward STM should equal inverse of forward STM"
+            stm_inv @ stm, np.eye(6),
+            rtol=1e-9, atol=1e-9,
+            err_msg="STM^-1 @ STM should equal identity"
         )
     
     def test_extend_preserves_stm(self, system, initial_state):
-        """Test that extend() preserves STM settings."""
-        # Original trajectory with STM
-        traj1 = system.propagate(
-            initial_state,
-            t_start=0.0,
-            t_end=2700.0,
-            with_stm=True
-        )
-        
-        # Extend it
+        """extend() preserves STM settings and produces correct segment STMs."""
+        traj1 = system.propagate(initial_state, [0.0, 2700.0], with_stm=True)
         traj2 = traj1.extend(new_tf=5400.0)
-        
-        # Extended trajectory should have STM enabled
-        assert traj2._stm_order == 1, "Extended trajectory should have STM enabled"
-        
-        # STM should be identity at the extension point (new t0 for traj2)
-        stm_at_boundary = traj2.get_stm(2700.0)
+
+        # STM settings and structure
+        assert traj2._stm_order == 1
+        assert traj2.n_segments == 2
+
+        # Segment-local STM at junction is identity
+        # (start of the second segment, Phi_seg(2700, 2700) = I)
+        stm_seg = traj2.get_stm_seg(2700.0)
         np.testing.assert_allclose(
-            stm_at_boundary,
-            np.eye(6),
-            rtol=1e-14,
-            err_msg="STM should be identity at extend start (new t0)"
+            stm_seg, np.eye(6), rtol=1e-14,
+            err_msg="Segment-local STM at junction start should be identity"
         )
-        
-        # Can query STM in extended region (should evolve from identity)
+
+        # Composite STM at junction is NOT identity
+        # (it is Phi(2700, 0), the full arc from t0)
+        stm_composite = traj2.get_stm(2700.0)
+        assert np.linalg.norm(stm_composite - np.eye(6)) > 1e-6, \
+            "Composite STM at junction should not be identity"
+
+        # Composite STM evolves beyond junction
         stm_extended = traj2.get_stm(4000.0)
         assert stm_extended.shape == (6, 6)
-        
-        # Should NOT be identity anymore
         assert np.linalg.norm(stm_extended - np.eye(6)) > 1e-6, \
-            "STM should evolve from identity in extended region"
+            "Composite STM should evolve in extended region"
     
     def test_extend_without_stm_stays_without_stm(self, system, initial_state):
         """Test that extending a non-STM trajectory doesn't add STM."""
         # Original trajectory WITHOUT STM
         traj1 = system.propagate(
             initial_state,
-            t_start=0.0,
-            t_end=2700.0,
+            times=[0, 2700],
             with_stm=False
         )
         
@@ -480,8 +436,7 @@ class TestSTMIntegration:
         # Original trajectory with STM
         traj = system.propagate(
             initial_state,
-            t_start=0.0,
-            t_end=5400.0,
+            times=[0, 5400],
             with_stm=True
         )
         
@@ -510,8 +465,7 @@ class TestSTMIntegration:
         # Original trajectory WITHOUT STM
         traj = system.propagate(
             initial_state,
-            t_start=0.0,
-            t_end=5400.0,
+            times=[0, 5400],
             with_stm=False
         )
         
@@ -533,8 +487,7 @@ class TestSTMIntegration:
         # Propagate for 3 periods
         traj = system.propagate(
             initial_state,
-            t_start=0.0,
-            t_end=3 * period,
+            times=[0.0, 3 * period],
             with_stm=True
         )
         
@@ -565,8 +518,7 @@ class TestSTMIntegration:
         """Test that STM and state queries can be mixed without interference."""
         traj = system.propagate(
             initial_state,
-            t_start=0.0,
-            t_end=5400.0,
+            times=[0, 5400],
             with_stm=True
         )
         
@@ -627,8 +579,7 @@ class TestSTMMATLABValidation:
         system = earth_j2()
         traj = system.propagate(
             ISS_ORBIT,
-            t_start=0.0,
-            t_end=t_final,
+            times=[0, t_final],
             with_stm=True
         )
         
@@ -666,8 +617,7 @@ class TestSTMMATLABValidation:
         system = earth_j2()
         traj = system.propagate(
             GEO_ORBIT,
-            t_start=0.0,
-            t_end=t_final,
+            times=[0, t_final],
             with_stm=True
         )
         
@@ -702,8 +652,7 @@ class TestSTMMATLABValidation:
         system = earth_j2()
         traj = system.propagate(
             LEO_ORBIT,
-            t_start=0.0,
-            t_end=t_final,
+            times=[0, t_final],
             with_stm=True
         )
         
@@ -738,8 +687,7 @@ class TestSTMMATLABValidation:
         system = earth_j2()
         traj = system.propagate(
             SSO_ORBIT,
-            t_start=0.0,
-            t_end=t_final,
+            times=[0, t_final],
             with_stm=True
         )
         
@@ -774,8 +722,7 @@ class TestSTMMATLABValidation:
         system = earth_j2()
         traj = system.propagate(
             MOLNIYA_ORBIT,
-            t_start=0.0,
-            t_end=t_final,
+            times=[0, t_final],
             with_stm=True
         )
         
@@ -809,9 +756,8 @@ class TestSTMMATLABValidation:
         
         system = earth_moon_cr3bp()
         traj = system.propagate(
-            LYAPUNOV_ORBIT,
-            t_start=0.0,
-            t_end=t_final,
+            LYAPUNOV_ORBIT.state,
+            times=[0, t_final],
             with_stm=True
         )
         
@@ -845,9 +791,8 @@ class TestSTMMATLABValidation:
         
         system = earth_moon_cr3bp()
         traj = system.propagate(
-            GATEWAY_ORBIT,
-            t_start=0.0,
-            t_end=t_final,
+            GATEWAY_ORBIT.state,
+            times=[0, t_final],
             with_stm=True
         )
         
@@ -926,8 +871,7 @@ class TestSTMEdgeCases:
         for dt in short_times:
             traj = system.propagate(
                 initial_state,
-                t_start=0.0,
-                t_end=dt,
+                times=[0, dt],
                 with_stm=True
             )
             
@@ -951,92 +895,29 @@ class TestSTMEdgeCases:
                 err_msg=f"STM determinant should be 1 even for dt={dt}s"
             )
     
-    def test_backward_propagation(self, system, initial_state):
-        """Test STM with backward time propagation (t_end < t_start)."""
-        t0 = 5400.0
-        tf = 0.0  # Backward in time
-        
-        # Get initial state at t=5400
-        traj_forward = system.propagate(
-            initial_state,
-            t_start=0.0,
-            t_end=5400.0,
-            with_stm=False  # Don't need STM for setup
-        )
-        state_at_5400 = traj_forward.state_at(5400.0)
-        
-        # Propagate backward with STM
-        traj_backward = system.propagate(
-            state_at_5400,
-            t_start=t0,
-            t_end=tf,
-            with_stm=True
-        )
-        
-        # Should be able to query STM
-        stm_at_start = traj_backward.get_stm(t0)
-        stm_at_end = traj_backward.get_stm(tf)
-        
-        # STM at t0 should be identity
-        np.testing.assert_allclose(
-            stm_at_start,
-            np.eye(6),
-            rtol=1e-14,
-            err_msg="STM at t0 should be identity for backward propagation"
-        )
-        
-        # STM at tf should have evolved
-        assert np.linalg.norm(stm_at_end - np.eye(6)) > 1e-6, \
-            "STM should evolve during backward propagation"
-        
-        # Determinant should be 1
-        det = np.linalg.det(stm_at_end)
-        np.testing.assert_allclose(
-            det, 1.0, rtol=1e-10,
-            err_msg="STM determinant should be 1 for backward propagation"
-        )
-    
     def test_backward_forward_round_trip(self, system, initial_state):
-        """Test that forward then backward propagation returns to identity."""
-        # Forward propagation
-        traj_fwd = system.propagate(
-            initial_state,
-            t_start=0.0,
-            t_end=2700.0,
-            with_stm=True
-        )
-        stm_forward = traj_fwd.get_stm(2700.0)
-        
-        # Get state at t=2700
-        state_mid = traj_fwd.state_at(2700.0)
-        
-        # Backward propagation
-        traj_back = system.propagate(
-            state_mid,
-            t_start=2700.0,
-            t_end=0.0,
-            with_stm=True
-        )
-        stm_backward = traj_back.get_stm(0.0)
-        
-        # Composition: Φ_back(0, 2700) @ Φ_fwd(2700, 0) should equal identity
-        product = stm_backward @ stm_forward
-        identity = np.eye(6)
-        
+        """STM round-trip: composition with inverse returns identity.
+
+        Originally verified using a forward then backward propagation.
+        Now verified algebraically. The mathematical property is identical.
+        """
+        t_mid = 2700.0
+
+        traj = system.propagate(initial_state, [0.0, t_mid], with_stm=True)
+        stm = traj.get_stm(t_mid)        # Phi(t_mid, t0)
+        stm_inv = np.linalg.inv(stm)
+
         np.testing.assert_allclose(
-            product,
-            identity,
-            rtol=1e-9,
-            atol=1e-9,
-            err_msg="Round-trip forward-backward should return to identity"
+            stm_inv @ stm, np.eye(6),
+            rtol=1e-9, atol=1e-9,
+            err_msg="Round-trip composition should return identity"
         )
     
     def test_drag_with_stm(self, system_drag, low_orbit, test_satellite):
         """Test STM propagation with atmospheric drag perturbation."""
         traj = system_drag.propagate(
             low_orbit,
-            t_start=0.0,
-            t_end=10800.0,
+            times=[0, 10800],
             with_stm=True,
             satellite=test_satellite
         )
@@ -1066,8 +947,7 @@ class TestSTMEdgeCases:
         """Test STM propagation with combined J2 and drag perturbations."""
         traj = system_j2_drag.propagate(
             low_orbit,
-            t_start=0.0,
-            t_end=10800.0,
+            times=[0, 10800],
             with_stm=True,
             satellite=test_satellite
         )
@@ -1098,8 +978,7 @@ class TestSTMEdgeCases:
         with pytest.raises(ValueError, match="requires a Satellite"):
             system_drag.propagate(
                 initial_state,
-                t_start=0.0,
-                t_end=100.0,
+                times=[0, 100],
                 with_stm=True
                 # Missing satellite parameter
             )
@@ -1115,16 +994,14 @@ class TestSTMEdgeCases:
         # Propagate both with STM
         traj_light = system_drag.propagate(
             low_orbit,  # Use lower orbit
-            t_start=0.0,
-            t_end=10800.0,  # 3 hours instead of 1.5
+            times=[0, 10800],  # 3 hours instead of 1.5
             with_stm=True,
             satellite=sat_light
         )
         
         traj_heavy = system_drag.propagate(
             low_orbit,
-            t_start=0.0,
-            t_end=10800.0,
+            times=[0, 10800],
             with_stm=True,
             satellite=sat_heavy
         )

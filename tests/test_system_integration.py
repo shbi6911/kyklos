@@ -24,7 +24,7 @@ class TestOrbitalElementsIntegration:
         kep = OE(a=7000, e=0.01, i=np.radians(45),
                 omega=0, w=0, nu=0)
         
-        traj = sys.propagate(kep, t_start=0, t_end=100)
+        traj = sys.propagate(kep, times=[0,100])
         
         assert isinstance(traj, Trajectory)
     
@@ -34,7 +34,7 @@ class TestOrbitalElementsIntegration:
         cart = OE(x=-6045, y=-3490, z=2500,
                  vx=-3.457, vy=6.618, vz=2.533)
         
-        traj = sys.propagate(cart, t_start=0, t_end=100)
+        traj = sys.propagate(cart, times=[0,100])
         
         assert isinstance(traj, Trajectory)
     
@@ -46,7 +46,7 @@ class TestOrbitalElementsIntegration:
                 omega=0, w=0, nu=0)
         equi = kep.to_equinoctial()
         
-        traj = sys.propagate(equi, t_start=0, t_end=100)
+        traj = sys.propagate(equi, times=[0,100])
         
         assert isinstance(traj, Trajectory)
     
@@ -66,7 +66,7 @@ class TestOrbitalElementsIntegration:
                   omega=0, w=0, nu=0)
         
         # Should not raise during propagation
-        traj = sys.propagate(orbit, t_start=0, t_end=100)
+        traj = sys.propagate(orbit, times=[0,100])
         
         # Evaluate at arbitrary point
         state = traj(50)
@@ -81,7 +81,7 @@ class TestTrajectoryIntegration:
         """Trajectory.state_at() returns OrbitalElements."""
         sys = System('2body', EARTH)
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
-        traj = sys.propagate(orbit, t_start=0, t_end=100)
+        traj = sys.propagate(orbit, times=[0,100])
         
         state = traj.state_at(50)
         
@@ -91,7 +91,7 @@ class TestTrajectoryIntegration:
         """Trajectory returns Cartesian elements by default."""
         sys = System('2body', EARTH)
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
-        traj = sys.propagate(orbit, t_start=0, t_end=100)
+        traj = sys.propagate(orbit, times=[0,100])
         
         state = traj.state_at(50)
         
@@ -101,7 +101,7 @@ class TestTrajectoryIntegration:
         """Trajectory supports traj(t) syntax."""
         sys = System('2body', EARTH)
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
-        traj = sys.propagate(orbit, t_start=0, t_end=100)
+        traj = sys.propagate(orbit, times=[0,100])
         
         state = traj(50)
         
@@ -111,7 +111,7 @@ class TestTrajectoryIntegration:
         """Trajectory.evaluate() works with array of times."""
         sys = System('2body', EARTH)
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
-        traj = sys.propagate(orbit, t_start=0, t_end=100)
+        traj = sys.propagate(orbit, times=[0,100])
         
         times = np.array([10, 30, 50, 70, 90])
         states = traj.evaluate(times)
@@ -123,7 +123,7 @@ class TestTrajectoryIntegration:
         """Trajectory.sample() returns list of OrbitalElements."""
         sys = System('2body', EARTH)
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
-        traj = sys.propagate(orbit, t_start=0, t_end=100)
+        traj = sys.propagate(orbit, times=[0,100])
         
         states = traj.sample(n_points=50)
         
@@ -134,7 +134,7 @@ class TestTrajectoryIntegration:
         """Trajectory maintains reference to System."""
         sys = System('2body', EARTH)
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
-        traj = sys.propagate(orbit, t_start=0, t_end=100)
+        traj = sys.propagate(orbit, times=[0,100])
         
         assert traj.system is sys
 
@@ -149,7 +149,7 @@ class TestRoundTripWorkflows:
                         omega=0, w=0, nu=0)
         
         # Propagate
-        traj = sys.propagate(kep_initial, t_start=0, t_end=100)
+        traj = sys.propagate(kep_initial, times=[0,100])
         
         # Get state at final time
         state_final = traj.state_at(100)
@@ -166,7 +166,7 @@ class TestRoundTripWorkflows:
         cart_initial = OE(x=-6045, y=-3490, z=2500,
                          vx=-3.457, vy=6.618, vz=2.533)
         
-        traj = sys.propagate(cart_initial, t_start=0, t_end=100)
+        traj = sys.propagate(cart_initial, times=[0,100])
         state_final = traj.state_at(100)
         
         assert state_final.element_type == OEType.CARTESIAN
@@ -178,7 +178,7 @@ class TestRoundTripWorkflows:
                 omega=0, w=0, nu=0)
         equi_initial = kep.to_equinoctial()
         
-        traj = sys.propagate(equi_initial, t_start=0, t_end=100)
+        traj = sys.propagate(equi_initial, times=[0,100])
         state_final = traj.state_at(100)
         equi_final = state_final.to_equinoctial()
         
@@ -191,7 +191,7 @@ class TestRoundTripWorkflows:
                         omega=0, w=0, nu=0)
         
         # Propagate (returns Cartesian)
-        traj = sys.propagate(kep_initial, t_start=0, t_end=100)
+        traj = sys.propagate(kep_initial, times=[0,100])
         cart_state = traj.state_at(50)
         
         # Convert to Keplerian
@@ -213,9 +213,9 @@ class TestElementTypePreservation:
         cart = kep.to_cartesian()
         equi = kep.to_equinoctial()
         
-        traj_kep = sys.propagate(kep, t_start=0, t_end=100)
-        traj_cart = sys.propagate(cart, t_start=0, t_end=100)
-        traj_equi = sys.propagate(equi, t_start=0, t_end=100)
+        traj_kep = sys.propagate(kep, times=[0,100])
+        traj_cart = sys.propagate(cart, times=[0,100])
+        traj_equi = sys.propagate(equi, times=[0,100])
         
         # All should produce valid trajectories
         assert isinstance(traj_kep, Trajectory)
@@ -230,9 +230,9 @@ class TestElementTypePreservation:
         cart = kep.to_cartesian()
         equi = kep.to_equinoctial()
         
-        traj_kep = sys.propagate(kep, t_start=0, t_end=100)
-        traj_cart = sys.propagate(cart, t_start=0, t_end=100)
-        traj_equi = sys.propagate(equi, t_start=0, t_end=100)
+        traj_kep = sys.propagate(kep, times=[0,100])
+        traj_cart = sys.propagate(cart, times=[0,100])
+        traj_equi = sys.propagate(equi, times=[0,100])
         
         # All should return Cartesian
         assert traj_kep.state_at(50).element_type == OEType.CARTESIAN
@@ -252,7 +252,7 @@ class TestCR3BPIntegration:
         # Nondimensional state
         state = np.array([0.8, 0.0, 0.0, 0.0, 0.1, 0.0])
         
-        traj = sys.propagate(state, t_start=0, t_end=10)
+        traj = sys.propagate(state, times=[0,10])
         state_final = traj.state_at(10)
         
         assert isinstance(state_final, OrbitalElements)
@@ -271,7 +271,7 @@ class TestCR3BPIntegration:
                 system=sys)
         
         # Should propagate successfully
-        traj = sys.propagate(state, t_start=0, t_end=10)
+        traj = sys.propagate(state, times=[0,10])
         state_final = traj.state_at(10)
         
         assert isinstance(state_final, OrbitalElements)
@@ -288,14 +288,14 @@ class TestCR3BPIntegration:
                     vx=0.0, vy=0.1, vz=0.0)
         
         with pytest.raises(ValueError, match="CR3BP.*Cartesian|nondimensional"):
-            sys.propagate(state_cart, t_start=0, t_end=10)
+            sys.propagate(state_cart, times=[0,10])
         
         # Try to use Keplerian elements (also wrong for CR3BP)
         state_kep = OE(a=384400, e=0.01, i=0.1, 
                     omega=0, w=0, nu=0)
         
         with pytest.raises(ValueError, match="CR3BP.*Keplerian|nondimensional"):
-            sys.propagate(state_kep, t_start=0, t_end=10)
+            sys.propagate(state_kep, times=[0,10])
     
     def test_cr3bp_jacobi_constant_accessible(self):
         """Can compute Jacobi constant for CR3BP states."""
@@ -320,12 +320,13 @@ class TestTrajectoryMethods:
         """Trajectory.to_dataframe() produces valid DataFrame."""
         sys = System('2body', EARTH)
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
-        traj = sys.propagate(orbit, t_start=0, t_end=100)
+        traj = sys.propagate(orbit, times=[0,100])
         
         df = traj.to_dataframe(n_points=50)
         
         assert len(df) == 50
         assert 'time' in df.columns
+        assert 'segment' in df.columns
         assert 'x' in df.columns
         assert 'vx' in df.columns
     
@@ -333,7 +334,7 @@ class TestTrajectoryMethods:
         """Trajectory.slice() creates valid sub-trajectory."""
         sys = System('2body', EARTH)
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
-        traj = sys.propagate(orbit, t_start=0, t_end=100)
+        traj = sys.propagate(orbit, times=[0,100])
         
         traj_slice = traj.slice(25, 75)
         
@@ -349,7 +350,7 @@ class TestTrajectoryMethods:
         """Trajectory.contains_time() works correctly."""
         sys = System('2body', EARTH)
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
-        traj = sys.propagate(orbit, t_start=0, t_end=100)
+        traj = sys.propagate(orbit, times=[0,100])
         
         assert traj.contains_time(50)
         assert not traj.contains_time(150)
@@ -369,7 +370,7 @@ class TestBatchOperations:
             for i in [0, 30, 60, 90]
         ]
         
-        trajs = [sys.propagate(o, t_start=0, t_end=100) for o in orbits]
+        trajs = [sys.propagate(o, times=[0,100]) for o in orbits]
         
         assert len(trajs) == 4
         assert all(isinstance(t, Trajectory) for t in trajs)
@@ -384,7 +385,7 @@ class TestBatchOperations:
             for i in [0, 30, 60]
         ]
         
-        trajs = [sys.propagate(o, t_start=0, t_end=100) for o in orbits]
+        trajs = [sys.propagate(o, times=[0,100]) for o in orbits]
         
         # Evaluate all at t=50
         states = [t.state_at(50) for t in trajs]

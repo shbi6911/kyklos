@@ -106,7 +106,7 @@ class TestAutoCompilation:
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         
         # Should auto-compile during propagate
-        traj = sys.propagate(orbit, 0, 100)
+        traj = sys.propagate(orbit, [0, 100])
         
         assert sys.is_compiled
     
@@ -118,7 +118,7 @@ class TestAutoCompilation:
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         
         # Should work without recompiling
-        traj = sys.propagate(orbit, 0, 100)
+        traj = sys.propagate(orbit, [0, 100])
         
         assert traj is not None
 
@@ -150,11 +150,11 @@ class TestMultipleSystemsIndependence:
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         
         # Propagate with sys1
-        traj1 = sys1.propagate(orbit, 0, 100)
+        traj1 = sys1.propagate(orbit, [0, 100])
         
         # sys2 should still be in initial state
         # (This is mostly checking internal state doesn't leak)
-        traj2 = sys2.propagate(orbit, 0, 200)
+        traj2 = sys2.propagate(orbit, [0, 200])
         
         assert traj1.tf == 100
         assert traj2.tf == 200

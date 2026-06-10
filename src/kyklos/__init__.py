@@ -40,7 +40,11 @@ Celestial Body Parameters
 from .orbital_elements import OrbitalElements, OrbitalElements as OE, OEType
 from .system import System, BodyParams, AtmoParams, PeriodicOrbit, SysType
 from .satellite import Satellite, Satellite as Sat
-from .trajectory import Trajectory, Trajectory as Traj
+from .trajectory import (Trajectory, Trajectory as Traj, Node, 
+    BoundaryNode, JunctionNode,
+    StartBoundaryNode, EndBoundaryNode, ImpulsiveBoundaryNode,
+    NullJunctionNode, ImpulsiveJunctionNode, FreeJunctionNode,
+)
 from .utils import Timer
 from .config import config, temp_config
 
@@ -74,17 +78,28 @@ __author__ = "Shane Billingsley"
 
 # Define what gets imported with "from kyklos import *"
 __all__ = [
-    # Classes
+    # Main Classes
     "OrbitalElements",
     "System",
-    "BodyParams",
-    "AtmoParams",
-    "PeriodicOrbit", 
     "Satellite",
     "Trajectory",
+    # Helper Classes
+    "BodyParams",
+    "AtmoParams",
+    "PeriodicOrbit",
     "OEType",
     "SysType",
     "Timer",
+    # Node Classes
+    "Node", 
+    "BoundaryNode", 
+    "JunctionNode",
+    "StartBoundaryNode", 
+    "EndBoundaryNode", 
+    "ImpulsiveBoundaryNode",
+    "NullJunctionNode", 
+    "ImpulsiveJunctionNode", 
+    "FreeJunctionNode",
     # Abbreviations
     "OE",
     "Sat",
