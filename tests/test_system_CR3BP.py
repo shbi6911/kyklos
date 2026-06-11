@@ -143,34 +143,28 @@ class TestNondimensionalization:
         assert np.allclose(t_dim_orig, t_dim_final, rtol=1e-12)
     
     def test_error_on_2body_r2nd(self, earth_2body_system):
-        """Test that r2nd raises error for 2-body system"""
-        with pytest.raises(ValueError, match="Nondimensionalization only available for CR3BP"):
-            earth_2body_system.r2nd(1000.0)
+        """Test that r2nd doesn't exist for 2-body system"""
+        assert not hasattr(earth_2body_system, 'r2nd')
     
     def test_error_on_2body_r2d(self, earth_2body_system):
-        """Test that r2d raises error for 2-body system"""
-        with pytest.raises(ValueError, match="Redimensionalization only available for CR3BP"):
-            earth_2body_system.r2d(1.0)
+        """Test that r2d doesn't exist for 2-body system"""
+        assert not hasattr(earth_2body_system, 'r2d')
     
     def test_error_on_2body_v2nd(self, earth_2body_system):
-        """Test that v2nd raises error for 2-body system"""
-        with pytest.raises(ValueError, match="Nondimensionalization only available for CR3BP"):
-            earth_2body_system.v2nd(1.0)
+        """Test that v2nd doesn't exist for 2-body system"""
+        assert not hasattr(earth_2body_system, 'v2nd')
     
     def test_error_on_2body_v2d(self, earth_2body_system):
-        """Test that v2d raises error for 2-body system"""
-        with pytest.raises(ValueError, match="Redimensionalization only available for CR3BP"):
-            earth_2body_system.v2d(1.0)
+        """Test that v2d doesn't exist for 2-body system"""
+        assert not hasattr(earth_2body_system, 'v2d')
     
     def test_error_on_2body_t2nd(self, earth_2body_system):
-        """Test that t2nd raises error for 2-body system"""
-        with pytest.raises(ValueError, match="Nondimensionalization only available for CR3BP"):
-            earth_2body_system.t2nd(1000.0)
+        """Test that t2nd doesn't exist for 2-body system"""
+        assert not hasattr(earth_2body_system, 't2nd')
     
     def test_error_on_2body_t2d(self, earth_2body_system):
-        """Test that t2d raises error for 2-body system"""
-        with pytest.raises(ValueError, match="Redimensionalization only available for CR3BP"):
-            earth_2body_system.t2d(1.0)
+        """Test that t2d doesn't exist for 2-body system"""
+        assert not hasattr(earth_2body_system, 't2d')
     
     def test_full_state_conversion(self, earth_moon_system):
         """Test converting a full state vector"""
@@ -185,9 +179,16 @@ class TestNondimensionalization:
         # Convert back
         r_dim = earth_moon_system.r2d(state_nd[:3])
         v_dim = earth_moon_system.v2d(state_nd[3:])
-        state_dim_final = np.concatenate([r_dim, v_dim])
+        state_dim_final_sep = np.concatenate([r_dim, v_dim])
+
+        # Convert position and velocity using s2d/s2nd
+        state_nd = earth_moon_system.s2nd(state_dim)
+        # Convert back
+        state_dim_final = earth_moon_system.s2d(state_nd)
         
+        assert np.allclose(state_dim, state_dim_final_sep, rtol=1e-12)
         assert np.allclose(state_dim, state_dim_final, rtol=1e-12)
+        assert np.allclose(state_dim_final_sep,state_dim_final, rtol=1e-12)
     
     def test_characteristic_scales(self, earth_moon_system):
         """Verify characteristic scales are computed correctly"""
@@ -270,7 +271,7 @@ class TestLagrangePoints:
         assert sys.L5 is not None
     
     def test_point_shapes(self, earth_moon_system):
-        """Each Lagrange point is a 3-element array."""
+        """Each Lagrange point is a 6-element array."""
         sys = earth_moon_system
         
         for i in range(1, 6):
@@ -284,18 +285,18 @@ class TestLagrangePoints:
         
         points = sys.lagrange_points
         assert isinstance(points, np.ndarray)
-        assert points.shape == (5, 6)
+        assert points.shape == (5, 3)
     
     def test_lagrange_points_array_order(self, earth_moon_system):
         """lagrange_points array has correct row order."""
         sys = earth_moon_system
         
         points = sys.lagrange_points
-        assert np.array_equal(points[0], sys.L1)
-        assert np.array_equal(points[1], sys.L2)
-        assert np.array_equal(points[2], sys.L3)
-        assert np.array_equal(points[3], sys.L4)
-        assert np.array_equal(points[4], sys.L5)
+        assert np.array_equal(points[0], sys.L1[0:3])
+        assert np.array_equal(points[1], sys.L2[0:3])
+        assert np.array_equal(points[2], sys.L3[0:3])
+        assert np.array_equal(points[3], sys.L4[0:3])
+        assert np.array_equal(points[4], sys.L5[0:3])
     
     def test_collinear_points_on_x_axis(self, earth_moon_system):
         """L1, L2, L3 should have y=0, z=0."""
@@ -398,10 +399,10 @@ class TestLagrangePoints:
         """Accessing Lagrange points on 2-body system raises error."""
         sys = earth_2body_system
         
-        with pytest.raises(ValueError, match="only available for CR3BP"):
+        with pytest.raises(AttributeError):
             _ = sys.L1
         
-        with pytest.raises(ValueError, match="only available for CR3BP"):
+        with pytest.raises(AttributeError):
             _ = sys.lagrange_points
     
     def test_triangular_point_locations(self, earth_moon_system):

@@ -1,11 +1,29 @@
-'''Development code for an orbital trajectory handling package
-System class definition
-created with the assistance of Claude Sonnet 4.5 by Anthropic'''
+"""System class definition for orbital propagation.
+
+Defines the gravitational environment (equations of motion, system parameters)
+for trajectory propagation. Two concrete system types are provided:
+
+    TwoBodySystem  -- 2-body point-mass gravity with optional J2, J3, drag
+    CR3BPSystem    -- Circular Restricted 3-Body Problem in rotating frame
+
+Both are constructed through the unified System factory:
+
+    sys = System('2body', EARTH)
+    sys = System('3body', EARTH, MOON, distance=384400.0)
+
+Direct instantiation of TwoBodySystem or CR3BPSystem raises TypeError.
+Use isinstance() checks where type-specific branching is needed:
+
+    if isinstance(sys, CR3BPSystem):
+        print(sys.L_star)
+
+Created with the assistance of Claude Sonnet 4.6 by Anthropic.
+"""
 
 import numpy as np
 import warnings
 from dataclasses import dataclass
-from typing import Optional, Dict, List, Tuple, Any, Union
+from typing import Optional, Dict, List, Tuple, Any
 from enum import Enum
 import heyoka as hy
 from .orbital_elements import OrbitalElements, OEType
@@ -25,21 +43,22 @@ from .satellite import Satellite
 from .utils import validation_error
 from .config import config
 
-# define an enumerated list of system types
+
+# ========== ENUMERATIONS ==========
+
 class SysType(Enum):
     TWO_BODY = '2body'
     CR3BP = '3body'
     N_BODY = 'Nbody'
-"""
-Core dataclasses for System class components.
-This module defines immutable dataclasses for celestial body parameters
-and atmospheric models.  Other models may be added later.
-"""
+
+
+# ========== PARAMETER DATACLASSES ==========
+
 @dataclass(frozen=True)
 class BodyParams:
     """
     Immutable parameters for a celestial body.
-    
+
     Attributes
     ----------
     mu : float
@@ -47,14 +66,16 @@ class BodyParams:
     radius : float
         Equatorial radius [km]
     J2 : float, optional
-        J2 zonal harmonic coefficient [dimensionless]
-        Required if J2 perturbations are enabled
+        J2 zonal harmonic coefficient [dimensionless].
+        Required if J2 perturbations are enabled.
     J3 : float, optional
-        J3 zonal harmonic coefficient [dimensionless]
-        Required if J3 perturbations are enabled
+        J3 zonal harmonic coefficient [dimensionless].
+        Requires J2 to also be set.
     rotation_rate : float, optional
-        Angular rotation rate [rad/s]
-        Required if atmospheric drag is enabled
+        Angular rotation rate [rad/s].
+        Required if atmospheric drag is enabled.
+    name : str, optional
+        Human-readable body name.
     """
     mu: float
     radius: float
@@ -62,9 +83,8 @@ class BodyParams:
     J3: Optional[float] = None
     rotation_rate: Optional[float] = None
     name: Optional[str] = None
-    
+
     def __post_init__(self):
-        # --- Non-negotiable physical requirements ---
         if self.mu <= 0:
             raise ValueError(
                 f"Gravitational parameter must be positive, got {self.mu}"
@@ -73,31 +93,23 @@ class BodyParams:
             raise ValueError(
                 f"Radius must be positive, got {self.radius}"
             )
-
-        # --- J2 sanity check ---
         if self.J2 is not None and abs(self.J2) > 1:
             validation_error(
                 f"J2 coefficient seems unrealistic: {self.J2}. "
                 "Expected |J2| << 1 for physical bodies."
             )
-
-        # --- J3 dependency: API contract, not physical sanity ---
         if self.J3 is not None and self.J2 is None:
             raise ValueError(
                 "J2 must be specified when J3 is used. "
                 "Set J2=0.0 explicitly if you intend to model J3 without J2."
             )
-
-        # --- J3 sanity checks (only reached if J2 is also set) ---
         if self.J3 is not None:
-            # Magnitude sanity: same threshold as J2.
             if abs(self.J3) > 1:
                 validation_error(
                     f"J3 coefficient seems unrealistic: {self.J3}. "
                     "Expected |J3| << 1 for physical bodies."
                 )
             assert self.J2 is not None  # guaranteed by the dependency check above
-            # Hierarchy sanity: J3 should be smaller in magnitude than J2.
             if abs(self.J3) > abs(self.J2):
                 validation_error(
                     f"|J3| ({abs(self.J3):.3e}) exceeds |J2| ({abs(self.J2):.3e}). "
@@ -106,13 +118,14 @@ class BodyParams:
                     "model represents your intended gravity field."
                 )
 
+
 @dataclass(frozen=True)
 class AtmoParams:
     """
-    Immutable parameters for exponential atmosphere model.
-    
+    Immutable parameters for an exponential atmosphere model.
+
     The density profile follows: rho(r) = rho0 * exp(-(r - r0)/H)
-    
+
     Attributes
     ----------
     rho0 : float
@@ -120,20 +133,19 @@ class AtmoParams:
     H : float
         Scale height [m]
     r0 : float
-        Reference radius (altitude where rho0 is defined) [m]
-    
+        Reference radius at which rho0 is defined [m]
+
     Notes
     -----
-    This is a simple exponential model suitable for preliminary analysis.
-    More sophisticated models can be added later as separate classes 
-    or via callback functions.
+    AtmosphereParams uses SI units (m, kg/m^3), unlike the rest of the
+    package which uses km. Conversions are applied internally when
+    building the symbolic EOM.
     """
     rho0: float
     H: float
     r0: float
-    
+
     def __post_init__(self):
-        """Validate parameters."""
         if self.rho0 <= 0:
             raise ValueError(f"Reference density must be positive, got {self.rho0}")
         if self.H <= 0:
@@ -141,15 +153,17 @@ class AtmoParams:
         if self.r0 <= 0:
             raise ValueError(f"Reference radius must be positive, got {self.r0}")
 
-# temporary home for this class until a periodic orbits/families module is set up
+
+# ========== PERIODIC ORBIT DATACLASS ==========
+
 @dataclass(frozen=True)
 class PeriodicOrbit:
     """
     Initial conditions and period for a periodic CR3BP orbit.
-    
+
     The period is a dynamical property that cannot be computed from the
     state vector alone -- it must be determined numerically and stored here.
-    
+
     Parameters
     ----------
     state : OrbitalElements
@@ -165,622 +179,300 @@ class PeriodicOrbit:
     period: float
     name: str = ""
     jacobi: Optional[float] = None
-    
+
     def __post_init__(self):
         if self.period <= 0:
             raise ValueError(f"Period must be positive, got {self.period}")
         if self.state.element_type.value != 'cr3bp':
             raise ValueError("PeriodicOrbit requires CR3BP elements")
 
+
+# ========== INTERNAL HELPERS ==========
+
 class _BodyParamsWithND:
-        """
-        Wrapper for BodyParams that adds nondimensional radius property.
-        Used internally by System to provide .radius_nd access for CR3BP systems.
-        """
-        def __init__(self, body_params: BodyParams, L_star: float):
-            self._body_params = body_params
-            self._L_star = L_star
-        
-        @property
-        def radius_nd(self) -> float:
-            """Nondimensional radius [L_star units]"""
-            return self._body_params.radius / self._L_star
-        
-        # Delegate all other attributes to the underlying BodyParams
-        def __getattr__(self, name):
-            return getattr(self._body_params, name)
-        
-        def __repr__(self):
-            return repr(self._body_params)
-        
-        # need to preserve equality through the wrapper
-        def __eq__(self, other):
-            """Compare based on wrapped BodyParams."""
-            if isinstance(other, _BodyParamsWithND):
-                return self._body_params == other._body_params
-            elif isinstance(other, BodyParams):
-                return self._body_params == other
-            return NotImplemented
-        
-        def __hash__(self):
-            """Hash based on wrapped BodyParams."""
-            return hash(self._body_params)
+    """
+    Wrapper for BodyParams that adds a nondimensional radius property.
+
+    Used by CR3BPSystem to expose radius_nd without modifying the
+    immutable BodyParams dataclass.
+    """
+    def __init__(self, body_params: BodyParams, L_star: float):
+        self._body_params = body_params
+        self._L_star = L_star
+
+    # Delegate all other attributes to the underlying BodyParams
+    @property
+    def radius_nd(self) -> float:
+        """Nondimensional radius [L_star units]."""
+        return self._body_params.radius / self._L_star
+
+    def __getattr__(self, name):
+        return getattr(self._body_params, name)
+
+    def __repr__(self):
+        return repr(self._body_params)
+
+     # need to preserve equality through the wrapper
+    def __eq__(self, other):
+        if isinstance(other, _BodyParamsWithND):
+            return self._body_params == other._body_params
+        elif isinstance(other, BodyParams):
+            return self._body_params == other
+        return NotImplemented
+
+    # Hash based on wrapped BodyParams.
+    def __hash__(self):
+        return hash(self._body_params)
+
+
+# ========== SYSTEM BASE CLASS ==========
 
 class System:
     """
-    Immutable system definition for orbital propagation.
-    
-    Represents a gravitational environment with a primary body and optional
-    secondary body (for 3-body problems), along with perturbation models.
-    
+    Factory and base class for orbital propagation systems.
+
+    Construct via the factory interface -- do not instantiate directly:
+
+        sys = System('2body', primary_body, ...)
+        sys = System('3body', primary_body, secondary_body, distance=...)
+
+    The factory returns a TwoBodySystem or CR3BPSystem instance depending
+    on the base_type argument. Both are subclasses of System, so
+    isinstance(sys, System) is True for either.
+
     Parameters
     ----------
-    base_type : str
-        Type of base dynamics: "2body" or "3body"
+    base_type : str or SysType
+        Type of dynamics. Accepted strings:
+        '2body', '2BODY', 'Two_Body' -> TwoBodySystem
+        '3body', '3BODY', 'Three_Body', 'CR3BP' -> CR3BPSystem
     primary_body : BodyParams
-        Parameters for the primary celestial body
-    secondary_body : BodyParams, optional
-        Parameters for secondary body (required for 3-body systems)
-    perturbations : tuple of str, optional
-        Perturbation models to include. Options: "J2", "drag"
-        Default is empty tuple (point mass dynamics)
-        Note: Use trailing comma for single perturbation: ('J2',)
-    atmosphere : AtmosphereParams, optional
-        Atmospheric model parameters (required if "drag" in perturbations)
-    distance : float, optional
-        Distance between primary and secondary bodies [km]
-        Required for 3-body systems
-        
-    Attributes (computed for 3-body)
-    ---------------------------------
-    L_star : float
-        Characteristic length [km]
-    T_star : float  
-        Characteristic time [s]
-    mass_ratio : float
-        Nondimensional mass ratio mu = mu_2/(mu_1 + mu_2)
-    n_mean : float
-        Mean motion [rad/s]
+        Parameters for the primary celestial body.
+    *args, **kwargs
+        Forwarded to the appropriate subclass __init__.
+        See TwoBodySystem and CR3BPSystem for their specific parameters.
 
     Notes
     -----
-    - System is immutable - create a new instance to change parameters
-    - 3-body systems currently do not support perturbations
-    - Default length unit is km (except AtmosphereParams uses m)
-    - Instance counting: Warning issued when more than 10 Systems exist
-      simultaneously (due to Heyoka compilation overhead)
+    - System instances are immutable after construction.
+    - Heyoka integrators are compiled on construction by default.
+      Use compile=False to defer compilation.
+    - Instance counting: a ResourceWarning is issued when more than
+      INSTANCE_WARNING_THRESHOLD (see KyklosConfig) System objects exist 
+      simultaneously, since each compiled integrator consumes significant memory.
     """
-    # ========== CLASS CONSTANTS ==========
-    # Class variable for instance counting
+
+    # ========== CLASS VARIABLES ==========
     _instance_count = 0
-    # currently implemented perturbations
     _VALID_PERTURBATIONS = frozenset(("J2", "J3", "drag"))
 
-    # ========== CONSTRUCTION ==========
-    def __init__(
-        self,
-        base_type,
-        primary_body: BodyParams,
-        secondary_body: Optional[BodyParams] = None,
-        perturbations: tuple = (),
-        atmosphere: Optional[AtmoParams] = None,
-        distance: Optional[float] = None,
-        compile: bool | None = None
-    ):
+    # ========== FACTORY DISPATCH ==========
+    def __new__(cls, base_type, primary_body, *args, **kwargs):
         """
-        Initialize System with validation and computed parameters.
-        
-        Raises
-        ------
-        ValueError
-            If parameters are invalid or incompatible
-        """
-        # set defaults
-        if compile is None:
-            compile = config.DEFAULT_COMPILE
+        Allocate a TwoBodySystem or CR3BPSystem instance.
 
-        # Validate before storing
-        self._validate_params(
-            base_type, primary_body, secondary_body,
-            perturbations, atmosphere, distance
-        )
-        
-        # Store parameters in private attributes for immutability
-        self._primary_body = primary_body
-        self._secondary_body = secondary_body
-        self._perturbations = tuple(perturbations)  # Ensure tuple (immutable)
-        self._atmosphere = atmosphere
-        self._distance = distance
-        
-        # Compute 3-body parameters if needed
-        if self._base_type == SysType.CR3BP:
-            self._compute_CR3BP_params()
-            self._compute_lagrange_points()
+        When called as System(...), routes to the appropriate subclass.
+        Direct instantiation of TwoBodySystem or CR3BPSystem is blocked.
+        """
+        if cls is System:
+            sys_type = System._parse_base_type(base_type)
+            if sys_type == SysType.TWO_BODY:
+                return object.__new__(TwoBodySystem)
+            elif sys_type == SysType.CR3BP:
+                return object.__new__(CR3BPSystem)
+            else:
+                raise ValueError(
+                    f"No System subclass is implemented for type "
+                    f"'{sys_type.value}'. Currently supported: '2body', '3body'."
+                )
         else:
-            self._L_star = None
-            self._T_star = None
-            self._mass_ratio = None
-            self._n_mean = None
-            self._L1 = None
-            self._L2 = None
-            self._L3 = None
-            self._L4 = None
-            self._L5 = None
-        
-        # Initialize cached EOMs and heyoka integrator
-        self._cached_eom = None
-        self._cached_integrator = None
-        self._param_info = None
-        # account for variational ODE integrator
-        self._cached_var_integrator = None
-        self._var_order = None
-
-        # Build symbolic EOM
-        self._cached_eom, self._param_info = self._build_eom()
-        
-        # Compile if requested
-        if compile:
-            self._compile_integrator()
-        
-        # Instance counting
-        System._instance_count += 1
-        if System._instance_count > config.INSTANCE_WARNING_THRESHOLD:
-            warnings.warn(
-                f"Created {System._instance_count} System instances. "
-                f"Each System will cache compiled Heyoka integrators, "
-                f"which can consume significant memory. Consider reusing "
-                f"System objects when possible.",
-                ResourceWarning,
-                stacklevel=2
+            # Prevent direct subclass instantiation.
+            # Subclasses are public for isinstance() checks but cannot be
+            # constructed without going through the System factory.
+            raise TypeError(
+                f"{cls.__name__} cannot be instantiated directly. "
+                f"Use System('2body', ...) or System('3body', ...) instead."
             )
-    
-    # ========== VALIDATION ==========
-    def _validate_params(
-        self,
-        base_type,
-        primary_body: BodyParams,
-        secondary_body: Optional[BodyParams],
-        perturbations: tuple,
-        atmosphere: Optional[AtmoParams],
-        distance: Optional[float]
-    ):
+
+    # ========== STATIC / CLASS METHODS ==========
+    @staticmethod
+    def _parse_base_type(base_type):
+        """Convert string or SysType enum to SysType."""
+        if isinstance(base_type, SysType):
+            return base_type
+        elif isinstance(base_type, str):
+            type_map = {
+                '2body':      SysType.TWO_BODY,
+                '2BODY':      SysType.TWO_BODY,
+                'Two_Body':   SysType.TWO_BODY,
+                '3body':      SysType.CR3BP,
+                '3BODY':      SysType.CR3BP,
+                'Three_Body': SysType.CR3BP,
+                'CR3BP':      SysType.CR3BP,
+            }
+            if base_type in type_map:
+                return type_map[base_type]
+            raise ValueError(
+                f"Unknown base type '{base_type}'. "
+                f"Use: {list(type_map.keys())}"
+            )
+        raise TypeError(
+            f"base_type must be SysType or str, got {type(base_type)}"
+        )
+
+    @classmethod
+    def get_instance_count(cls):
+        """Return the current number of live System instances."""
+        return cls._instance_count
+
+    @classmethod
+    def reset_instance_count(cls):
+        """Reset instance counter to zero. Intended for use in tests."""
+        cls._instance_count = 0
+
+    # ========== SHARED PROPERTIES ==========
+    @property
+    def base_type(self) -> SysType:
+        """Type of base dynamics (SysType enum)."""
+        return self._base_type
+
+    @property
+    def is_compiled(self) -> bool:
+        """True if the Heyoka integrator has been compiled."""
+        return self._cached_integrator is not None
+
+    @property
+    def cached_eom(self) -> Optional[List[Tuple]]:
+        """Cached symbolic equations of motion as list of (var, rhs) tuples."""
+        return self._cached_eom
+
+    @property
+    def requires_satellite(self) -> bool:
+        """True if this system requires a Satellite object for propagation."""
+        return len(self._param_info['param_map']) > 0
+
+    # ========== PUBLIC COMPILE METHODS ==========
+    def compile(self):
         """
-        Validate system parameters for consistency.
-        
-        Raises
-        ------
-        ValueError
-            If parameters are invalid or incompatible
-        """
-        # Validate base_type and mark immutable
-        self._base_type = self._parse_base_type(base_type)
-        
-        # Validate perturbations
-        for pert in perturbations:
-            if pert not in System._VALID_PERTURBATIONS:
-                raise ValueError(
-                    f"Unknown perturbation '{pert}'. "
-                    f"Valid options: {System._VALID_PERTURBATIONS}"
-                )
-        
-        # Check for duplicate perturbations
-        if len(perturbations) != len(set(perturbations)):
-            raise ValueError(f"Duplicate perturbations found: {perturbations}")
-        
-        # 3-body specific validation
-        if self._base_type == SysType.CR3BP:
-            if secondary_body is None:
-                raise ValueError("3-body system requires secondary_body")
-            if distance is None:
-                raise ValueError("3-body system requires distance between bodies")
-            if distance <= 0:
-                raise ValueError(f"Distance must be positive, got {distance}")
-            if perturbations:
-                raise ValueError(
-                    f"3-body systems do not currently support perturbations. "
-                    f"Got: {perturbations}"
-                )
-            if atmosphere is not None:
-                warnings.warn(
-                    "Atmosphere specified for 3-body system but will be ignored"
-                )
-        
-        # 2-body specific validation
-        if self._base_type == SysType.TWO_BODY:
-            if secondary_body is not None:
-                warnings.warn(
-                    "secondary_body specified for 2-body system but will be ignored"
-                )
-            if distance is not None:
-                warnings.warn(
-                    "distance specified for 2-body system but will be ignored"
-                )
-        
-        # Perturbation-specific validation
-        if "J2" in perturbations:
-            if primary_body.J2 is None:
-                raise ValueError(
-                    "J2 perturbation requested but primary_body.J2 is None"
-                )
-        
-        if "J3" in perturbations:
-            if primary_body.J3 is None:
-                raise ValueError(
-                    "J3 perturbation requested but primary_body.J3 is None"
-                )
-        
-        if "drag" in perturbations:
-            if atmosphere is None:
-                raise ValueError(
-                    "drag perturbation requested but atmosphere is None"
-                )
-            if primary_body.rotation_rate is None:
-                raise ValueError(
-                    "drag perturbation requires primary_body.rotation_rate"
-                )
-            
-    # ========== COMPILATION METHODS ==========
-    def _build_eom(self):
-        """
-        Build symbolic Heyoka equations of motion for this system.
-        
-        Creates symbolic expressions for the equations of motion based on
-        the system's base dynamics (2-body or CR3BP) and any perturbations
-        (J2, drag).
-        
+        Compile the Heyoka integrator if not already compiled.
+
+        Called automatically on construction unless compile=False was passed.
+
         Returns
         -------
-        sys : list of (var, rhs) tuples
-            Heyoka ODE system definition ready for taylor_adaptive()
-        param_info : dict
-            Information about runtime parameters:
-            - 'param_map': list of (name, index) tuples for hy.par[] array
-            - 'description': dict with human-readable parameter descriptions
-        
-        Notes
-        -----
-        - System parameters (mu, J2, atmospheric params) are hardcoded into
-        the symbolic expressions since they're part of the immutable System
-        - Satellite parameters (Cd*A, mass) use hy.par[] for runtime binding,
-        allowing one System to propagate multiple satellites
-        - State vector order: [x, y, z, vx, vy, vz] (km, km/s)
+        self
+            Returns self for method chaining.
         """
-        # Create symbolic state variables
-        x, y, z, vx, vy, vz = hy.make_vars("x", "y", "z", "vx", "vy", "vz")
-        
-        # Build equations based on system type
-        if self._base_type == SysType.TWO_BODY:
-            sys, param_info = self._build_2body_eom(x, y, z, vx, vy, vz)
-        elif self._base_type == SysType.CR3BP:
-            sys, param_info = self._build_cr3bp_eom(x, y, z, vx, vy, vz)
-        else:
-            raise NotImplementedError(
-                f"build_eom() not yet implemented for {self._base_type}"
-            )
-        
-        return sys, param_info
+        self._compile_integrator()
+        return self
 
-    def _build_2body_eom(self, x, y, z, vx, vy, vz):
-        """Build 2-body equations with optional perturbations."""
-        # Position magnitude
-        r = hy.sqrt(x**2 + y**2 + z**2)
-        # Gravitational parameter (hardcoded from System)
-        mu = self._primary_body.mu
-        
-        # Base gravitational acceleration
-        a_grav_x = -mu * x / r**3
-        a_grav_y = -mu * y / r**3
-        a_grav_z = -mu * z / r**3
-        
-        # Start with gravitational acceleration then add perturbations
-        a_total_x = a_grav_x
-        a_total_y = a_grav_y
-        a_total_z = a_grav_z
-        
-        # Parameter tracking
-        param_map = []
-        param_desc = {}
-        next_param_idx = 0
-        
-        # Add perturbations
-        if "J2" in self._perturbations:
-            a_J2_x, a_J2_y, a_J2_z = self._build_J2_perturbation(
-                x, y, z, r, mu
-            )
-            a_total_x = a_total_x + a_J2_x
-            a_total_y = a_total_y + a_J2_y
-            a_total_z = a_total_z + a_J2_z
-        
-        if "J3" in self._perturbations:
-            a_J3_x, a_J3_y, a_J3_z = self._build_J3_perturbation(
-                x, y, z, r, mu
-            )
-            a_total_x = a_total_x + a_J3_x
-            a_total_y = a_total_y + a_J3_y
-            a_total_z = a_total_z + a_J3_z
-        
-        if "drag" in self._perturbations:
-            a_drag_x, a_drag_y, a_drag_z, drag_params = self._build_drag_perturbation(
-                x, y, z, vx, vy, vz, r, next_param_idx
-            )
-            a_total_x = a_total_x + a_drag_x
-            a_total_y = a_total_y + a_drag_y
-            a_total_z = a_total_z + a_drag_z
-            
-            # Add drag parameters to map
-            param_map.extend(drag_params['param_map'])
-            param_desc.update(drag_params['description'])
-            next_param_idx += len(drag_params['param_map'])
-        
-        # Assemble system
-        sys = [
-            (x, vx),
-            (y, vy),
-            (z, vz),
-            (vx, a_total_x),
-            (vy, a_total_y),
-            (vz, a_total_z)
-        ]
-        
-        param_info = {
-            'param_map': param_map,
-            'description': param_desc
-        }
-        
-        return sys, param_info
-
-    def _build_J2_perturbation(self, x, y, z, r, mu):
-        """Build J2 perturbation acceleration terms."""
-        J2 = self._primary_body.J2
-        R = self._primary_body.radius
-        assert J2 is not None # validated in _compute_params
-        # J2 perturbation (zonal harmonic)
-        # Common factor: (3/2) * J2 * mu * R^2 / r^5
-        factor = 1.5 * J2 * mu * R**2 / r**5
-        # Acceleration components
-        # a_J2 = factor * [x(5z^2/r^2 - 1), y(5z^2/r^2 - 1), z(5z^2/r^2 - 3)]
-        z2_r2 = z**2 / r**2
-        
-        a_J2_x = factor * x * (5.0 * z2_r2 - 1.0)
-        a_J2_y = factor * y * (5.0 * z2_r2 - 1.0)
-        a_J2_z = factor * z * (5.0 * z2_r2 - 3.0)
-        
-        return a_J2_x, a_J2_y, a_J2_z
-    
-    def _build_J3_perturbation(self, x, y, z, r, mu):
-        """Build J3 perturbation acceleration terms."""
-        J3 = self._primary_body.J3
-        R = self._primary_body.radius
-        assert J3 is not None # validated in _compute_params
-
-        z2_r2 = z**2 / r**2
-
-        # Common factor for x and y components
-        # a_J3_x = (5/2) * mu * J3 * R^3 * x * z / r^7 * (7*z^2/r^2 - 3)
-        factor_xy = 2.5 * J3 * mu * R**3 * z / r**7
-
-        a_J3_x = factor_xy * x * (7.0 * z2_r2 - 3.0)
-        a_J3_y = factor_xy * y * (7.0 * z2_r2 - 3.0)
-        
-        # z component uses a separate factoring
-        # a_J3_z =  (mu*J3*R^3/r^5) * (1.5 - 15*z2_r2 + 17.5*z2_r2^2)
-        factor_z = mu * J3 * R**3 / r**5
-        a_J3_z = factor_z * (1.5 - 15.0 * z2_r2 + 17.5 * z2_r2**2)
-        
-        return a_J3_x, a_J3_y, a_J3_z
-
-    def _build_drag_perturbation(self, x, y, z, vx, vy, vz, r, param_start_idx):
+    def compile_var(self, order=1):
         """
-        Build atmospheric drag perturbation.
+        Compile the variational ODE integrator if not already compiled.
 
-        Uses exponential atmosphere model and accounts for Earth rotation.
-        Drag parameters (Cd*A, mass) are extracted from Satellite object
-        during propagation and passed via hy.par[] array.
+        Not compiled by default. Required if STM output is needed.
+        The propagator auto-compiles this if with_stm=True is requested.
 
         Parameters
         ----------
-        param_start_idx : int
-            Starting index for hy.par[] array
+        order : int, optional
+            Order of variational equations. Default 1 (first-order STM).
 
         Returns
         -------
-        a_drag_x, a_drag_y, a_drag_z : symbolic expressions
-            Drag acceleration components
-        param_info : dict
-            Parameter mapping information with keys:
-            - 'param_map': [('Cd_A', idx), ('mass', idx)]
-            - 'description': Human-readable parameter descriptions
+        self
+            Returns self for method chaining.
         """
-        # Atmospheric parameters (hardcoded from System)
-        rho0 = self._atmosphere.rho0  # kg/m^3
-        H = self._atmosphere.H  # m
-        r0 = self._atmosphere.r0  # m
-        omega = self._primary_body.rotation_rate  # rad/s
-        
-        # Convert atmospheric params to km (package standard)
-        # Density will be kg/km^3, scale height in km
-        rho0_km = rho0 * 1e9  # kg/m^3 -> kg/km^3
-        H_km = H / 1000.0  # m -> km
-        r0_km = r0 / 1000.0  # m -> km
-        
-        # Altitude-dependent density (exponential model)
-        # rho(r) = rho0 * exp(-(r - r0)/H)
-        rho = rho0_km * hy.exp(-(r - r0_km) / H_km)
-        
-        # Velocity relative to rotating atmosphere
-        # v_rel = v_inertial - omega x r
-        # For Earth rotation about z-axis: omega x r = [-omega*y, omega*x, 0]
-        vx_rel = vx + omega * y
-        vy_rel = vy - omega * x
-        vz_rel = vz
-        
-        # Relative velocity magnitude
-        v_rel = hy.sqrt(vx_rel**2 + vy_rel**2 + vz_rel**2)
-        
-        # Satellite parameters (runtime via hy.par[])
-        Cd_A = hy.par[param_start_idx]      # Drag coefficient * area [m^2]
-        mass = hy.par[param_start_idx + 1]  # Satellite mass [kg]
-        
-        # Convert Cd*A to km^2 for unit consistency
-        Cd_A_km = Cd_A / 1e6  # m^2 -> km^2
-        
-        # Drag acceleration: a_drag = -(1/2) * rho * (Cd*A/m) * v_rel * v_rel_vec
-        # Factor: -(1/2) * rho * (Cd*A/m) * v_rel
-        drag_factor = -0.5 * rho * Cd_A_km / mass * v_rel
-        
-        a_drag_x = drag_factor * vx_rel
-        a_drag_y = drag_factor * vy_rel
-        a_drag_z = drag_factor * vz_rel
-        
-        # Parameter information
-        param_info = {
-            'param_map': [
-                ('Cd_A', param_start_idx),
-                ('mass', param_start_idx + 1)
-            ],
-            'description': {
-                'Cd_A': 'Drag coefficient times reference area [m^2]',
-                'mass': 'Satellite mass [kg]'
-            }
-        }
-        
-        return a_drag_x, a_drag_y, a_drag_z, param_info
+        self._compile_var_integrator(order=order)
+        return self
 
-    def _build_cr3bp_eom(self, x, y, z, vx, vy, vz):
-        """Build CR3BP equations in rotating frame."""
-        # Mass ratio (nondimensional)
-        mu = self._mass_ratio
-        assert mu is not None # validated in _compute_CR3BP_params
-        # Distances to primaries (in rotating frame)
-        r1 = hy.sqrt((x + mu)**2 + y**2 + z**2)
-        r2 = hy.sqrt((x - 1.0 + mu)**2 + y**2 + z**2)
-        # Pseudo-potential U (includes centrifugal effect)
-        U = 0.5 * (x**2 + y**2) + (1.0 - mu) / r1 + mu / r2
-        
-        # Equations of motion in rotating frame
-        sys = [
-            (x, vx),
-            (y, vy),
-            (z, vz),
-            (vx, 2.0 * vy + hy.diff(U, x)),   
-            (vy, -2.0 * vx + hy.diff(U, y)), 
-            (vz, hy.diff(U, z))
-        ]
-        
-        # CR3BP has no runtime parameters (everything is nondimensional)
-        param_info = {
-            'param_map': [],
-            'description': {}
-        }
-        
-        return sys, param_info
-    
+    # ========== INTERNAL COMPILE METHODS ==========
+    def _compile_message(self) -> str:
+        """
+        Return the compilation status message.
+
+        Overridden in subclasses to include type-specific detail
+        (e.g. active perturbations for TwoBodySystem).
+        """
+        return f"Compiling {self._base_type.value} integrator"
+
     def _compile_integrator(self):
         """
-        Compile Heyoka integrator (expensive operation).
-        
-        This performs automatic differentiation and LLVM compilation,
-        which takes 1-5 seconds depending on system complexity.
+        Compile the Heyoka taylor_adaptive integrator.
+
+        This performs automatic differentiation and LLVM JIT compilation.
+        Typically takes 1-5 seconds depending on EOM complexity.
         """
         if self._cached_integrator is not None:
             return  # Already compiled
-        
-        # Create dummy parameters for compilation
+
         n_params = len(self._param_info['param_map'])
         dummy_params = [0.0] * n_params
-        
-        # Print message for long compilation
-        msg = f"Compiling {self._base_type.value} integrator"
-        if self._perturbations:
-            msg += f" with {', '.join(self._perturbations)}"
-        print(msg + "...")
-        
-        # EXPENSIVE: Compile integrator
+
+        print(self._compile_message() + "...")
         self._cached_integrator = hy.taylor_adaptive(
             sys=self._cached_eom,
-            state=[0.0] * 6,  # Dummy state
+            state=[0.0] * 6,
             pars=dummy_params,
         )
-        print(f"Compilation complete")
+        print("Compilation complete")
 
     def _compile_var_integrator(self, order=1):
-        """Compile variational integrator (expensive, done lazily)."""
+        """
+        Compile the variational Heyoka integrator.
+
+        Constructs a var_ode_sys from the cached symbolic EOM and compiles
+        with compact_mode=True (required for variational systems).
+        """
         if self._cached_var_integrator is not None:
             return  # Already compiled
-        
+
         if order > 1:
-            raise ValueError("Higher order State Transition Tensors not supported yet.")
-        
+            raise ValueError(
+                "Higher order State Transition Tensors not supported yet."
+            )
+
         vsys = hy.var_ode_sys(
             self._cached_eom,
             hy.var_args.vars,
             order=order
         )
-        
-        # Same parameter structure as base integrator
+
         n_params = len(self._param_info['param_map'])
         dummy_params = [0.0] * n_params
-        
+
         print(f"Compiling variational integrator (order={order})...")
         self._cached_var_integrator = hy.taylor_adaptive(
             sys=vsys,
             state=[0.0] * 6,
             pars=dummy_params,
-            compact_mode=True  # CRITICAL for variational
+            compact_mode=True  # CRITICAL for variational systems
         )
         self._var_order = order
         print("Variational compilation complete")
-    
-    def compile(self):
-        """
-        Explicitly compile integrator if not already compiled.
-        
-        Compilation occurs immediately on instance creation by default
-        Call this method to compile if initializing with compile=False
-        
-        Returns
-        -------
-        self
-            Returns self for method chaining
-        """
-        self._compile_integrator()
-        return self
-    
-    def compile_var(self, order=1):
-        """
-        Explicitly compile variational ODE integrator if not already compiled.
-        
-        This is not compiled by default, and is only necessary if STM output is needed.
-        The propagator will auto-compile this if an STM is requested in the propagation.
-        
-        Returns
-        -------
-        self
-            Returns self for method chaining
-        """
-        self._compile_var_integrator(order=order)
-        return self
-    
+
     # ========== PROPAGATION HELPERS ==========
     def _process_satellite(self, satellite: Satellite) -> np.ndarray:
         """
-        Extract parameters from Satellite object for Heyoka integrator.
-        
+        Extract runtime parameters from a Satellite object.
+
+        Maps satellite properties to the hy.par[] array in the order
+        defined by self._param_info['param_map'].
+
         Parameters
         ----------
         satellite : Satellite
-            Satellite object containing required physical properties
-            
+            Satellite object containing required physical properties.
+
         Returns
         -------
         np.ndarray
-            Array of parameter values in order expected by integrator,
-            as defined by self._param_info['param_map']
-            
+            Parameter values in the order expected by the integrator.
+
         Raises
         ------
         ValueError
-            If satellite is missing a required property
+            If satellite is missing a required property.
         """
         params = []
         for name, idx in self._param_info['param_map']:
@@ -792,56 +484,10 @@ class System:
                 # This shouldn't happen until we add new perturbations
                 raise ValueError(
                     f"Unknown satellite parameter '{name}' required by system. "
-                    f"This may indicate a bug in the System implementation."
+                    "This may indicate a bug in the System implementation."
                 )
         return np.array(params)
-    
-    def _state_to_array(
-            self,
-            state: OrbitalElements | np.ndarray
-    ) -> np.ndarray:
-        """
-        Convert a single initial state to a validated 6-element float array.
 
-        Parameters
-        ----------
-        state : OrbitalElements or array-like
-            State to convert.
-
-        Returns
-        -------
-        np.ndarray
-            Shape (6,) float array [km, km/s].
-        """
-        if isinstance(state, OrbitalElements):
-            if self._base_type == SysType.CR3BP:
-                if state.element_type != OEType.CR3BP:
-                    raise ValueError(
-                        f"CR3BP system requires CR3BP (nondimensional) elements. "
-                        f"Got {state.element_type.value}. "
-                        f"Convert to nondimensional coordinates first."
-                    )
-                return state.elements.astype(float)
-            else:
-                if state.element_type == OEType.CR3BP:
-                    raise ValueError(
-                        f"Cannot use CR3BP (nondimensional) elements with "
-                        f"{self._base_type.value} system. "
-                        f"Use Cartesian or Keplerian elements instead."
-                    )
-                return state.to_cartesian().elements.astype(float)
-        else:
-            arr = np.asarray(state, dtype=float)
-            if arr.shape != (6,):
-                raise ValueError(
-                    f"State array must have shape (6,), got {arr.shape}."
-                )
-            if not np.all(np.isfinite(arr)):
-                raise ValueError(
-                    f"Initial state contains NaN or Inf values: {arr}"
-                )
-            return arr
-    
     def _validate_times(self, times) -> np.ndarray:
         """
         Validate and convert a times sequence to a sorted float array.
@@ -870,7 +516,7 @@ class System:
                 "Use Trajectory.extend_back() for backward extension."
             )
         return times
-    
+
     def _propagate_single_output(
             self,
             state_array: np.ndarray,
@@ -923,8 +569,8 @@ class System:
             ta.pars[:] = params_array
         elif len(self._param_info['param_map']) > 0:
             raise ValueError(
-                f"This system requires a Satellite object. "
-                f"The following properties are needed: "
+                "This system requires a Satellite object. "
+                "The following properties are needed: "
                 f"{[name for name, _ in self._param_info['param_map']]}"
             )
 
@@ -958,7 +604,7 @@ class System:
             )
 
         return c_out
-    
+
     def _propagate_single(
             self,
             initial_state: OrbitalElements | np.ndarray | BoundaryNode,
@@ -973,16 +619,16 @@ class System:
 
         if isinstance(initial_state, BoundaryNode):
             if not np.isclose(initial_state.time, t_start,
-                            rtol=config.EQUALITY_RTOL,
-                            atol=config.EQUALITY_ATOL):
+                              rtol=config.EQUALITY_RTOL,
+                              atol=config.EQUALITY_ATOL):
                 raise ValueError(
                     f"BoundaryNode time ({initial_state.time:.6g}) does not "
                     f"match times[0] ({t_start:.6g})."
                 )
             if initial_state.post_state is None:
                 raise ValueError(
-                    "BoundaryNode provided as initial_state must have a post_state. "
-                    "Use StartBoundaryNode or ImpulsiveBoundaryNode"
+                    "BoundaryNode provided as initial_state must have a "
+                    "post_state. Use StartBoundaryNode or ImpulsiveBoundaryNode."
                 )
             state_array = self._state_to_array(initial_state.post_state)
             provided_start_node = initial_state
@@ -996,9 +642,9 @@ class System:
         return Trajectory(
             self, [c_out],
             stm_order=stm_order if with_stm else None,
-            start_node=provided_start_node   # None -> auto-construct
+            start_node=provided_start_node
         )
-    
+
     def _propagate_multi(
             self,
             initial_states: list[OrbitalElements | np.ndarray] | np.ndarray,
@@ -1008,13 +654,12 @@ class System:
             satellite: Satellite | None
     ) -> Trajectory:
         """
-        Multi-Segment Input Mode 1: multi-segment propagation from arrays.
+        Multi-segment propagation from arrays (Mode 1).
 
         Each segment is propagated independently from its given initial
-        state. Junction nodes are inferred automatically from the actual
+        state. Junction nodes are inferred automatically from actual
         propagated states via Trajectory._infer_junction.
         """
-        # Normalise initial_states to a list of individual states
         if isinstance(initial_states, np.ndarray):
             if initial_states.ndim != 2 or initial_states.shape[1] != 6:
                 raise ValueError(
@@ -1032,7 +677,6 @@ class System:
                 f"times implies {n_seg} segment(s) (len(times) - 1 = {n_seg})."
             )
 
-        # Propagate each segment
         outputs = []
         for k in range(n_seg):
             state_array = self._state_to_array(states_list[k])
@@ -1042,12 +686,11 @@ class System:
             )
             outputs.append(c_out)
 
-        # Trajectory constructor auto-infers junction nodes from outputs
         return Trajectory(
             self, outputs,
             stm_order=stm_order if with_stm else None
         )
-    
+
     def _propagate_from_nodes(
             self,
             nodes: list,
@@ -1056,14 +699,13 @@ class System:
             satellite: Satellite | None
     ) -> Trajectory:
         """
-        Multi-Segment Input Mode 2: node-based propagation.
+        Node-based multi-segment propagation (Mode 2).
 
         Times and initial states are extracted from the node list. Junction
         nodes are recreated from actual integration results, preserving the
         design intent (delta-v, state jump) from the input nodes while
         updating pre-states to reflect true dynamics.
         """
-        # Structural validation
         if len(nodes) < 2:
             raise ValueError(
                 f"nodes must contain at least 2 elements, got {len(nodes)}."
@@ -1091,11 +733,9 @@ class System:
                 )
 
         n_seg = len(nodes) - 1
-
-        # Propagate each segment, recreating junction nodes from results
         outputs = []
         new_junction_nodes = []
-        current_post_state = nodes[0].post_state   # start from first node
+        current_post_state = nodes[0].post_state
 
         for k in range(n_seg):
             state_array = self._state_to_array(current_post_state)
@@ -1113,9 +753,8 @@ class System:
             )
             outputs.append(c_out)
 
-            # Recreate junction node for all but the final boundary
             if k < n_seg - 1:
-                orig = nodes[k + 1]   # JunctionNode (validated above)
+                orig = nodes[k + 1]
                 actual_pre = c_out(float(t_end))[:6].copy()
 
                 if isinstance(orig, NullJunctionNode):
@@ -1133,10 +772,7 @@ class System:
                     current_post_state = post
 
                 elif isinstance(orig, FreeJunctionNode):
-                    # Warn if actual pre_state is inconsistent with nominal
-                    discrepancy = np.linalg.norm(
-                        actual_pre - orig.pre_state
-                    )
+                    discrepancy = np.linalg.norm(actual_pre - orig.pre_state)
                     if (config.STRICT_VALIDATION
                             and discrepancy > config.EQUALITY_ATOL):
                         warnings.warn(
@@ -1148,7 +784,6 @@ class System:
                             UserWarning,
                             stacklevel=3
                         )
-                    # Preserve user's post_state — it defines the next segment
                     new_node = FreeJunctionNode(
                         t_end, actual_pre, orig.post_state
                     )
@@ -1166,10 +801,10 @@ class System:
             self, outputs,
             junction_nodes=new_junction_nodes,
             stm_order=stm_order if with_stm else None,
-            start_node=nodes[0]   # preserve user's start boundary node
+            start_node=nodes[0]
         )
-    
-    # ========== PROPAGATION ==========
+
+    # ========== PROPAGATION (PUBLIC) ==========
     def propagate(
             self,
             initial_state: (OrbitalElements | np.ndarray
@@ -1186,7 +821,7 @@ class System:
 
         Three input modes are supported:
 
-        **Single segment** :
+        **Single segment**:
         Provide a single initial_state and times=[t_start, t_end].
         initial_state may be OrbitalElements, np.ndarray, or a BoundaryNode.
         If a BoundaryNode, times[0] must match the node time within tolerance.
@@ -1197,7 +832,7 @@ class System:
         len(initial_state) must equal len(times) - 1.
         Nodes are inferred automatically from actual propagated states.
 
-        **Multi-segment Node-based (Mode 2)**:
+        **Multi-segment node-based (Mode 2)**:
         Provide nodes=[StartBoundaryNode, Junction1, ..., EndBoundaryNode].
         times and initial_state must be None.
         Junction nodes are recreated from actual integration results,
@@ -1206,25 +841,24 @@ class System:
         Parameters
         ----------
         initial_state : OrbitalElements, np.ndarray, BoundaryNode, list, or None
-            Initial state(s). Single state for one segment, list of states
-            for multiple segments. Must be None when nodes is provided.
+            Initial state(s). Single state for one segment, list for multiple.
+            Must be None when nodes is provided.
         times : array-like or None
-            Boundary times of length n_seg + 1. For one segment: [t0, tf].
-            Must be strictly increasing. Must be None when nodes is provided.
+            Boundary times of length n_seg + 1.  Must be strictly increasing.
+            Must be None when nodes is provided.
         nodes : list of Node, optional
             [StartBoundaryNode, JunctionNode, ..., EndBoundaryNode] for
             node-based propagation. Cannot be combined with initial_state
             or times.
         with_stm : bool, optional
-            If True, propagate State Transition Matrix via variational equations. 
-            Default: False.
+            If True, propagate the State Transition Matrix via variational
+            equations. Default: False.
         stm_order : int, optional
             Order of variational equations (1 = first-order STM). Default: 1.
         satellite : Satellite or None, optional
-            Satellite object containing physical properties (mass, drag 
-            coefficient, cross-sectional area, inertia tensor). Required 
-            if system has perturbations that depend on satellite properties
-            (e.g., drag). For systems without perturbations, can be None.
+            Satellite object providing physical properties (mass, Cd*A).
+            Required when the system includes satellite-dependent perturbations
+            such as drag.
 
         Returns
         -------
@@ -1238,22 +872,20 @@ class System:
 
         Notes
         -----
-        State Transition Matrix propagation increases computational cost:
-        - Compilation time: 2-5x longer due to symbolic differentiation
-        - Memory: State vector size increases from 6 to 42 elements (order=1)
-        or 258 elements (order=2)
-
-        The STM is automatically initialized to the identity matrix at each Node.
-        Trajectory has methods to query segment-local and composite STM.
+        STM propagation increases computational cost:
+        - Compilation: 2-5x longer due to symbolic differentiation
+        - Memory: state vector grows from 6 to 42 (order=1) or 258 (order=2)
+          elements per integration step
+        The STM is automatically initialised to the identity matrix at each
+        segment boundary.
         """
-        # Mutual exclusivity check
+        # Mutual exclusivity
         if nodes is not None and initial_state is not None:
             raise ValueError(
                 "Cannot provide both nodes and initial_state. "
                 "Use nodes alone for node-based propagation, or "
                 "initial_state with times for state-based propagation."
             )
-
         if nodes is not None and times is not None:
             raise ValueError(
                 "Cannot provide times when using node-based propagation. "
@@ -1278,10 +910,9 @@ class System:
 
         times_arr = self._validate_times(times)
 
-        # Detect single vs multi-segment from initial_state type
         if (isinstance(initial_state, list)
-        or (isinstance(initial_state, np.ndarray)
-            and initial_state.ndim == 2)):
+                or (isinstance(initial_state, np.ndarray)
+                    and initial_state.ndim == 2)):
             return self._propagate_multi(
                 initial_state, times_arr, with_stm, stm_order, satellite
             )
@@ -1290,507 +921,935 @@ class System:
                 raise ValueError(
                     f"Single-segment propagation requires times of length 2 "
                     f"[t_start, t_end], got length {len(times_arr)}. "
-                    f"For multi-segment propagation, provide initial_state "
-                    f"as a list."
+                    "For multi-segment propagation, provide initial_state "
+                    "as a list."
                 )
             return self._propagate_single(
                 initial_state, times_arr, with_stm, stm_order, satellite
             )
 
-    # ========== NONDIMENSIONALIZATION METHODS ==========
-    def r2nd(self, r):
-        """
-        Convert dimensional position to nondimensional (CR3BP only).
-        
-        Parameters
-        ----------
-        r : float or array-like
-            Dimensional position [km]
-            
-        Returns
-        -------
-        np.float64 or np.ndarray
-            Nondimensional position (scalar if input is scalar, array otherwise)
-            
-        Raises
-        ------
-        ValueError
-            If system is not CR3BP type
-        """
-        if self._base_type != SysType.CR3BP:
-            raise ValueError(
-                "Nondimensionalization only available for CR3BP systems. "
-                f"Current system type: {self._base_type.value}"
-            )
-        assert self._L_star is not None  # Type checker hint
-        return np.asarray(r) / self._L_star
-    
-    def r2d(self, r_nd):
-        """
-        Convert nondimensional position to dimensional (CR3BP only).
-        
-        Parameters
-        ----------
-        r_nd : float or array-like
-            Nondimensional position
-            
-        Returns
-        -------
-        np.float64 or np.ndarray
-            Dimensional position [km] (scalar if input is scalar, array otherwise)
-            
-        Raises
-        ------
-        ValueError
-            If system is not CR3BP type
-        """
-        if self._base_type != SysType.CR3BP:
-            raise ValueError(
-                "Redimensionalization only available for CR3BP systems. "
-                f"Current system type: {self._base_type.value}"
-            )
-        assert self._L_star is not None  # Type checker hint
-        return np.asarray(r_nd) * self._L_star
-    
-    def v2nd(self, v):
-        """
-        Convert dimensional velocity to nondimensional (CR3BP only).
-        
-        Parameters
-        ----------
-        v : float or array-like
-            Dimensional velocity [km/s]
-            
-        Returns
-        -------
-        np.float64 or np.ndarray
-            Nondimensional velocity (scalar if input is scalar, array otherwise)
-            
-        Raises
-        ------
-        ValueError
-            If system is not CR3BP type
-        """
-        if self._base_type != SysType.CR3BP:
-            raise ValueError(
-                "Nondimensionalization only available for CR3BP systems. "
-                f"Current system type: {self._base_type.value}"
-            )
-        # Type checker hint: these are guaranteed non-None for CR3BP
-        assert self._L_star is not None and self._T_star is not None
-        # v_nd = v * T_star / L_star
-        return np.asarray(v) * self._T_star / self._L_star
-    
-    def v2d(self, v_nd):
-        """
-        Convert nondimensional velocity to dimensional (CR3BP only).
-        
-        Parameters
-        ----------
-        v_nd : float or array-like
-            Nondimensional velocity
-            
-        Returns
-        -------
-        np.float64 or np.ndarray
-            Dimensional velocity [km/s] (scalar if input is scalar, array otherwise)
-            
-        Raises
-        ------
-        ValueError
-            If system is not CR3BP type
-        """
-        if self._base_type != SysType.CR3BP:
-            raise ValueError(
-                "Redimensionalization only available for CR3BP systems. "
-                f"Current system type: {self._base_type.value}"
-            )
-        # Type checker hint: these are guaranteed non-None for CR3BP
-        assert self._L_star is not None and self._T_star is not None
-        # v = v_nd * L_star / T_star
-        return np.asarray(v_nd) * self._L_star / self._T_star
-    
-    def t2nd(self, t):
-        """
-        Convert dimensional time to nondimensional (CR3BP only).
-        
-        Parameters
-        ----------
-        t : float or array-like
-            Dimensional time [s]
-            
-        Returns
-        -------
-        np.float64 or np.ndarray
-            Nondimensional time (scalar if input is scalar, array otherwise)
-            
-        Raises
-        ------
-        ValueError
-            If system is not CR3BP type
-        """
-        if self._base_type != SysType.CR3BP:
-            raise ValueError(
-                "Nondimensionalization only available for CR3BP systems. "
-                f"Current system type: {self._base_type.value}"
-            )
-        assert self._T_star is not None  # Type checker hint
-        return np.asarray(t) / self._T_star
-    
-    def t2d(self, t_nd):
-        """
-        Convert nondimensional time to dimensional (CR3BP only).
-        
-        Parameters
-        ----------
-        t_nd : float or array-like
-            Nondimensional time
-            
-        Returns
-        -------
-        np.float64 or np.ndarray
-            Dimensional time [s] (scalar if input is scalar, array otherwise)
-            
-        Raises
-        ------
-        ValueError
-            If system is not CR3BP type
-        """
-        if self._base_type != SysType.CR3BP:
-            raise ValueError(
-                "Redimensionalization only available for CR3BP systems. "
-                f"Current system type: {self._base_type.value}"
-            )
-        assert self._T_star is not None  # Type checker hint
-        return np.asarray(t_nd) * self._T_star
+    # ========== LIFECYCLE ==========
+    def __del__(self):
+        """Decrement instance count when System is garbage collected."""
+        System._instance_count -= 1
 
-    # ========== PROPERTY ACCESS ==========
-    def summary(self):
-        """Print detailed summary of system parameters."""
-        print(f"System Type: {self._base_type}")
-        print(f"Primary Body: mu = {self._primary_body.mu:.6e} km^3/s^2, "
-            f"R = {self._primary_body.radius:.3f} km")
-        
-        if self._base_type == SysType.CR3BP:
-            print(f"Secondary Body: mu = {self._secondary_body.mu:.6e} km^3/s^2, "
-                f"R = {self._secondary_body.radius:.3f} km")
-            print(f"Distance: {self._distance:.3f} km")
-            print(f"\nNondimensional Parameters:")
-            print(f"  L* = {self._L_star:.6e} km")
-            print(f"  T* = {self._T_star:.6e} s")
-            print(f"  mu = {self._mass_ratio:.10f}")
-            print(f"  n  = {self._n_mean:.6e} rad/s")
-        
+
+# ========== TWO-BODY SYSTEM ==========
+
+class TwoBodySystem(System):
+    """
+    Two-body gravitational system with optional perturbations.
+
+    Models spacecraft motion under point-mass central body gravity, with
+    optional zonal harmonic (J2, J3) and atmospheric drag perturbations.
+
+    Construct via the System factory -- do not instantiate directly:
+
+        sys = System('2body', primary_body)
+        sys = System('2body', primary_body, perturbations=('J2',))
+        sys = System('2body', primary_body,
+                     perturbations=('drag',), atmosphere=atmo_params)
+
+    Parameters
+    ----------
+    base_type : str or SysType
+        Must be '2body' or equivalent string. Provided by System factory.
+    primary_body : BodyParams
+        Parameters for the central body.
+    perturbations : tuple of str, optional
+        Perturbation models to include. Options: 'J2', 'J3', 'drag'.
+        Default is empty tuple (point mass dynamics only).
+        Use trailing comma for single perturbation: ('J2',)
+    atmosphere : AtmoParams, optional
+        Atmospheric model parameters. Required if 'drag' is in perturbations.
+    compile : bool, optional
+        If True (default), compile the Heyoka integrator immediately.
+
+    Attributes
+    ----------
+    base_type : SysType
+        Always SysType.TWO_BODY.
+    primary_body : BodyParams
+        Central body parameters.
+    perturbations : tuple of str
+        Active perturbation models.
+    atmosphere : AtmoParams or None
+        Atmosphere model if drag is active, else None.
+    is_compiled : bool
+        True if the Heyoka integrator has been compiled.
+    requires_satellite : bool
+        True if drag perturbation is active (requires Satellite at propagation).
+    """
+
+    def __init__(
+            self,
+            base_type,
+            primary_body: BodyParams,
+            secondary_body=None,
+            *,
+            perturbations: tuple = (),
+            atmosphere: Optional[AtmoParams] = None,
+            distance=None,
+            compile: bool | None = None
+    ):
+        # Reject 2-body-irrelevant arguments
+        if secondary_body is not None:
+            raise TypeError(
+                "TwoBodySystem does not accept secondary_body. "
+                "For 3-body dynamics use System('3body', ...)."
+            )
+        if distance is not None:
+            raise TypeError(
+                "TwoBodySystem does not accept distance. "
+                "For 3-body dynamics use System('3body', ...)."
+            )
+
+        if compile is None:
+            compile = config.DEFAULT_COMPILE
+
+        self._base_type = SysType.TWO_BODY
+
+        # --- Validate perturbations ---
+        for pert in perturbations:
+            if pert not in System._VALID_PERTURBATIONS:
+                raise ValueError(
+                    f"Unknown perturbation '{pert}'. "
+                    f"Valid options: {System._VALID_PERTURBATIONS}"
+                )
+        if len(perturbations) != len(set(perturbations)):
+            raise ValueError(f"Duplicate perturbations found: {perturbations}")
+
+        if "J2" in perturbations and primary_body.J2 is None:
+            raise ValueError(
+                "J2 perturbation requested but primary_body.J2 is None"
+            )
+        if "J3" in perturbations and primary_body.J3 is None:
+            raise ValueError(
+                "J3 perturbation requested but primary_body.J3 is None"
+            )
+        if "drag" in perturbations:
+            if atmosphere is None:
+                raise ValueError(
+                    "drag perturbation requested but atmosphere is None"
+                )
+            if primary_body.rotation_rate is None:
+                raise ValueError(
+                    "drag perturbation requires primary_body.rotation_rate"
+                )
+
+        # --- Store parameters ---
+        self._primary_body = primary_body
+        self._perturbations = tuple(perturbations)
+        self._atmosphere = atmosphere
+
+        # --- Integrator cache ---
+        self._cached_eom = None
+        self._cached_integrator = None
+        self._param_info = None
+        self._cached_var_integrator = None
+        self._var_order = None
+
+        # --- Build EOM and compile ---
+        self._cached_eom, self._param_info = self._build_eom()
+        if compile:
+            self._compile_integrator()
+
+        # --- Instance counting ---
+        System._instance_count += 1
+        if System._instance_count > config.INSTANCE_WARNING_THRESHOLD:
+            warnings.warn(
+                f"Created {System._instance_count} System instances. "
+                "Each System caches compiled Heyoka integrators, "
+                "which can consume significant memory. Consider reusing "
+                "System objects when possible.",
+                ResourceWarning,
+                stacklevel=2
+            )
+
+    # ========== COMPILE MESSAGE ==========
+    def _compile_message(self) -> str:
+        msg = "Compiling 2-body integrator"
         if self._perturbations:
-            print(f"\nPerturbations: {', '.join(self._perturbations)}")
-            
-            if "J2" in self._perturbations:
-                print(f"  J2 = {self._primary_body.J2:.6e}")
-            
-            if "J3" in self._perturbations:
-                print(f"  J3 = {self._primary_body.J3:.6e}")
-            
-            if "drag" in self._perturbations:
-                print(f"  Atmosphere: rho0 = {self._atmosphere.rho0} kg/m^3, "
-                    f"H = {self._atmosphere.H} m")
-                print(f"  Rotation: omega = "
-                      f"{self._primary_body.rotation_rate:.6e} rad/s")
-        else:
-            print("\nPerturbations: None (point mass)")
-    
-    # Interface with System instance counting
-    @classmethod
-    def get_instance_count(cls):
-        """Get current number of System instances."""
-        return cls._instance_count
-    
-    @classmethod
-    def reset_instance_count(cls):
-        """Reset instance counter (useful for testing)."""
-        cls._instance_count = 0
-    
-    # Immutability via read-only properties
-    @property
-    def base_type(self) -> SysType:
-        """Type of base dynamics."""
-        return self._base_type
-    
-    @property
-    def primary_body(self) -> BodyParams | _BodyParamsWithND:
-        """Primary celestial body parameters."""
-        # For CR3BP, wrap with nondimensional radius support
-        if self._base_type == SysType.CR3BP:
-            assert self._L_star is not None #always true for CR3BP system
-            return _BodyParamsWithND(self._primary_body, self._L_star)
-        return self._primary_body
+            msg += f" with {', '.join(self._perturbations)}"
+        return msg
 
-    @property
-    def secondary_body(self) -> BodyParams | _BodyParamsWithND | None:
-        """Secondary celestial body parameters."""
-        # For CR3BP, wrap with nondimensional radius support
-        if self._base_type == SysType.CR3BP and self._secondary_body is not None:
-            assert self._L_star is not None #always true for CR3BP system
-            return _BodyParamsWithND(self._secondary_body, self._L_star)
-        return self._secondary_body
-    
-    @property
-    def perturbations(self) -> tuple:
-        """Tuple of perturbation model names."""
-        return self._perturbations
-    
-    @property
-    def atmosphere(self) -> Optional[AtmoParams]:
-        """Atmospheric model parameters (if drag enabled)."""
-        return self._atmosphere
-       
-    @property
-    def distance(self) -> Optional[float]:
-        """Distance between primary and secondary [km]."""
-        return self._distance
-    
-    @property
-    def L_star(self) -> Optional[float]:
-        """Characteristic length [km]."""
-        return self._L_star
-    
-    @property
-    def T_star(self) -> Optional[float]:
-        """Characteristic time [s]."""
-        return self._T_star
-    
-    @property
-    def mass_ratio(self) -> Optional[float]:
-        """Nondimensional mass ratio mu= mu_2/(mu_1 + mu_2)."""
-        return self._mass_ratio
-    
-    @property
-    def n_mean(self) -> Optional[float]:
-        """Mean motion [rad/s]."""
-        return self._n_mean
-    
-    @property
-    def is_compiled(self) -> bool:
-        """Check if integrator has been compiled."""
-        return self._cached_integrator is not None
-    
-    @property
-    def cached_eom(self) -> Optional[List[Tuple]]:
-        """Cached set of symbolic equations of motion"""
-        return self._cached_eom
-    
-    @property
-    def requires_satellite(self) -> bool:
-        """Check if this system requires satellite properties."""
-        return len(self._param_info['param_map']) > 0
-    
-    @property
-    def L1(self) -> np.ndarray:
-        """Nondimensional L1 Lagrange point location [x, y, z]."""
-        if self._base_type != SysType.CR3BP:
-            raise ValueError(
-                "Lagrange points only available for CR3BP systems. "
-                f"Current system type: {self._base_type.value}"
-            )
-        return self._L1 #type: ignore
-
-    @property
-    def L2(self) -> np.ndarray:
-        """Nondimensional L2 Lagrange point location [x, y, z]."""
-        if self._base_type != SysType.CR3BP:
-            raise ValueError(
-                "Lagrange points only available for CR3BP systems. "
-                f"Current system type: {self._base_type.value}"
-            )
-        return self._L2 #type: ignore
-
-    @property
-    def L3(self) -> np.ndarray:
-        """Nondimensional L3 Lagrange point location [x, y, z]."""
-        if self._base_type != SysType.CR3BP:
-            raise ValueError(
-                "Lagrange points only available for CR3BP systems. "
-                f"Current system type: {self._base_type.value}"
-            )
-        return self._L3 #type: ignore
-
-    @property
-    def L4(self) -> np.ndarray:
-        """Nondimensional L4 Lagrange point location [x, y, z]."""
-        if self._base_type != SysType.CR3BP:
-            raise ValueError(
-                "Lagrange points only available for CR3BP systems. "
-                f"Current system type: {self._base_type.value}"
-            )
-        return self._L4 #type: ignore
-
-    @property
-    def L5(self) -> np.ndarray:
-        """Nondimensional L5 Lagrange point location [x, y, z]."""
-        if self._base_type != SysType.CR3BP:
-            raise ValueError(
-                "Lagrange points only available for CR3BP systems. "
-                f"Current system type: {self._base_type.value}"
-            )
-        return self._L5 #type: ignore
-
-    @property
-    def lagrange_points(self) -> np.ndarray:
+    # ========== EOM CONSTRUCTION ==========
+    def _build_eom(self):
         """
-        All five Lagrange points as (5, 3) array [nondimensional].
-        
+        Build symbolic 2-body equations of motion with active perturbations.
+
+        Constructs Heyoka symbolic expressions for the acceleration vector,
+        starting from point-mass gravity and adding requested perturbations.
+
+        Returns
+        -------
+        sys : list of (var, rhs) tuples
+            Heyoka ODE system definition ready for taylor_adaptive().
+        param_info : dict
+            Runtime parameter mapping:
+            - 'param_map': list of (name, index) tuples for hy.par[] array
+            - 'description': dict with human-readable parameter descriptions
+        """
+        x, y, z, vx, vy, vz = hy.make_vars("x", "y", "z", "vx", "vy", "vz")
+        r = hy.sqrt(x**2 + y**2 + z**2)
+        mu = self._primary_body.mu
+
+        # Point-mass gravitational acceleration
+        a_total_x = -mu * x / r**3
+        a_total_y = -mu * y / r**3
+        a_total_z = -mu * z / r**3
+
+        param_map = []
+        param_desc = {}
+        next_param_idx = 0
+
+        if "J2" in self._perturbations:
+            a_J2_x, a_J2_y, a_J2_z = self._build_J2_perturbation(
+                x, y, z, r, mu
+            )
+            a_total_x = a_total_x + a_J2_x
+            a_total_y = a_total_y + a_J2_y
+            a_total_z = a_total_z + a_J2_z
+
+        if "J3" in self._perturbations:
+            a_J3_x, a_J3_y, a_J3_z = self._build_J3_perturbation(
+                x, y, z, r, mu
+            )
+            a_total_x = a_total_x + a_J3_x
+            a_total_y = a_total_y + a_J3_y
+            a_total_z = a_total_z + a_J3_z
+
+        if "drag" in self._perturbations:
+            a_drag_x, a_drag_y, a_drag_z, drag_params = \
+                self._build_drag_perturbation(
+                    x, y, z, vx, vy, vz, r, next_param_idx
+                )
+            a_total_x = a_total_x + a_drag_x
+            a_total_y = a_total_y + a_drag_y
+            a_total_z = a_total_z + a_drag_z
+            param_map.extend(drag_params['param_map'])
+            param_desc.update(drag_params['description'])
+            next_param_idx += len(drag_params['param_map'])
+
+        eom = [
+            (x, vx),
+            (y, vy),
+            (z, vz),
+            (vx, a_total_x),
+            (vy, a_total_y),
+            (vz, a_total_z)
+        ]
+        param_info = {'param_map': param_map, 'description': param_desc}
+        return eom, param_info
+
+    def _build_J2_perturbation(self, x, y, z, r, mu):
+        """Build symbolic J2 perturbation acceleration terms."""
+        J2 = self._primary_body.J2
+        R = self._primary_body.radius
+        assert J2 is not None  # validated in __init__
+        # Common factor: (3/2) * J2 * mu * R^2 / r^5
+        factor = 1.5 * J2 * mu * R**2 / r**5
+        # a_J2 = factor * [x(5z^2/r^2 - 1), y(5z^2/r^2 - 1), z(5z^2/r^2 - 3)]
+        z2_r2 = z**2 / r**2
+        a_J2_x = factor * x * (5.0 * z2_r2 - 1.0)
+        a_J2_y = factor * y * (5.0 * z2_r2 - 1.0)
+        a_J2_z = factor * z * (5.0 * z2_r2 - 3.0)
+        return a_J2_x, a_J2_y, a_J2_z
+
+    def _build_J3_perturbation(self, x, y, z, r, mu):
+        """Build symbolic J3 perturbation acceleration terms."""
+        J3 = self._primary_body.J3
+        R = self._primary_body.radius
+        assert J3 is not None  # validated in __init__
+        z2_r2 = z**2 / r**2
+        # a_J3_x = (5/2) * mu * J3 * R^3 * x * z / r^7 * (7*z^2/r^2 - 3)
+        factor_xy = 2.5 * J3 * mu * R**3 * z / r**7
+        a_J3_x = factor_xy * x * (7.0 * z2_r2 - 3.0)
+        a_J3_y = factor_xy * y * (7.0 * z2_r2 - 3.0)
+        # a_J3_z = (mu*J3*R^3/r^5) * (1.5 - 15*z2_r2 + 17.5*z2_r2^2)
+        factor_z = mu * J3 * R**3 / r**5
+        a_J3_z = factor_z * (1.5 - 15.0 * z2_r2 + 17.5 * z2_r2**2)
+        return a_J3_x, a_J3_y, a_J3_z
+
+    def _build_drag_perturbation(self, x, y, z, vx, vy, vz, r, param_start_idx):
+        """
+        Build symbolic atmospheric drag perturbation.
+
+        Uses exponential atmosphere model and accounts for body rotation.
+        Drag parameters (Cd*A, mass) are runtime values extracted from
+        a Satellite object and passed via hy.par[] at propagation time.
+
+        Parameters
+        ----------
+        param_start_idx : int
+            Starting index in the hy.par[] array for this perturbation.
+
+        Returns
+        -------
+        a_drag_x, a_drag_y, a_drag_z : symbolic expressions
+            Drag acceleration components.
+        param_info : dict
+            Parameter mapping with keys 'param_map' and 'description'.
+        """
+        assert self._atmosphere is not None  # validated in __init__
+
+        rho0    = self._atmosphere.rho0         # kg/m^3
+        H       = self._atmosphere.H            # m
+        r0      = self._atmosphere.r0           # m
+        omega   = self._primary_body.rotation_rate  # rad/s
+
+        # Convert atmospheric params to km (package standard)
+        rho0_km = rho0 * 1e9   # kg/m^3 -> kg/km^3
+        H_km    = H / 1000.0   # m -> km
+        r0_km   = r0 / 1000.0  # m -> km
+
+        # Altitude-dependent density: rho(r) = rho0 * exp(-(r - r0)/H)
+        rho = rho0_km * hy.exp(-(r - r0_km) / H_km)
+
+        # Velocity relative to rotating atmosphere
+        # v_rel = v_inertial - omega x r
+        # For body rotation about z-axis: omega x r = [-omega*y, omega*x, 0]
+        vx_rel = vx + omega * y
+        vy_rel = vy - omega * x
+        vz_rel = vz
+
+        v_rel = hy.sqrt(vx_rel**2 + vy_rel**2 + vz_rel**2)
+
+        # Satellite parameters via runtime hy.par[] array
+        Cd_A  = hy.par[param_start_idx]        # Drag coeff * area [m^2]
+        mass  = hy.par[param_start_idx + 1]    # Satellite mass [kg]
+        Cd_A_km = Cd_A / 1e6                   # m^2 -> km^2
+
+        # a_drag = -(1/2) * rho * (Cd*A/m) * |v_rel| * v_rel_vec
+        drag_factor = -0.5 * rho * Cd_A_km / mass * v_rel
+
+        a_drag_x = drag_factor * vx_rel
+        a_drag_y = drag_factor * vy_rel
+        a_drag_z = drag_factor * vz_rel
+
+        param_info = {
+            'param_map': [
+                ('Cd_A', param_start_idx),
+                ('mass', param_start_idx + 1)
+            ],
+            'description': {
+                'Cd_A': 'Drag coefficient times reference area [m^2]',
+                'mass': 'Satellite mass [kg]'
+            }
+        }
+        return a_drag_x, a_drag_y, a_drag_z, param_info
+
+    # ========== STATE CONVERSION ==========
+    def _state_to_array(
+            self,
+            state: OrbitalElements | np.ndarray
+    ) -> np.ndarray:
+        """
+        Convert initial state to a validated 6-element Cartesian float array.
+
+        Parameters
+        ----------
+        state : OrbitalElements or array-like
+            Input state. OrbitalElements are converted to Cartesian.
+            CR3BP elements are rejected.
+
         Returns
         -------
         np.ndarray
-            Shape (5, 3) with rows [L1, L2, L3, L4, L5]
-            Each row is [x, y, z] in nondimensional coordinates
-        
-        Raises
-        ------
-        ValueError
-            If system is not CR3BP type
+            Shape (6,) float array [km, km/s].
         """
-        if self._base_type != SysType.CR3BP:
-            raise ValueError(
-                "Lagrange points only available for CR3BP systems. "
-                f"Current system type: {self._base_type.value}"
-            )
-        
-        # Stack into (5, 3) array
-        points = np.vstack([self._L1, self._L2, self._L3, self._L4, self._L5]) #type: ignore
-        points.flags.writeable = False  # Read-only
-        return points
+        if isinstance(state, OrbitalElements):
+            if state.element_type == OEType.CR3BP:
+                raise ValueError(
+                    "Cannot use CR3BP (nondimensional) elements with a 2-body "
+                    "system. Use Cartesian or Keplerian elements instead."
+                )
+            return state.to_cartesian().elements.astype(float)
+        else:
+            arr = np.asarray(state, dtype=float)
+            if arr.shape != (6,):
+                raise ValueError(
+                    f"State array must have shape (6,), got {arr.shape}."
+                )
+            if not np.all(np.isfinite(arr)):
+                raise ValueError(
+                    f"Initial state contains NaN or Inf values: {arr}"
+                )
+            return arr
 
-    # ========== UTILITY METHODS ==========
+    # ========== PROPERTIES ==========
+    @property
+    def primary_body(self) -> BodyParams:
+        """Central body parameters."""
+        return self._primary_body
+
+    @property
+    def perturbations(self) -> tuple:
+        """Tuple of active perturbation model names."""
+        return self._perturbations
+
+    @property
+    def atmosphere(self) -> Optional[AtmoParams]:
+        """Atmospheric model parameters, or None if drag is not active."""
+        return self._atmosphere
+
+    # ========== UTILITY ==========
+    def summary(self):
+        """Print a human-readable summary of system parameters."""
+        print(f"System Type: {self._base_type.value}")
+        print(
+            f"Primary Body: mu = {self._primary_body.mu:.6e} km^3/s^2, "
+            f"R = {self._primary_body.radius:.3f} km"
+        )
+        if self._perturbations:
+            print(f"Perturbations: {', '.join(self._perturbations)}")
+            if "J2" in self._perturbations:
+                print(f"  J2 = {self._primary_body.J2:.6e}")
+            if "J3" in self._perturbations:
+                print(f"  J3 = {self._primary_body.J3:.6e}")
+            if "drag" in self._perturbations:
+                assert self._atmosphere is not None
+                print(
+                    f"  Atmosphere: rho0 = {self._atmosphere.rho0} kg/m^3, "
+                    f"H = {self._atmosphere.H} m"
+                )
+                print(
+                    f"  Rotation: omega = "
+                    f"{self._primary_body.rotation_rate:.6e} rad/s"
+                )
+        else:
+            print("Perturbations: None (point mass)")
+
+    def __repr__(self):
+        parts = [
+            f"System(base_type='2body'",
+            f"primary={self._primary_body.mu:.3e} km^3/s^2"
+        ]
+        if self._perturbations:
+            parts.append(f"perturbations={self._perturbations}")
+        return ", ".join(parts) + ")"
+
+
+# ========== CR3BP SYSTEM ==========
+
+class CR3BPSystem(System):
+    """
+    Circular Restricted 3-Body Problem system in the rotating frame.
+
+    Models spacecraft motion in the co-rotating frame of two massive bodies
+    (primaries) using nondimensional units. The primaries move on circular
+    orbits about their common barycenter.
+
+    Construct via the System factory -- do not instantiate directly:
+
+        sys = System('3body', primary_body, secondary_body, distance=d)
+
+    Parameters
+    ----------
+    base_type : str or SysType
+        Must be '3body', 'CR3BP', or equivalent. Provided by System factory.
+    primary_body : BodyParams
+        Parameters for the larger primary (e.g. Earth in Earth-Moon).
+    secondary_body : BodyParams
+        Parameters for the smaller primary (e.g. Moon in Earth-Moon).
+    distance : float
+        Distance between primaries [km]. Sets the characteristic length L*.
+    compile : bool, optional
+        If True (default), compile the Heyoka integrator immediately.
+
+    Attributes
+    ----------
+    base_type : SysType
+        Always SysType.CR3BP.
+    primary_body : _BodyParamsWithND
+        Primary body parameters, wrapped to expose radius_nd.
+    secondary_body : _BodyParamsWithND
+        Secondary body parameters, wrapped to expose radius_nd.
+    distance : float
+        Dimensional distance between primaries [km].
+    L_star : float
+        Characteristic length [km]. Equal to distance.
+    T_star : float
+        Characteristic time [s]. T* = sqrt(L*^3 / mu_total).
+    mass_ratio : float
+        Nondimensional mass ratio mu = mu_2 / (mu_1 + mu_2).
+    n_mean : float
+        Mean motion [rad/s]. n = sqrt(mu_total / L*^3).
+    L1 ... L5 : np.ndarray
+        Nondimensional Lagrange point states, shape (6,), read-only.
+    lagrange_points : np.ndarray
+        All five Lagrange points, shape (5, 3), read-only.
+
+    Notes
+    -----
+    - All state vectors are nondimensional. Use s2nd/r2nd/v2nd/t2nd to convert
+      dimensional inputs before propagating.
+    - Perturbations are not supported for CR3BP systems.
+    - The rotating frame places the barycenter at the origin with primaries
+      on the x-axis: primary at x = -mu, secondary at x = 1 - mu.
+    """
+
+    def __init__(
+            self,
+            base_type,
+            primary_body: BodyParams,
+            secondary_body: Optional[BodyParams] = None,
+            *,
+            distance: Optional[float] = None,
+            compile: bool | None = None,
+            perturbations=None,
+            atmosphere=None
+    ):
+        # Reject 2-body-specific arguments with informative errors
+        if perturbations is not None and len(perturbations) > 0:
+            raise ValueError(
+                "CR3BP systems do not currently support perturbations. "
+                f"Got: {perturbations}"
+            )
+        if atmosphere is not None:
+            raise ValueError(
+                "CR3BP systems do not support atmosphere models."
+            )
+
+        # Validate required arguments
+        if secondary_body is None:
+            raise ValueError("3-body system requires secondary_body")
+        if distance is None:
+            raise ValueError("3-body system requires distance between bodies")
+        if distance <= 0:
+            raise ValueError(f"Distance must be positive, got {distance}")
+
+        if compile is None:
+            compile = config.DEFAULT_COMPILE
+
+        self._base_type = SysType.CR3BP
+        self._primary_body   = primary_body
+        self._secondary_body = secondary_body
+        self._distance       = distance
+
+        # Compute nondimensional parameters and Lagrange points
+        self._compute_CR3BP_params()
+        self._compute_lagrange_points()
+
+        # Integrator cache
+        self._cached_eom = None
+        self._cached_integrator = None
+        self._param_info = None
+        self._cached_var_integrator = None
+        self._var_order = None
+
+        # Build EOM and compile
+        self._cached_eom, self._param_info = self._build_eom()
+        if compile:
+            self._compile_integrator()
+
+        # Instance counting
+        System._instance_count += 1
+        if System._instance_count > config.INSTANCE_WARNING_THRESHOLD:
+            warnings.warn(
+                f"Created {System._instance_count} System instances. "
+                "Each System caches compiled Heyoka integrators, "
+                "which can consume significant memory. Consider reusing "
+                "System objects when possible.",
+                ResourceWarning,
+                stacklevel=2
+            )
+
+    # ========== COMPILE MESSAGE ==========
+    def _compile_message(self) -> str:
+        return "Compiling CR3BP integrator"
+
+    # ========== CR3BP PARAMETER COMPUTATION ==========
     def _compute_CR3BP_params(self):
-        """Compute nondimensionalization parameters for CR3BP."""
-        # Characteristic length (distance between primaries)
+        """Compute nondimensionalization parameters from primary/secondary bodies."""
         self._L_star = self._distance
-        
-        # Total gravitational parameter [km^3/s^2]
         mu_total = self._primary_body.mu + self._secondary_body.mu
-        
-        # Mass ratio: mu = m_1 / (m_1 + m_2) = mu_1 / (mu_1 + mu_2)
         self._mass_ratio = self._secondary_body.mu / mu_total
-        
-        # Characteristic time: T* = sqrt(L*^3 / mu_total)
         self._T_star = np.sqrt(self._L_star**3 / mu_total)
-        
-        # Mean motion: n  = sqrt(mu_total/L*^3)
         self._n_mean = np.sqrt(mu_total / self._L_star**3)
 
     def _compute_lagrange_points(self):
         """
-        Compute nondimensional Lagrange point locations for CR3BP.
-        
-        Uses Brent's method for collinear points (L1, L2, L3) with series
-        expansion initial guesses. Triangular points (L4, L5) computed analytically.
-        
+        Compute nondimensional Lagrange point locations.
+
+        Uses Brent's method for collinear points (L1, L2, L3) with
+        series-expansion initial guesses. Triangular points (L4, L5) are
+        computed analytically.
+
         Notes
         -----
         Series expansions accurate to O(mu^3) from Szebehely (1967).
+        All stored arrays are read-only.
         """
         import scipy.optimize as opt
-        
+
         mu = self._mass_ratio
-        assert mu is not None   #this is only called for CR3BP systems
-        
-        # Equilibrium condition on x-axis: dU/dx = 0
+
         def eq_func(x):
-            """Equilibrium function for collinear points."""
+            """Equilibrium condition dU/dx = 0 on the x-axis."""
             r1 = abs(x + mu)
             r2 = abs(x - 1 + mu)
-            return x - (1-mu)*(x+mu)/r1**3 - mu*(x-1+mu)/r2**3
-        
-        # L1: between primaries
-        # Series expansion for initial guess
-        alpha1 = (mu/3)**(1/3) * (1 - (1/3)*(mu/3)**(1/3) + (1/3)*(mu/3)**(2/3))
-        x_L1_expected = 1 - mu - alpha1
-        L1_a, L1_b = -mu + 1e-6, 1 - mu - 1e-6
-        x_L1 = opt.brentq(eq_func, L1_a, L1_b, xtol=1e-14)
+            return x - (1 - mu) * (x + mu) / r1**3 - mu * (x - 1 + mu) / r2**3
 
-        # Sanity check against series expansion
+        # L1: between primaries
+        alpha1 = (mu / 3)**(1/3) * (1 - (1/3)*(mu/3)**(1/3) + (1/3)*(mu/3)**(2/3))
+        x_L1_expected = 1 - mu - alpha1
+        x_L1 = opt.brentq(eq_func, -mu + 1e-6, 1 - mu - 1e-6, xtol=1e-14)
         if abs(x_L1 - x_L1_expected) > 0.1:
             validation_error(
                 f"L1 location {x_L1} differs significantly from expected "
                 f"value {x_L1_expected}. Possible rootfinding error."
             )
-        
-        # L2: beyond secondary
-        alpha2 = (mu/3)**(1/3) * (1 + (1/3)*(mu/3)**(1/3) + (1/3)*(mu/3)**(2/3))
-        x_L2_expected = 1 - mu + alpha2
-        L2_a, L2_b = 1 - mu + 1e-6, 2.0
-        x_L2 = opt.brentq(eq_func, L2_a, L2_b, xtol=1e-14)
 
+        # L2: beyond secondary
+        alpha2 = (mu / 3)**(1/3) * (1 + (1/3)*(mu/3)**(1/3) + (1/3)*(mu/3)**(2/3))
+        x_L2_expected = 1 - mu + alpha2
+        x_L2 = opt.brentq(eq_func, 1 - mu + 1e-6, 2.0, xtol=1e-14)
         if abs(x_L2 - x_L2_expected) > 0.1:
             validation_error(
                 f"L2 location {x_L2} differs significantly from expected "
                 f"value {x_L2_expected}. Possible rootfinding error."
             )
-        
+
         # L3: beyond primary
-        L3_a, L3_b = -2.0, -mu - 1e-6
-        x_L3 = opt.brentq(eq_func, L3_a, L3_b, xtol=1e-14)
-        
+        x_L3 = opt.brentq(eq_func, -2.0, -mu - 1e-6, xtol=1e-14)
+
         # L4, L5: equilateral triangles (analytic)
         L4 = np.array([0.5 - mu, np.sqrt(3)/2, 0.0, 0.0, 0.0, 0.0])
         L5 = np.array([0.5 - mu, -np.sqrt(3)/2, 0.0, 0.0, 0.0, 0.0])
-        
-        # Store as nondimensional arrays (read-only)
+
         self._L1 = np.array([x_L1, 0.0, 0.0, 0.0, 0.0, 0.0])
         self._L2 = np.array([x_L2, 0.0, 0.0, 0.0, 0.0, 0.0])
         self._L3 = np.array([x_L3, 0.0, 0.0, 0.0, 0.0, 0.0])
         self._L4 = L4
         self._L5 = L5
-        
-        # Make arrays read-only
-        self._L1.flags.writeable = False
-        self._L2.flags.writeable = False
-        self._L3.flags.writeable = False
-        self._L4.flags.writeable = False
-        self._L5.flags.writeable = False
 
-    # ========== SPECIAL METHODS ==========
-    def __del__(self):
-        """Decrement instance count when System is garbage collected."""
-        System._instance_count -= 1
+        for arr in (self._L1, self._L2, self._L3, self._L4, self._L5):
+            arr.flags.writeable = False
+
+    # ========== EOM CONSTRUCTION ==========
+    def _build_eom(self):
+        """
+        Build symbolic CR3BP equations of motion in the rotating frame.
+
+        Uses the pseudo-potential U and Heyoka's symbolic differentiation
+        to derive acceleration components. All quantities are nondimensional.
+
+        Returns
+        -------
+        eom : list of (var, rhs) tuples
+            Heyoka ODE system definition ready for taylor_adaptive().
+        param_info : dict
+            Always empty for CR3BP (no runtime parameters).
+        """
+        x, y, z, vx, vy, vz = hy.make_vars("x", "y", "z", "vx", "vy", "vz")
+        mu = self._mass_ratio
+
+        # Distances to primaries
+        r1 = hy.sqrt((x + mu)**2 + y**2 + z**2)
+        r2 = hy.sqrt((x - 1.0 + mu)**2 + y**2 + z**2)
+
+        # Pseudo-potential (includes centrifugal term)
+        U = 0.5 * (x**2 + y**2) + (1.0 - mu) / r1 + mu / r2
+
+        # Equations of motion in rotating frame
+        eom = [
+            (x, vx),
+            (y, vy),
+            (z, vz),
+            (vx, 2.0 * vy + hy.diff(U, x)),
+            (vy, -2.0 * vx + hy.diff(U, y)),
+            (vz, hy.diff(U, z))
+        ]
+
+        # CR3BP has no runtime parameters
+        param_info = {'param_map': [], 'description': {}}
+        return eom, param_info
+
+    # ========== STATE CONVERSION ==========
+    def _state_to_array(
+            self,
+            state: OrbitalElements | np.ndarray
+    ) -> np.ndarray:
+        """
+        Convert initial state to a validated 6-element nondimensional array.
+
+        Parameters
+        ----------
+        state : OrbitalElements or array-like
+            Input state. Must use OEType.CR3BP if OrbitalElements.
+
+        Returns
+        -------
+        np.ndarray
+            Shape (6,) float array [nondimensional].
+        """
+        if isinstance(state, OrbitalElements):
+            if state.element_type != OEType.CR3BP:
+                raise ValueError(
+                    "CR3BP system requires CR3BP (nondimensional) elements. "
+                    f"Got {state.element_type.value}. "
+                    "Convert to nondimensional coordinates first."
+                )
+            return state.elements.astype(float)
+        else:
+            arr = np.asarray(state, dtype=float)
+            if arr.shape != (6,):
+                raise ValueError(
+                    f"State array must have shape (6,), got {arr.shape}."
+                )
+            if not np.all(np.isfinite(arr)):
+                raise ValueError(
+                    f"Initial state contains NaN or Inf values: {arr}"
+                )
+            return arr
+
+    # ========== PROPERTIES ==========
+    @property
+    def primary_body(self) -> _BodyParamsWithND:
+        """Primary body parameters with nondimensional radius support."""
+        return _BodyParamsWithND(self._primary_body, self._L_star)
+
+    @property
+    def secondary_body(self) -> _BodyParamsWithND:
+        """Secondary body parameters with nondimensional radius support."""
+        return _BodyParamsWithND(self._secondary_body, self._L_star)
+
+    @property
+    def distance(self) -> float:
+        """Dimensional distance between primaries [km]."""
+        return self._distance
+
+    @property
+    def L_star(self) -> float:
+        """Characteristic length [km]. Equal to distance."""
+        return self._L_star
+
+    @property
+    def T_star(self) -> float:
+        """Characteristic time [s]. T* = sqrt(L*^3 / mu_total)."""
+        return self._T_star
+
+    @property
+    def mass_ratio(self) -> float:
+        """Nondimensional mass ratio mu = mu_2 / (mu_1 + mu_2)."""
+        return self._mass_ratio
+
+    @property
+    def n_mean(self) -> float:
+        """Mean motion [rad/s]. n = sqrt(mu_total / L*^3)."""
+        return self._n_mean
+
+    @property
+    def L1(self) -> np.ndarray:
+        """Nondimensional L1 Lagrange point state [x, y, z, vx, vy, vz]."""
+        return self._L1
+
+    @property
+    def L2(self) -> np.ndarray:
+        """Nondimensional L2 Lagrange point state [x, y, z, vx, vy, vz]."""
+        return self._L2
+
+    @property
+    def L3(self) -> np.ndarray:
+        """Nondimensional L3 Lagrange point state [x, y, z, vx, vy, vz]."""
+        return self._L3
+
+    @property
+    def L4(self) -> np.ndarray:
+        """Nondimensional L4 Lagrange point state [x, y, z, vx, vy, vz]."""
+        return self._L4
+
+    @property
+    def L5(self) -> np.ndarray:
+        """Nondimensional L5 Lagrange point state [x, y, z, vx, vy, vz]."""
+        return self._L5
+
+    @property
+    def lagrange_points(self) -> np.ndarray:
+        """
+        All five Lagrange points as a (5, 3) position array [nondimensional].
+
+        Returns
+        -------
+        np.ndarray
+            Shape (5, 3) with rows [L1, L2, L3, L4, L5].
+            Each row is [x, y, z, vx, vy, vz] in nondimensional coordinates. Read-only.
+        """
+        pts = np.vstack([
+            self._L1[:3], self._L2[:3], self._L3[:3],
+            self._L4[:3], self._L5[:3]
+        ])
+        pts.flags.writeable = False
+        return pts
+
+    # ========== NONDIMENSIONALIZATION ==========
+    def r2nd(self, r):
+        """
+        Convert dimensional position to nondimensional.
+
+        Parameters
+        ----------
+        r : float or array-like
+            Dimensional position [km].
+
+        Returns
+        -------
+        np.float64 or np.ndarray
+            Nondimensional position.
+        """
+        return np.asarray(r) / self._L_star
+
+    def r2d(self, r_nd):
+        """
+        Convert nondimensional position to dimensional.
+
+        Parameters
+        ----------
+        r_nd : float or array-like
+            Nondimensional position.
+
+        Returns
+        -------
+        np.float64 or np.ndarray
+            Dimensional position [km].
+        """
+        return np.asarray(r_nd) * self._L_star
+
+    def v2nd(self, v):
+        """
+        Convert dimensional velocity to nondimensional.
+
+        Parameters
+        ----------
+        v : float or array-like
+            Dimensional velocity [km/s].
+
+        Returns
+        -------
+        np.float64 or np.ndarray
+            Nondimensional velocity. v_nd = v * T* / L*
+        """
+        return np.asarray(v) * self._T_star / self._L_star
+
+    def v2d(self, v_nd):
+        """
+        Convert nondimensional velocity to dimensional.
+
+        Parameters
+        ----------
+        v_nd : float or array-like
+            Nondimensional velocity.
+
+        Returns
+        -------
+        np.float64 or np.ndarray
+            Dimensional velocity [km/s]. v = v_nd * L* / T*
+        """
+        return np.asarray(v_nd) * self._L_star / self._T_star
+    
+    def s2nd(self, s):
+        """
+        Convert a dimensional 6-state to nondimensional.
+
+        Applies r2nd to the position components and v2nd to the velocity
+        components. Input may be a single state (6,) or a batch (N, 6).
+
+        Parameters
+        ----------
+        s : array-like, shape (6,) or (N, 6)
+            Dimensional state [km, km/s].
+
+        Returns
+        -------
+        np.ndarray
+            Nondimensional state, same shape as input.
+        """
+        s = np.asarray(s, dtype=float)
+        out = s.copy()
+        out[..., :3] = s[..., :3] / self._L_star
+        out[..., 3:] = s[..., 3:] * self._T_star / self._L_star
+        return out
+
+    def s2d(self, s_nd):
+        """
+        Convert a nondimensional 6-state to dimensional.
+
+        Applies r2d to the position components and v2d to the velocity
+        components. Input may be a single state (6,) or a batch (N, 6).
+
+        Parameters
+        ----------
+        s_nd : array-like, shape (6,) or (N, 6)
+            Nondimensional state.
+
+        Returns
+        -------
+        np.ndarray
+            Dimensional state [km, km/s], same shape as input.
+        """
+        s_nd = np.asarray(s_nd, dtype=float)
+        out = s_nd.copy()
+        out[..., :3] = s_nd[..., :3] * self._L_star
+        out[..., 3:] = s_nd[..., 3:] * self._L_star / self._T_star
+        return out
+
+    def t2nd(self, t):
+        """
+        Convert dimensional time to nondimensional.
+
+        Parameters
+        ----------
+        t : float or array-like
+            Dimensional time [s].
+
+        Returns
+        -------
+        np.float64 or np.ndarray
+            Nondimensional time.
+        """
+        return np.asarray(t) / self._T_star
+
+    def t2d(self, t_nd):
+        """
+        Convert nondimensional time to dimensional.
+
+        Parameters
+        ----------
+        t_nd : float or array-like
+            Nondimensional time.
+
+        Returns
+        -------
+        np.float64 or np.ndarray
+            Dimensional time [s].
+        """
+        return np.asarray(t_nd) * self._T_star
+
+    # ========== UTILITY ==========
+    def summary(self):
+        """Print a human-readable summary of system parameters."""
+        print(f"System Type: {self._base_type.value}")
+        print(
+            f"Primary Body:   mu = {self._primary_body.mu:.6e} km^3/s^2, "
+            f"R = {self._primary_body.radius:.3f} km"
+        )
+        print(
+            f"Secondary Body: mu = {self._secondary_body.mu:.6e} km^3/s^2, "
+            f"R = {self._secondary_body.radius:.3f} km"
+        )
+        print(f"Distance: {self._distance:.3f} km")
+        print(f"\nNondimensional Parameters:")
+        print(f"  L* = {self._L_star:.6e} km")
+        print(f"  T* = {self._T_star:.6e} s")
+        print(f"  mu = {self._mass_ratio:.10f}")
+        print(f"  n  = {self._n_mean:.6e} rad/s")
 
     def __repr__(self):
-        """Readable string representation."""
-        parts = [f"System(base_type='{self._base_type.value}'"]
-        
-        if self._base_type == SysType.TWO_BODY:
-            parts.append(f"primary={self._primary_body.mu:.3e} km^3/s^2")
-            if self._perturbations:
-                parts.append(f"perturbations={self._perturbations}")
-        else:  # 3body
-            parts.append(f"mu_1 ={self._primary_body.mu:.3e}")
-            parts.append(f"mu_2 ={self._secondary_body.mu:.3e}")
-            parts.append(f"L* ={self._L_star:.3e} km")
-            parts.append(f"mu ={self._mass_ratio:.6f}")
-        
-        return ", ".join(parts) + ")"
-
-    # ========== STATIC METHODS ==========
-    @staticmethod
-    def _parse_base_type(base_type):
-        """Convert string or enum to SysType enum"""
-        if isinstance(base_type, SysType):
-            return base_type
-        elif isinstance(base_type, str):
-            # Map string to enum
-            type_map = {
-                '2body' : SysType.TWO_BODY,
-                '2BODY' : SysType.TWO_BODY,
-                'Two_Body': SysType.TWO_BODY,
-                '3body' : SysType.CR3BP,
-                '3BODY' : SysType.CR3BP,
-                'Three_Body': SysType.CR3BP,
-                'CR3BP' : SysType.CR3BP
-            }
-            if base_type in type_map:
-                return type_map[base_type]
-            else:
-                raise ValueError(f"Unknown base type '{base_type}'. "
-                           f"Use: {list(type_map.keys())}")
-        else:
-            raise TypeError(f"base_type must be SysType or str, got {type(base_type)}")
+        return (
+            f"System(base_type='3body', "
+            f"mu_1 ={self._primary_body.mu:.3e}, "
+            f"mu_2 ={self._secondary_body.mu:.3e}, "
+            f"L* ={self._L_star:.3e} km, "
+            f"mu ={self._mass_ratio:.6f})"
+        )

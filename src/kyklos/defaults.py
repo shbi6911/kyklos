@@ -18,8 +18,12 @@ Examples
 >>> sys_lazy = earth_j2(compile=False)  # Defer compilation
 """
 import numpy as np
+from typing import cast
 from .orbital_elements import OrbitalElements
-from .system import System, BodyParams, AtmoParams, PeriodicOrbit
+from .system import (
+        System, TwoBodySystem, CR3BPSystem,
+        BodyParams, AtmoParams, PeriodicOrbit
+    )
 
 """
 Predefined Solar System bodies for System creation
@@ -154,11 +158,11 @@ GATEWAY_ORBIT = PeriodicOrbit(
     state=OrbitalElements([1.02199359562483, 6.4331268586775e-24, -0.182077530534944,
                         1.54184910480928e-14, -0.103195530587244, 1.78907594356382e-12],
                         'cr3bp', mu=0.012150581477176512),
-                        period=1.51074317459736,
-                        name='NRHO (Gateway)'
+    period=1.51074317459736,
+    name='NRHO (Gateway)'
 )
 
-def earth_2body(compile=True):
+def earth_2body(compile=True) -> TwoBodySystem:
     """
     Create a point-mass 2-body Earth system.
     
@@ -176,10 +180,10 @@ def earth_2body(compile=True):
     System
         Configured 2-body Earth system
     """
-    return System('2body', EARTH, compile=compile)
+    return cast(TwoBodySystem, System('2body', EARTH, compile=compile))
 
 
-def earth_j2(compile=True):
+def earth_j2(compile=True) -> TwoBodySystem:
     """
     Create a 2-body Earth system with J2 oblateness.
     
@@ -196,10 +200,14 @@ def earth_j2(compile=True):
     System
         2-body Earth system with J2 perturbation
     """
-    return System('2body', EARTH, perturbations=('J2',), compile=compile)
+    return cast(TwoBodySystem, System(
+        '2body', EARTH,
+        perturbations=('J2',),
+        compile=compile
+    ))
 
 
-def earth_drag(compile=True):
+def earth_drag(compile=True) -> TwoBodySystem:
     """
     Create 2-body Earth with atmospheric drag.
     
@@ -222,15 +230,15 @@ def earth_drag(compile=True):
     provided to the propagate() method. The standard atmosphere model
     uses rho0 = 1.225 kg/m^3 at sea level with scale height H = 8.5 km.
     """
-    return System(
+    return cast(TwoBodySystem, System(
         '2body', EARTH,
         perturbations=('drag',),
         atmosphere=EARTH_STD_ATMO,
         compile=compile
-    )
+    ))
 
 
-def earth_moon_cr3bp(compile=True):
+def earth_moon_cr3bp(compile=True) -> CR3BPSystem:
     """
     Create Earth-Moon circular restricted 3-body problem system.
     
@@ -256,13 +264,13 @@ def earth_moon_cr3bp(compile=True):
     State vectors should be nondimensional. Origin is at the system
     barycenter with primaries at x = (-mu, 1 - mu).
     """
-    return System(
+    return cast(CR3BPSystem, System(
         '3body', EARTH, MOON,
         distance=384400.0,
         compile=compile
-    )
+    ))
 
-def earth_sun_cr3bp(compile=True):
+def earth_sun_cr3bp(compile=True) -> CR3BPSystem:
     """
     Create Sun-Earth circular restricted 3-body problem system.
     
@@ -288,14 +296,14 @@ def earth_sun_cr3bp(compile=True):
     State vectors should be nondimensional. Origin is at the system
     barycenter with primaries at x = (-mu, 1 - mu).
     """
-    return System(
+    return cast(CR3BPSystem, System(
         '3body', SUN, EARTH,
         distance=149597870.7,
         compile=compile
-    )
+    ))
 
 
-def moon_2body(compile=True):
+def moon_2body(compile=True) -> TwoBodySystem:
     """
     Create a point-mass 2-body Moon system.
     
@@ -312,10 +320,10 @@ def moon_2body(compile=True):
     System
         Configured 2-body Moon system
     """
-    return System('2body', MOON, compile=compile)
+    return cast(TwoBodySystem, System('2body', MOON, compile=compile))
 
 
-def moon_j2(compile=True):
+def moon_j2(compile=True) -> TwoBodySystem:
     """
     Create a 2-body Moon system with J2 oblateness.
     
@@ -331,10 +339,14 @@ def moon_j2(compile=True):
     System
         2-body Moon system with J2 perturbation
     """
-    return System('2body', MOON, perturbations=('J2',), compile=compile)
+    return cast(TwoBodySystem, System(
+        '2body', MOON, 
+        perturbations=('J2',), 
+        compile=compile
+    ))
 
 
-def mars_2body(compile=True):
+def mars_2body(compile=True) -> TwoBodySystem:
     """
     Create a point-mass 2-body Mars system.
     
@@ -351,10 +363,10 @@ def mars_2body(compile=True):
     System
         Configured 2-body Mars system
     """
-    return System('2body', MARS, compile=compile)
+    return cast(TwoBodySystem, System('2body', MARS, compile=compile))
 
 
-def mars_j2(compile=True):
+def mars_j2(compile=True) -> TwoBodySystem :
     """
     Create a 2-body Mars system with J2 oblateness.
     
@@ -370,4 +382,8 @@ def mars_j2(compile=True):
     System
         2-body Mars system with J2 perturbation
     """
-    return System('2body', MARS, perturbations=('J2',), compile=compile)
+    return cast(TwoBodySystem, System(
+        '2body', MARS, 
+        perturbations=('J2',), 
+        compile=compile
+    ))
