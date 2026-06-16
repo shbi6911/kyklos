@@ -443,7 +443,7 @@ class System:
         """
         self._compile_func_evaluator()
 
-        state = np.asarray(state, dtype=float)
+        state = np.ascontiguousarray(state, dtype=float)
         n_params = len(self._param_info['param_map'])
         if pars is None:
             if n_params != 0:
