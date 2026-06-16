@@ -13,7 +13,7 @@ Create a system and propagate an orbit:
 >>> sys = System('2body', EARTH, perturbations=('J2',), compile=compile)
 >>> orbit = OE(a=7000, e=0.01, i=0.5, omega=0, w=0, nu=0)
 >>> state0 = orbit.to_cartesian()
->>> traj = sys.propagate(state0.elements, 0, 5400)
+>>> traj = sys.propagate(state0.elements, [0 5400])
 
 Available Modules
 -----------------
@@ -21,7 +21,7 @@ Core Classes
     OrbitalElements : Coordinate transformations and orbital element handling
     System : Gravitational environment and equation of motion
     Satellite : Physical properties (mass, drag, inertia)
-    Trajectory : Time-series orbital state with continuous interpolation
+    Trajectory : Time-series orbital state with continuous output
 
 Default Systems (Factory Functions)
     earth_2body : Point-mass Earth
@@ -48,6 +48,12 @@ from .trajectory import (Trajectory, Trajectory as Traj, Node,
     StartBoundaryNode, EndBoundaryNode, ImpulsiveBoundaryNode,
     NullJunctionNode, ImpulsiveJunctionNode, FreeJunctionNode,
 )
+# Differential Corrector Classes
+from .shooter import (
+    DifferentialCorrector, ShooterResult,
+    TerminalConstraint, TargetState, Periodicity, CallableConstraint,
+)
+# helper utilities and config control
 from .utils import Timer
 from .config import config, temp_config
 
@@ -105,6 +111,13 @@ __all__ = [
     "NullJunctionNode", 
     "ImpulsiveJunctionNode", 
     "FreeJunctionNode",
+    # Shooter Classes
+    "DifferentialCorrector",
+    "ShooterResult",
+    "TerminalConstraint",
+    "TargetState",
+    "Periodicity",
+    "CallableConstraint",
     # Abbreviations
     "OE",
     "Sat",

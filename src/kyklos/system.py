@@ -340,6 +340,11 @@ class System:
     def is_compiled(self) -> bool:
         """True if the Heyoka integrator has been compiled."""
         return self._cached_integrator is not None
+    
+    @property
+    def is_func_compiled(self) -> bool:
+        """True if the vector-field evaluator (cfunc) has been compiled."""
+        return self._cached_func is not None
 
     @property
     def cached_eom(self) -> Optional[List[Tuple]]:
@@ -385,6 +390,76 @@ class System:
         """
         self._compile_var_integrator(order=order)
         return self
+    
+    def compile_func(self):
+        """
+        Compile the vector-field evaluator (cfunc) if not already compiled.
+
+        Not compiled by default. Required to evaluate the equations-of-motion
+        right-hand side numerically -- for example, the time-derivative
+        columns of a variable-time shooting Jacobian. vector_field()
+        auto-compiles this on first use, mirroring how the propagator
+        auto-compiles the variational integrator on first STM request.
+
+        Returns
+        -------
+        self
+            Returns self for method chaining.
+        """
+        self._compile_func_evaluator()
+        return self
+
+    def vector_field(self, state, pars=None):
+        """
+        Evaluate the equations-of-motion right-hand side f(state).
+
+        Compiles the cfunc evaluator on first call and caches it, so the
+        compilation cost is paid once. Supports a single state, shape (6,),
+        or a batch of states stacked as columns, shape (6, k), evaluated in
+        one call.
+
+        Parameters
+        ----------
+        state : array-like
+            State [x, y, z, vx, vy, vz], shape (6,), or a batch (6, k).
+        pars : array-like, optional
+            Runtime parameter values for the hy.par[] slots, length
+            n_params. Required only for systems that carry runtime
+            parameters (e.g. drag or SRP supplied via a Satellite). CR3BP
+            and unperturbed two-body have none, so this may be omitted.
+
+        Returns
+        -------
+        np.ndarray
+            Time derivative f(state), the same shape as the input.
+
+        Notes
+        -----
+        Assumes autonomous dynamics: f depends on the state only, with no
+        explicit time dependence. This holds for the rotating-frame CR3BP
+        and for inertial two-body with position/velocity-dependent
+        perturbations. Non-autonomous systems would require a time argument
+        and are out of scope here.
+        """
+        self._compile_func_evaluator()
+
+        state = np.asarray(state, dtype=float)
+        n_params = len(self._param_info['param_map'])
+        if pars is None:
+            if n_params != 0:
+                raise ValueError(
+                    f"This system has {n_params} runtime parameter(s); supply "
+                    f"pars (e.g. from a Satellite) to evaluate the vector "
+                    f"field."
+                )
+        else:
+            pars = np.asarray(pars, dtype=float)
+
+        if n_params == 0:
+            out = self._cached_func(state)
+        else:
+            out = self._cached_func(state, pars=pars)
+        return np.asarray(out)
 
     # ========== INTERNAL COMPILE METHODS ==========
     def _compile_message(self) -> str:
@@ -450,6 +525,25 @@ class System:
         )
         self._var_order = order
         print("Variational compilation complete")
+
+    def _compile_func_evaluator(self):
+        """
+        Compile the cfunc vector-field evaluator from the cached EOM.
+
+        Extracts the right-hand-side expressions from the cached symbolic
+        EOM and compiles them as a numerical function of the six state
+        variables, in canonical [x, y, z, vx, vy, vz] order. Cheap relative
+        to the integrator compile, since there are no variational equations.
+        """
+        if self._cached_func is not None:
+            return  # Already compiled
+
+        rhs = [expr for (_, expr) in self._cached_eom]
+        x, y, z, vx, vy, vz = hy.make_vars("x", "y", "z", "vx", "vy", "vz")
+
+        print("Compiling vector-field evaluator (cfunc)...")
+        self._cached_func = hy.cfunc(rhs, vars=[x, y, z, vx, vy, vz])
+        print("Vector-field compilation complete")
 
     # ========== PROPAGATION HELPERS ==========
     def _process_satellite(self, satellite: Satellite) -> np.ndarray:
@@ -1048,6 +1142,7 @@ class TwoBodySystem(System):
         self._param_info = None
         self._cached_var_integrator = None
         self._var_order = None
+        self._cached_func = None
 
         # --- Build EOM and compile ---
         self._cached_eom, self._param_info = self._build_eom()
@@ -1437,6 +1532,7 @@ class CR3BPSystem(System):
         self._param_info = None
         self._cached_var_integrator = None
         self._var_order = None
+        self._cached_func = None
 
         # Build EOM and compile
         self._cached_eom, self._param_info = self._build_eom()

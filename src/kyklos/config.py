@@ -114,6 +114,12 @@ class KyklosConfig:
     # System defaults
     DEFAULT_COMPILE: bool = True
     INSTANCE_WARNING_THRESHOLD: int = 10
+
+    # Shooting default behavior
+    SHOOTER_TOL = 1e-10        # convergence tolerance on ||F||
+    SHOOTER_MAX_ITER = 50      # maximum Newton steps
+    SHOOTER_COND_WARN = 1e8    # warn above this Jacobian condition number
+    SHOOTER_COND_FAIL = 1e12   # abort above this condition number
     
     # Plotting defaults
     DEFAULT_PLOT_POINTS: int = 1000
@@ -174,6 +180,11 @@ class KyklosConfig:
         lines.append(f"    STRICT_VALIDATION = {self.STRICT_VALIDATION}")
         lines.append(f"    DEFAULT_COMPILE = {self.DEFAULT_COMPILE}")
         lines.append(f"    INSTANCE_WARNING_THRESHOLD = {self.INSTANCE_WARNING_THRESHOLD}")
+        lines.append("  Differential Correction Behavior:")
+        lines.append(f"    SHOOTER_TOL = {self.SHOOTER_TOL}")
+        lines.append(f"    SHOOTER_MAX_ITER = {self.SHOOTER_MAX_ITER}")
+        lines.append(f"    SHOOTER_COND_WARN = {self.SHOOTER_COND_WARN}")
+        lines.append(f"    SHOOTER_COND_FAIL = {self.SHOOTER_COND_FAIL}")
         lines.append("  Plotting:")
         lines.append(f"    DEFAULT_PLOT_POINTS = {self.DEFAULT_PLOT_POINTS}")
         lines.append(f"    DEFAULT_BODY_COLOR = '{self.DEFAULT_BODY_COLOR}'")

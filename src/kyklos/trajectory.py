@@ -1071,6 +1071,37 @@ class Trajectory:
             return FreeJunctionNode(node.time, node.pre_state, node.post_state)
         raise TypeError(f"Unrecognised JunctionNode type: {type(node).__name__}")
     
+    def with_junction_nodes(self, junction_nodes: list) -> "Trajectory":
+        """
+        Return a new Trajectory with the same segments but replaced junction
+        nodes.
+
+        Reuses this trajectory's continuous outputs and boundary nodes -- no
+        re-propagation -- so it is the cheap way to relabel junctions, for
+        example a shooting corrector converting converged FreeJunctionNodes
+        into NullJunctionNodes. The replacement list must have length
+        n_segments - 1, and each node's time must match its segment boundary;
+        the constructor validates both.
+
+        Parameters
+        ----------
+        junction_nodes : list of JunctionNode
+            Replacement interior nodes, one per interior boundary.
+
+        Returns
+        -------
+        Trajectory
+            A new trajectory sharing this one's outputs and boundary nodes.
+        """
+        return Trajectory(
+            self._system,
+            self._outputs,
+            junction_nodes=junction_nodes,
+            stm_order=self._stm_order,
+            start_node=self._start_node,
+            end_node=self._end_node,
+        )
+    
     def _back_and_forward_propagate(
         self, new_t0: float, back_state: np.ndarray,
         with_stm: bool, stm_order: int, satellite) -> object:
@@ -2075,7 +2106,8 @@ class Trajectory:
 
         return traces
 
-# Node class, used by Trajectory to define state mappings between segments
+# ========== NODE CLASSES ==========
+# These classes are used by Trajectory to bound and connect Trajectory segments
 
 class Node(ABC):
     """
@@ -2301,6 +2333,12 @@ class ImpulsiveBoundaryNode(BoundaryNode):
                                 (position continuity enforced)
     
     For nodes with full state discontinuity, use FreeJunctionNode instead.
+
+    No node-level tol here (unlike ImpulsiveJunctionNode): this class' tolerance
+    check is a user-error guard, not a solver-convergence path, so position
+    continuity is checked against the config tolerance directly. Add tol
+    only if a tool ever constructs this node from approximately-
+    continuous explicit states (e.g. a transfer/Lambert solver).
     """
     
     def __init__(self, time: float,
@@ -2446,57 +2484,103 @@ class JunctionNode(Node):
 class NullJunctionNode(JunctionNode):
     """
     Continuous junction with no maneuver.
-    
-    Used when two segments connect smoothly — for example, when a
-    single trajectory is split at an interior time, or when segments
-    connect across a model boundary with matching states. pre_state
-    and post_state are conceptually identical, and mathematically close 
-    within a small tolerance, set by package config.
-    
+
+    Used when two segments connect smoothly -- for example, when a single
+    trajectory is split at an interior time, when segments connect across
+    a model boundary with matching states, or when a shooting corrector
+    closes a FreeJunctionNode by driving its state defect to zero.
+    pre_state and post_state are conceptually identical and mathematically
+    close to within a continuity tolerance.
+
+    The continuity tolerance is stored on the node (see tol) so the node
+    carries its own validation contract. This matters when a differential
+    corrector converges to a tolerance looser than the global config
+    default: the converged junction is still a legitimate NullJunctionNode
+    relative to the standard it was built to satisfy, and that standard
+    travels with the node (e.g. across serialization) rather than being
+    re-checked against a possibly-tighter global config.
+
     Parameters
     ----------
     time : float
-        Junction time [s or nondimensional]
-    state : array-like
-        Continuous state at the junction [x, y, z, vx, vy, vz] [km, km/s]
+        Junction time [s or nondimensional].
+    pre_state : array-like
+        State on the incoming side [x, y, z, vx, vy, vz] [km, km/s].
+    post_state : array-like
+        State on the outgoing side [x, y, z, vx, vy, vz] [km, km/s].
+    tol : float or None, optional
+        Absolute continuity tolerance the states must satisfy. The check
+        is allclose(pre, post, rtol=config.EQUALITY_RTOL, atol=tol), so tol
+        sets the absolute floor while the config relative tolerance still
+        provides magnitude scaling. If None, defaults to config.EQUALITY_ATOL
+        at construction time. The resolved value is stored and exposed via
+        the tol property.
+
+    Notes
+    -----
+    tol is provenance metadata: it does not participate in node equality
+    or hashing, which compare physical state only. Two NullJunctionNodes
+    with identical states but different tol values compare equal.
     """
-    
+
     def __init__(self, time: float,
-             pre_state: np.ndarray,
-             post_state: np.ndarray):
+                 pre_state: np.ndarray,
+                 post_state: np.ndarray,
+                 tol: float | None = None):
         super().__init__(time)
-        self._pre_state = self._validate_state(pre_state, 'pre_state')
-        self._post_state = self._validate_state(post_state, 'post_state')
+
+        pre_state = self._validate_state(pre_state, 'pre_state')
+        post_state = self._validate_state(post_state, 'post_state')
+
+        # Resolve and store the concrete tolerance value now, so the node's
+        # validation contract survives later changes to the global config.
+        resolved_tol = config.EQUALITY_ATOL if tol is None else float(tol)
+        if resolved_tol < 0.0:
+            validation_error(
+                f"NullJunctionNode tol must be non-negative, "
+                f"got {resolved_tol:.3e}."
+            )
+        self._tol = resolved_tol
+
         if not np.allclose(pre_state, post_state,
-                   rtol=config.EQUALITY_RTOL,
-                   atol=config.EQUALITY_ATOL):
+                           rtol=config.EQUALITY_RTOL,
+                           atol=resolved_tol):
             defect_mag = np.linalg.norm(post_state - pre_state)
             validation_error(
-                f"NullJunctionNode states differ by {defect_mag:.3e}. "
+                f"NullJunctionNode states differ by {defect_mag:.3e}, "
+                f"exceeding continuity tolerance {resolved_tol:.3e}. "
                 f"For intentional discontinuities use ImpulsiveJunctionNode "
                 f"or FreeJunctionNode."
             )
+
         self._pre_state = pre_state.copy()
         self._pre_state.flags.writeable = False
         self._post_state = post_state.copy()
         self._post_state.flags.writeable = False
-    
+
     @property
     def pre_state(self) -> np.ndarray:
         """State on the incoming side [km, km/s]."""
         return self._pre_state
-    
+
     @property
     def post_state(self) -> np.ndarray:
         """State on the outgoing side [km, km/s]."""
         return self._post_state
-    
+
+    @property
+    def tol(self) -> float:
+        """Absolute continuity tolerance this node was validated against."""
+        return self._tol
+
     def maneuver_jacobian(self) -> np.ndarray:
-        """Identity matrix — no maneuver, no state sensitivity."""
+        """Identity matrix -- no maneuver, no state sensitivity."""
         return np.eye(6)
-    
+
     def __repr__(self) -> str:
-        return f"NullJunctionNode(t={self.time:.6g})"
+        defect_mag = np.linalg.norm(self._post_state - self._pre_state)
+        return (f"NullJunctionNode(t={self.time:.6g}, "
+                f"|defect|={defect_mag:.6g}, tol={self._tol:.3g})")
 
 
 class ImpulsiveJunctionNode(JunctionNode):
@@ -2517,6 +2601,13 @@ class ImpulsiveJunctionNode(JunctionNode):
         State after the maneuver [x, y, z, vx, vy, vz] [km, km/s]
     delta_v : array-like, optional
         Velocity change vector [dvx, dvy, dvz] [km/s]
+    tol : float or None, optional
+        Absolute continuity tolerance the states must satisfy. The check
+        is allclose(pre, post, rtol=config.EQUALITY_RTOL, atol=tol), so tol
+        sets the absolute floor while the config relative tolerance still
+        provides magnitude scaling. If None, defaults to config.EQUALITY_ATOL
+        at construction time. The resolved value is stored and exposed via
+        the tol property.
     
     Notes
     -----
@@ -2530,13 +2621,28 @@ class ImpulsiveJunctionNode(JunctionNode):
     The maneuver Jacobian is identity for a fixed burn — the delta_v
     does not depend on the incoming state. For state-dependent maneuvers,
     a future subclass will provide the appropriate Jacobian.
+
+    tol is provenance metadata: it does not participate in node equality
+    or hashing, which compare physical state only. Two ImpulsiveJunctionNodes
+    with identical states but different tol values compare equal.
     """
     
     def __init__(self, time: float,
                  pre_state: Optional[np.ndarray] = None,
                  post_state: Optional[np.ndarray] = None,
-                 delta_v: Optional[np.ndarray] = None):
+                 delta_v: Optional[np.ndarray] = None,
+                 tol: float | None = None):
         super().__init__(time)
+
+        # Resolve and store the concrete position-continuity tolerance now,
+        # so the node's validation contract survives later config changes.
+        resolved_tol = config.EQUALITY_ATOL if tol is None else float(tol)
+        if resolved_tol < 0.0:
+            raise ValueError(
+                f"ImpulsiveJunctionNode tol must be non-negative, "
+                f"got {resolved_tol:.3e}."
+            )
+        self._tol = resolved_tol
         
         n_provided = sum(x is not None for x in [pre_state, post_state, delta_v])
         if n_provided != 2:
@@ -2572,11 +2678,11 @@ class ImpulsiveJunctionNode(JunctionNode):
             pos_discont = np.linalg.norm(post_state[:3] - pre_state[:3])
             if not np.allclose(pre_state[:3], post_state[:3],
                                rtol=config.EQUALITY_RTOL,
-                               atol=config.EQUALITY_ATOL):
+                               atol=resolved_tol):
                 raise ValueError(
-                    f"Position must be continuous for an impulsive maneuver. "
-                    f"Position discontinuity: {pos_discont:.6e} km. "
-                    f"Use FreeJunctionNode for nodes with position discontinuity."
+                    f"ImpulsiveJunctionNode positions differ by {pos_discont:.3e}, "
+                    f"exceeding continuity tolerance {resolved_tol:.3e}. "
+                    f"For intentional discontinuities use FreeJunctionNode."
                 )
         
         self._pre_state = pre_state.copy()
@@ -2599,6 +2705,11 @@ class ImpulsiveJunctionNode(JunctionNode):
         """Velocity change at this node [km/s]."""
         return self._post_state[3:6] - self._pre_state[3:6]
     
+    @property
+    def tol(self) -> float:
+        """Absolute position-continuity tolerance this node was validated against."""
+        return self._tol
+    
     def maneuver_jacobian(self) -> np.ndarray:
         """
         Identity matrix for a fixed impulsive burn.
@@ -2611,7 +2722,7 @@ class ImpulsiveJunctionNode(JunctionNode):
     def __repr__(self) -> str:
         dv_mag = np.linalg.norm(self.delta_v)
         return (f"ImpulsiveJunctionNode(t={self.time:.6g}, "
-                f"|dv|={dv_mag:.6g} km/s)")
+                f"|dv|={dv_mag:.6g} km/s, tol={self._tol:.3g})")
 
 
 class FreeJunctionNode(JunctionNode):
@@ -2635,10 +2746,8 @@ class FreeJunctionNode(JunctionNode):
     Notes
     -----
     This is the only node type that permits position discontinuity.
-    A converged multiple shooting solution will have state_defect
-    near zero at every FreeJunctionNode, at which point the node
-    is equivalent to a NullJunctionNode or ImpulsiveJunctionNode
-    depending on whether a maneuver was intended.
+    A converged multiple shooting solution will convert FreeJunctionNodes
+    to either a NullJunctionNode or an ImpulsiveJunctionNode as appropriate.
     """
     
     def __init__(self, time: float,

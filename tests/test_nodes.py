@@ -32,6 +32,7 @@ from kyklos.trajectory import (
     ImpulsiveJunctionNode,
     FreeJunctionNode,
 )
+from kyklos.config import config
 from kyklos import temp_config
 
 
@@ -466,6 +467,62 @@ class TestNullJunctionNode:
         node = NullJunctionNode(t, state_a, state_a.copy())
         r = repr(node)
         assert 'NullJunctionNode' in r
+    
+    def test_explicit_tol_stored_and_returned(self, t, state_a):
+        """An explicit tol is stored and returned by the tol property."""
+        node = NullJunctionNode(t, state_a, state_a.copy(), tol=1e-9)
+        assert node.tol == 1e-9
+
+    def test_default_tol_resolves_to_config(self, t, state_a):
+        """Omitting tol resolves to config.EQUALITY_ATOL at construction."""
+        node = NullJunctionNode(t, state_a, state_a.copy())
+        assert node.tol == config.EQUALITY_ATOL
+
+    def test_stored_tol_survives_config_change(self, t, state_a):
+        """The resolved tol is a stored concrete value, not a live config
+        read: it does not change if the global config changes afterward.
+        This is the provenance guarantee that lets a converged node keep
+        its validation contract across (de)serialization."""
+        original_atol = config.EQUALITY_ATOL
+        node = NullJunctionNode(t, state_a, state_a.copy())  # tol=None resolves now
+        assert node.tol == original_atol
+        with temp_config(EQUALITY_ATOL=original_atol * 1e6):
+            # Global default changed; the node keeps its original contract.
+            assert node.tol == original_atol
+
+    def test_loose_tol_accepts_supratolerance_defect(self, t, state_a):
+        """An explicit loose tol accepts a defect that exceeds the default
+        floor -- the corrector's looser-than-config use case. The defect is
+        placed on vx (nominally 0) to isolate the absolute tol from the
+        config relative term, which scales with state magnitude."""
+        atol = config.EQUALITY_ATOL
+        perturbed = state_a.copy()
+        perturbed[3] += 100 * atol
+        with temp_config(STRICT_VALIDATION=True):
+            node = NullJunctionNode(t, state_a, perturbed, tol=1e4 * atol)
+        assert node is not None
+
+    def test_default_tol_rejects_supratolerance_defect(self, t, state_a):
+        """The same defect a loose tol accepts is rejected under the default
+        tol in strict mode -- confirms tol is the binding standard."""
+        atol = config.EQUALITY_ATOL
+        perturbed = state_a.copy()
+        perturbed[3] += 100 * atol
+        with temp_config(STRICT_VALIDATION=True):
+            with pytest.raises(ValueError, match="[Nn]ull[Jj]unction"):
+                NullJunctionNode(t, state_a, perturbed)
+
+    def test_negative_tol_rejected_in_strict_mode(self, t, state_a):
+        """A negative tol is rejected in strict mode."""
+        with temp_config(STRICT_VALIDATION=True):
+            with pytest.raises(ValueError, match="non-negative"):
+                NullJunctionNode(t, state_a, state_a.copy(), tol=-1.0)
+
+    def test_repr_includes_tol(self, t, state_a):
+        """repr reports the continuity tolerance so the node is
+        self-describing at a glance."""
+        node = NullJunctionNode(t, state_a, state_a.copy(), tol=1e-9)
+        assert 'tol' in repr(node)
 
 
 # ========== ImpulsiveJunctionNode ==========
@@ -552,6 +609,60 @@ class TestImpulsiveJunctionNode:
         node = ImpulsiveJunctionNode(t, pre_state=state_a, delta_v=dv)
         r = repr(node)
         assert 'ImpulsiveJunctionNode' in r
+    
+    def test_explicit_tol_stored_and_returned(self, t, state_a, dv):
+        """An explicit tol is stored and returned by the tol property."""
+        node = ImpulsiveJunctionNode(t, pre_state=state_a, delta_v=dv, tol=1e-9)
+        assert node.tol == 1e-9
+
+    def test_default_tol_resolves_to_config(self, t, state_a, dv):
+        """Omitting tol resolves to config.EQUALITY_ATOL at construction."""
+        node = ImpulsiveJunctionNode(t, pre_state=state_a, delta_v=dv)
+        assert node.tol == config.EQUALITY_ATOL
+
+    def test_stored_tol_survives_config_change(self, t, state_a, dv):
+        """The resolved tol is a stored concrete value, not a live config
+        read: it does not change if the global config changes afterward.
+        This is the provenance guarantee that lets a converged node keep
+        its validation contract across (de)serialization."""
+        original_atol = config.EQUALITY_ATOL
+        node = ImpulsiveJunctionNode(t, pre_state=state_a, delta_v=dv) 
+        assert node.tol == original_atol
+        with temp_config(EQUALITY_ATOL=original_atol * 1e6):
+            # Global default changed; the node keeps its original contract.
+            assert node.tol == original_atol
+
+    def test_loose_tol_accepts_supratolerance_defect(self, t, state_a):
+        """An explicit loose tol accepts a defect that exceeds the default
+        floor -- the corrector's looser-than-config use case."""
+        atol = config.EQUALITY_ATOL
+        perturbed = state_a.copy()
+        perturbed[2] += 100 * atol
+        with temp_config(STRICT_VALIDATION=True):
+            node = ImpulsiveJunctionNode(t, state_a, perturbed, tol=1e4 * atol)
+        assert node is not None
+
+    def test_default_tol_rejects_supratolerance_defect(self, t, state_a):
+        """The same defect a loose tol accepts is rejected under the default
+        tol in strict mode -- confirms tol is the binding standard."""
+        atol = config.EQUALITY_ATOL
+        perturbed = state_a.copy()
+        perturbed[2] += 100 * atol
+        with temp_config(STRICT_VALIDATION=True):
+            with pytest.raises(ValueError, match="[Ii]mpulsive[Jj]unction"):
+                ImpulsiveJunctionNode(t, state_a, perturbed)
+
+    def test_negative_tol_rejected_in_strict_mode(self, t, state_a):
+        """A negative tol is rejected in strict mode."""
+        with temp_config(STRICT_VALIDATION=True):
+            with pytest.raises(ValueError, match="non-negative"):
+                ImpulsiveJunctionNode(t, state_a, state_a.copy(), tol=-1.0)
+
+    def test_repr_includes_tol(self, t, state_a):
+        """repr reports the continuity tolerance so the node is
+        self-describing at a glance."""
+        node = ImpulsiveJunctionNode(t, state_a, state_a.copy(), tol=1e-9)
+        assert 'tol' in repr(node)
 
 
 # ========== FreeJunctionNode ==========

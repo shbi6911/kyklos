@@ -14,6 +14,10 @@ orbit = OrbitalElements(
     nu=0,        # True anomaly [rad]
     system=sys	 # System reference
 )
+print(f"Orbital Elements of 2BP orbit:")
+print(orbit)
+print(f"Convert to Cartesian:")
+print(orbit.to_cartesian())
 
 # Propagate for 1 orbit (~97 minutes)
 period = orbit.orbital_period()
@@ -21,15 +25,16 @@ traj = sys.propagate(orbit, times=[0,period])
 # The sys.propagate method converts the OrbitalElements
 # to a Cartesian state vector automatically.
 
+print(f"Evaluate state of propagated orbit at half-period:")
 # Evaluate state at any time - no re-integration needed!
 state_at_half_orbit = traj(2700)
 print(state_at_half_orbit)
 
-# Convert back to Keplerian elements (should be osculating)
+print(f"Keplerian elements should be osculating because of J2 perturbation:")
 kep_state = state_at_half_orbit.to_keplerian()
 print(kep_state)
 
-### Earth-Moon CR3BP Trajectory
+print(f"Earth-Moon CR3BP Trajectory:")
 
 # Create Earth-Moon system (nondimensionalized)
 sys = earth_moon_cr3bp()
@@ -44,10 +49,12 @@ state = OrbitalElements(
 # Propagate in nondimensional time
 traj = sys.propagate(state, times=[0,5])
 
+print(f"Nondimensional states evenly spaced along the trajectory:")
 # Sample trajectory at evenly spaced points
 states = traj.sample(n_points=5)
 print(states)
 
+print(f"The same states as raw numpy arrays:")
 # Sample with numpy array output
 states_raw = traj.sample_raw(n_points=5)
 print(states_raw)
@@ -55,21 +62,22 @@ print(states_raw)
 # Visualize in 3D (uses default number of points, see KyklosConfig)
 fig = traj.plot_3d()
 
-### Working with Multiple Orbits
+print(f"Propagating and Plotting Multiple Orbits:")
 
 sys = earth_2body()
 
-# Create constellation of satellites
+print(f"Create constellation with varying altitude, eccentricity and inclination")
 altitudes = np.linspace(400, 1000, 25)  # 400-1000 km altitude
 ecc = np.linspace(0.01, 0.1, 25) # range of eccentricities
 inc = np.radians(np.linspace(0, 55, 25)) #range of inclinations
+# Assemble a list of OrbitalElements objects
 orbits = [
     OrbitalElements(a=6378.137 + h, e=e, i=i,
                    omega=0, w=0, nu=0, system=sys)
     for h, e, i in zip(altitudes, ecc, inc)
 ]
 
-# Propagate each orbit
+print(f"Propagate all orbits as a Python list comprehension:")
 trajectories = [
     sys.propagate(orb, [0, 7000])
     for orb in orbits
@@ -81,6 +89,7 @@ traj_df = [
 	traj.to_dataframe(n_points=1000) 
 	for traj in trajectories
 ]
+print(f"Exporting all trajectories to DataFrames and printing one:")
 print(traj_df[10])
 
 # Visualize in 3D
