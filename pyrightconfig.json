@@ -4,5 +4,11 @@
     "reportOptionalSubscript": "none",
     "reportOptionalMemberAccess": "none",
     "reportOptionalOperand": "none",
-    "reportGeneralTypeIssues": "none"
+    "reportGeneralTypeIssues": "none",
+    "executionEnvironments": [
+        {
+            "root": "tests",
+            "reportPrivateUsage": false
+        }
+    ]
 }

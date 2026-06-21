@@ -747,23 +747,31 @@ class TestSTMMATLABValidation:
     
     def test_lyapunov_orbit_matlab_validation(self, matlab_reference):
         """Validate Lyapunov orbit (CR3BP) propagation against MATLAB."""
-        from kyklos import earth_moon_cr3bp, LYAPUNOV_ORBIT
-        
+        import pandas as pd
+        from pathlib import Path
+        from kyklos import earth_moon_cr3bp
+
         ref_col = matlab_reference['lyap']
         t_final = ref_col.iloc[0]  # Nondimensional time
         ref_state = ref_col.iloc[1:7].values
         ref_stm = ref_col.iloc[7:43].values.reshape(6, 6, order='F')
-        
+
+        # Initial condition from the MATLAB reference file (first row)
+        data_dir = Path(__file__).parent / "data"
+        ic_data = pd.read_csv(data_dir / "L1_lyap.txt")
+        initial_state = ic_data[['x_nd', 'y_nd', 'z_nd',
+                                 'vx_nd', 'vy_nd', 'vz_nd']].values[0, :]
+
         system = earth_moon_cr3bp()
         traj = system.propagate(
-            LYAPUNOV_ORBIT.state,
+            initial_state,
             times=[0, t_final],
             with_stm=True
         )
-        
+
         final_state = traj.state_at_raw(t_final)
         final_stm = traj.get_stm(t_final)
-        
+
         np.testing.assert_allclose(
             final_state,
             ref_state,
@@ -771,7 +779,7 @@ class TestSTMMATLABValidation:
             atol=1e-10,
             err_msg="Lyapunov final state should match MATLAB reference"
         )
-        
+
         np.testing.assert_allclose(
             final_stm,
             ref_stm,
@@ -779,26 +787,34 @@ class TestSTMMATLABValidation:
             atol=1e-10,
             err_msg="Lyapunov final STM should match MATLAB reference"
         )
-    
+
     def test_gateway_orbit_matlab_validation(self, matlab_reference):
         """Validate Gateway/halo orbit (CR3BP) propagation against MATLAB."""
-        from kyklos import earth_moon_cr3bp, GATEWAY_ORBIT
-        
+        import pandas as pd
+        from pathlib import Path
+        from kyklos import earth_moon_cr3bp
+
         ref_col = matlab_reference['halo']
         t_final = ref_col.iloc[0]  # Nondimensional time
         ref_state = ref_col.iloc[1:7].values
         ref_stm = ref_col.iloc[7:43].values.reshape(6, 6, order='F')
-        
+
+        # Initial condition from the MATLAB reference file (first row)
+        data_dir = Path(__file__).parent / "data"
+        ic_data = pd.read_csv(data_dir / "L2_halo.txt")
+        initial_state = ic_data[['x_nd', 'y_nd', 'z_nd',
+                                 'vx_nd', 'vy_nd', 'vz_nd']].values[0, :]
+
         system = earth_moon_cr3bp()
         traj = system.propagate(
-            GATEWAY_ORBIT.state,
+            initial_state,
             times=[0, t_final],
             with_stm=True
         )
-        
+
         final_state = traj.state_at_raw(t_final)
         final_stm = traj.get_stm(t_final)
-        
+
         np.testing.assert_allclose(
             final_state,
             ref_state,
@@ -806,7 +822,7 @@ class TestSTMMATLABValidation:
             atol=1e-10,
             err_msg="Gateway final state should match MATLAB reference"
         )
-        
+
         np.testing.assert_allclose(
             final_stm,
             ref_stm,

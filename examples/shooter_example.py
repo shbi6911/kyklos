@@ -19,6 +19,7 @@ guess_half = sys.propagate(elements,[0, (ky.GATEWAY_ORBIT.period + sys.t2nd(3600
 #instantiate a DifferentialCorrector instance with all settings as package default
 dc = ky.DifferentialCorrector()
 
+print(f"\n{'='*70}")
 print(f"Correcting Orbit 1 (Overconstrained):")
 # set up an overconstrained problem with all final states required to be periodic 
 # and also three initial states fixed (the ones not set as free_vars)
@@ -30,6 +31,7 @@ orbit1 = result1.trajectory
 print(f"Convergence status: {result1.converged}")
 print(f"Number of iterations: {result1.iterations}")
 
+print(f"\n{'='*70}")
 print(f"Correcting Orbit 2 (General Formulation):")
 # general formulation for any periodic orbit, 
 # constraints = free_vars but doesn't fix initial state at all
@@ -38,6 +40,7 @@ orbit2 = result2.trajectory
 print(f"Convergence status: {result2.converged}")
 print(f"Number of iterations: {result2.iterations}")
 
+print(f"\n{'='*70}")
 print(f"Correcting Orbit 3 (Symmetric Formulation):")
 # Use a formulation that exploits symmetry about the xz plane, by fixing
 # [y0, vx0, vz0], and targeting a perpendicular xz-plane crossing
@@ -50,15 +53,18 @@ orbit3 = sys.propagate(orbit3_half.start_node.post_state, [0,orbit3_half.duratio
 print(f"Convergence status: {result3.converged}")
 print(f"Number of iterations: {result3.iterations}")
 
+print(f"\n{'='*70}")
 print(f"All orbits are periodic to within good tolerance:")
 print(f"orbit1 start - end = {orbit1.start_node.post_state - orbit1.end_node.pre_state}")
 print(f"orbit2 start - end = {orbit2.start_node.post_state - orbit2.end_node.pre_state}")
 print(f"orbit3 start - end = {orbit3.start_node.post_state - orbit3.end_node.pre_state}")
 
+print(f"\n{'='*70}")
 print(f"All orbits have the same period:")
 print(f"duration diff 1 - 3 = {orbit1.duration - orbit3.duration}")
 print(f"duration diff 2 - 3 = {orbit2.duration - orbit3.duration}")
 
+print(f"\n{'='*70}")
 print(f"All orbits have the same Jacobi constant to within tolerance:")
 print(f"orbit 3 - 1 C = {(orbit3.state_at(orbit3.t0).jacobi_const() - 
                          orbit1.state_at(orbit1.t0).jacobi_const())}")
@@ -70,11 +76,13 @@ print(f"We can conclude that all three of these are the same halo orbit.")
 orbit1_states = orbit1.sample_raw(10)
 orbit2_states = orbit2.sample_raw(10)
 orbit3_states = orbit3.sample_raw(10)
+print(f"\n")
 print(f"However, we see dissimilar state differences:")
 print(f"Norm state diff 1 - 3 = {np.linalg.norm((orbit1_states - orbit3_states), 
                                                 axis=0)}")
 print(f"Norm state diff 2 - 3 = {np.linalg.norm((orbit2_states - orbit3_states), 
                                                 axis=0)}")
+print(f"\n")
 print(f"We look at initial states:")
 print(f"orbit 1: {orbit1.start_node.post_state}")
 print(f"orbit 2: {orbit2.start_node.post_state}")
@@ -83,8 +91,9 @@ print(f"The general formulation did not constrain the phase, so the initial \n"
       f"state is off of the xz-plane by a small amount, explaining the state \n"
       f"discrepancy.  Use symmetry whenever possible.")
 
-# all orbits should looks visually identical on the plot
-fig2 = orbit1.plot_3d()
-orbit2.add_to_plot(fig2, color='blue')
-orbit3.add_to_plot(fig2, color='green')
-fig2.show()
+# all converged orbits should look visually identical on the plot
+fig1 = orbit_guess.plot_3d(traj_name='Initial Guess')
+orbit1.add_to_plot(fig1, color='yellow',traj_name='Overconstrained',show_nodes=False)
+orbit2.add_to_plot(fig1, color='blue',traj_name='General',show_nodes=False)
+orbit3.add_to_plot(fig1, color='green',traj_name='Symmetric',show_nodes=False)
+fig1.show()

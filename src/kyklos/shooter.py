@@ -540,7 +540,7 @@ class _ShootingContext:
         traj: "Trajectory",
         free_vars: str | Sequence[str],
         constraints: Sequence | None = None,
-        free_times: Sequence[int] | None = None,
+        free_times: Sequence[int | np.integer] | None = None,
     ) -> "_ShootingContext":
         """
         Build a context from an initial-guess Trajectory and problem spec.
@@ -620,7 +620,7 @@ class _ShootingContext:
 
     @staticmethod
     def _parse_free_times(
-        free_times: Sequence[int] | None,
+        free_times: Sequence[int | np.integer] | None,
         n_seg: int,
     ) -> np.ndarray:
         """
@@ -1089,7 +1089,7 @@ class DifferentialCorrector:
     """
 
     def __init__(self, tol: float | None = None,
-                 max_iter: int | None = None,
+                 max_iter: int | np.integer | None = None,
                  cond_warn: float | None = None,
                  cond_fail: float | None = None):
         self.tol = config.SHOOTER_TOL if tol is None else float(tol)
@@ -1103,7 +1103,7 @@ class DifferentialCorrector:
     def solve(self, traj: "Trajectory",
               free_vars: str | Sequence[str],
               constraints: Sequence | None = None,
-              free_times: Sequence[int] | None = None,
+              free_times: Sequence[int | np.integer] | None = None,
               diagnostics: bool = False,
               iterates: bool = False) -> ShooterResult:
         """

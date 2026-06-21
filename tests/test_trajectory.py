@@ -17,6 +17,7 @@ from kyklos import (
     System, EARTH, MOON, EARTH_STD_ATMO,
     OE, OEType, Trajectory, Satellite, earth_2body
 )
+from kyklos import FreeJunctionNode
 
 
 class TestElementTypeParameter:
@@ -756,6 +757,64 @@ class TestTrajectoryOutputIndependence:
             err_msg="get_stm(0.0) corrupted after mixed queries"
         )
 
+@pytest.mark.slow
+class TestWithJunctionNodes:
+    """Trajectory.with_junction_nodes: relabel interior junctions, reusing
+    outputs and boundary nodes (no re-propagation), with count/time
+    validation. The Free->Null reclassification semantics are covered
+    end-to-end by the multiple-shooting convergence tests; this pins the
+    plumbing contract of the method itself."""
+
+    @pytest.fixture
+    def multiseg_traj(self, cr3bp_system, lyapunov_orbit):
+        tf = lyapunov_orbit.period / 2.0
+        times = np.linspace(0.0, tf, 4)
+        base = cr3bp_system.propagate(lyapunov_orbit.state, [0.0, tf],
+                                      with_stm=False)
+        ics = [base.state_at_raw(t) for t in times[:-1]]
+        return cr3bp_system.propagate(ics, times, with_stm=False)
+
+    def _markers(self, traj):
+        # Replacement Free nodes at the existing boundary times; states are
+        # arbitrary markers (with_junction_nodes validates count and time, not
+        # state consistency).
+        out = []
+        for k, j in enumerate(traj.junction_nodes):
+            m = np.full(6, float(k + 1))
+            out.append(FreeJunctionNode(j.time, m, m))
+        return out
+
+    def test_replaces_junctions(self, multiseg_traj):
+        repl = self._markers(multiseg_traj)
+        new = multiseg_traj.with_junction_nodes(repl)
+        for n, r in zip(new.junction_nodes, repl):
+            np.testing.assert_array_equal(n.post_state, r.post_state)
+
+    def test_reuses_outputs_no_repropagation(self, multiseg_traj):
+        new = multiseg_traj.with_junction_nodes(self._markers(multiseg_traj))
+        assert new.start_node is multiseg_traj.start_node
+        assert new.end_node is multiseg_traj.end_node
+        for i in range(multiseg_traj.n_segments):
+            assert new._outputs[i] is multiseg_traj._outputs[i]
+
+    def test_rejects_wrong_count(self, multiseg_traj):
+        with pytest.raises(ValueError):
+            multiseg_traj.with_junction_nodes(self._markers(multiseg_traj)[:-1])
+
+    def test_rejects_time_mismatch(self, multiseg_traj):
+        bad = self._markers(multiseg_traj)
+        b0 = bad[0]
+        bad[0] = FreeJunctionNode(b0.time + 0.5, b0.pre_state, b0.post_state)
+        with pytest.raises(ValueError):
+            multiseg_traj.with_junction_nodes(bad)
+
+    def test_original_unchanged(self, multiseg_traj):
+        before = [np.array(j.post_state, dtype=float)
+                  for j in multiseg_traj.junction_nodes]
+        new = multiseg_traj.with_junction_nodes(self._markers(multiseg_traj))
+        assert new is not multiseg_traj
+        for j, snap in zip(multiseg_traj.junction_nodes, before):
+            np.testing.assert_array_equal(j.post_state, snap)
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

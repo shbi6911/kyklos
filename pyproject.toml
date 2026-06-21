@@ -36,3 +36,7 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+markers = [
+    "slow: requires a compiled Heyoka integrator; deselect with -m 'not slow'",
+]
+addopts = "--strict-markers"

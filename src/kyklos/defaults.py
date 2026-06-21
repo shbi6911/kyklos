@@ -147,10 +147,9 @@ MOLNIYA_ORBIT = OrbitalElements(
 )
 
 LYAPUNOV_ORBIT = PeriodicOrbit(
-    state=OrbitalElements([0.787904556873149, -4.4190929837396e-28, 0, 
-                           -2.8389919479581e-15, 0.419844640800615, 0],
+    state=OrbitalElements([0.787904556873149, 0.0, 0.0, 0.0, 0.419844679804609, 0],
                           'cr3bp', mu=0.012150581477176512),
-    period=2.691579583023370,
+    period=3.744163087739812,
     name='L1 Lyapunov'
 )
 

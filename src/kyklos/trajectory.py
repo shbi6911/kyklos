@@ -2132,7 +2132,7 @@ class Node(ABC):
     """
     
     # ========== CONSTRUCTION ==========
-    def __init__(self, time: float):
+    def __init__(self, time: float | int):
         """
         Parameters
         ----------
@@ -2245,7 +2245,7 @@ class StartBoundaryNode(BoundaryNode):
         Initial state vector [x, y, z, vx, vy, vz] [km, km/s]
     """
     
-    def __init__(self, time: float, post_state: np.ndarray):
+    def __init__(self, time: float | int, post_state: ArrayLike):
         super().__init__(time)
         self._post_state = self._validate_state(post_state, 'post_state')
         self._post_state = self._post_state.copy()
@@ -2281,7 +2281,7 @@ class EndBoundaryNode(BoundaryNode):
         Final state vector [x, y, z, vx, vy, vz] [km, km/s]
     """
     
-    def __init__(self, time: float, pre_state: np.ndarray):
+    def __init__(self, time: float | int, pre_state: ArrayLike):
         super().__init__(time)
         self._pre_state = self._validate_state(pre_state, 'pre_state')
         self._pre_state = self._pre_state.copy()
@@ -2341,10 +2341,10 @@ class ImpulsiveBoundaryNode(BoundaryNode):
     continuous explicit states (e.g. a transfer/Lambert solver).
     """
     
-    def __init__(self, time: float,
-                 pre_state: Optional[np.ndarray] = None,
-                 post_state: Optional[np.ndarray] = None,
-                 delta_v: Optional[np.ndarray] = None):
+    def __init__(self, time: float | int,
+                 pre_state: Optional[ArrayLike] = None,
+                 post_state: Optional[ArrayLike] = None,
+                 delta_v: Optional[ArrayLike] = None):
         super().__init__(time)
         
         # Count provided arguments
@@ -2523,9 +2523,9 @@ class NullJunctionNode(JunctionNode):
     with identical states but different tol values compare equal.
     """
 
-    def __init__(self, time: float,
-                 pre_state: np.ndarray,
-                 post_state: np.ndarray,
+    def __init__(self, time: float | int,
+                 pre_state: ArrayLike,
+                 post_state: ArrayLike,
                  tol: float | None = None):
         super().__init__(time)
 
@@ -2627,10 +2627,10 @@ class ImpulsiveJunctionNode(JunctionNode):
     with identical states but different tol values compare equal.
     """
     
-    def __init__(self, time: float,
-                 pre_state: Optional[np.ndarray] = None,
-                 post_state: Optional[np.ndarray] = None,
-                 delta_v: Optional[np.ndarray] = None,
+    def __init__(self, time: float | int,
+                 pre_state: Optional[ArrayLike] = None,
+                 post_state: Optional[ArrayLike] = None,
+                 delta_v: Optional[ArrayLike] = None,
                  tol: float | None = None):
         super().__init__(time)
 
@@ -2750,9 +2750,9 @@ class FreeJunctionNode(JunctionNode):
     to either a NullJunctionNode or an ImpulsiveJunctionNode as appropriate.
     """
     
-    def __init__(self, time: float,
-                 pre_state: np.ndarray,
-                 post_state: np.ndarray):
+    def __init__(self, time: float | int,
+                 pre_state: ArrayLike,
+                 post_state: ArrayLike):
         super().__init__(time)
         self._pre_state = self._validate_state(pre_state, 'pre_state')
         self._pre_state = self._pre_state.copy()
