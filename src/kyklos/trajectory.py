@@ -1025,6 +1025,36 @@ class Trajectory:
             'vz':      states[:, 5],
         })
     
+    def to_periodic(self, period=None, *, name="", tol=None):
+        """
+        Promote this trajectory to a verified PeriodicOrbit.
+
+        Thin delegator: forwards self to the PeriodicOrbit constructor, which
+        performs period inference, repropagation, closure validation, and
+        monodromy computation. See PeriodicOrbit for the period-inference
+        semantics and the meaning of each argument.
+
+        Parameters
+        ----------
+        period : float or None, optional
+            Full period. If None, inferred from endpoint geometry.
+        name : str, optional
+            Human-readable identifier.
+        tol : float or None, optional
+            Absolute tolerance for closure and perpendicular-crossing tests.
+
+        Returns
+        -------
+        PeriodicOrbit
+
+        See Also
+        --------
+        PeriodicOrbit : Verified periodic-orbit class with monodromy and
+            stability structure.
+        """
+        from .periodic_orbit import PeriodicOrbit
+        return PeriodicOrbit(self, period, name=name, tol=tol)
+    
     # ========== TRAJECTORY MANIPULATION ==========
     
     # ========== HELPER METHODS ==========

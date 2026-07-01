@@ -11,6 +11,13 @@ create System objects on demand, avoiding memory overhead until needed.
 All functions accept a ``compile`` parameter (default True) to control
 whether the Heyoka integrator is compiled immediately or deferred.
 
+All factory functions are cached: repeated calls with the same arguments return
+the same System instance rather than constructing a new one. This keeps
+Kyklos from duplicating compiled integrators, which are expensive to
+build. Because System objects are immutable, sharing a single instance
+across callers is safe.  Note that distinct ``compile`` values are cached separately, 
+so a compiled and a deferred System can coexist.
+
 Examples
 --------
 >>> from kyklos import earth_2body, earth_moon_cr3bp
@@ -18,12 +25,14 @@ Examples
 >>> sys_lazy = earth_j2(compile=False)  # Defer compilation
 """
 import numpy as np
+import functools
 from typing import cast
 from .orbital_elements import OrbitalElements
 from .system import (
         System, TwoBodySystem, CR3BPSystem,
-        BodyParams, AtmoParams, PeriodicOrbit
+        BodyParams, AtmoParams,
     )
+from .periodic_orbit import PeriodicOrbit
 
 """
 Predefined Solar System bodies for System creation
@@ -146,27 +155,23 @@ MOLNIYA_ORBIT = OrbitalElements(
     omega=np.radians(100), w=np.radians(270), nu=0, mu=EARTH.mu
 )
 
-LYAPUNOV_ORBIT = PeriodicOrbit(
-    state=OrbitalElements([0.787904556873149, 0.0, 0.0, 0.0, 0.419844679804609, 0],
-                          'cr3bp', mu=0.012150581477176512),
-    period=3.744163087739812,
-    name='L1 Lyapunov'
-)
+# GATEWAY_ORBIT = PeriodicOrbit(
+#     state=OrbitalElements([1.02199359562483, 6.4331268586775e-24, -0.182077530534944,
+#                         1.54184910480928e-14, -0.103195530587244, 1.78907594356382e-12],
+#                         'cr3bp', mu=0.012150581477176512),
+#     period=1.51074317459736,
+#     name='NRHO (Gateway)'
+# )
 
-GATEWAY_ORBIT = PeriodicOrbit(
-    state=OrbitalElements([1.02199359562483, 6.4331268586775e-24, -0.182077530534944,
-                        1.54184910480928e-14, -0.103195530587244, 1.78907594356382e-12],
-                        'cr3bp', mu=0.012150581477176512),
-    period=1.51074317459736,
-    name='NRHO (Gateway)'
-)
-
+@functools.cache
 def earth_2body(compile=True) -> TwoBodySystem:
     """
     Create a point-mass 2-body Earth system.
     
     This is the simplest orbital propagation model: spherically symmetric
     Earth gravity with no perturbations.
+
+    Cached: see module docstring. Repeated calls return the same instance.
     
     Parameters
     ----------
@@ -181,13 +186,15 @@ def earth_2body(compile=True) -> TwoBodySystem:
     """
     return cast(TwoBodySystem, System('2body', EARTH, compile=compile))
 
-
+@functools.cache
 def earth_j2(compile=True) -> TwoBodySystem:
     """
     Create a 2-body Earth system with J2 oblateness.
     
     Includes the dominant zonal harmonic (J2) which captures Earth's
     equatorial bulge.
+
+    Cached: see module docstring. Repeated calls return the same instance.
     
     Parameters
     ----------
@@ -205,13 +212,15 @@ def earth_j2(compile=True) -> TwoBodySystem:
         compile=compile
     ))
 
-
+@functools.cache
 def earth_drag(compile=True) -> TwoBodySystem:
     """
     Create 2-body Earth with atmospheric drag.
     
     Includes exponential atmosphere model for realistic LEO propagation 
     including orbital decay.
+
+    Cached: see module docstring. Repeated calls return the same instance.
     
     Parameters
     ----------
@@ -236,12 +245,14 @@ def earth_drag(compile=True) -> TwoBodySystem:
         compile=compile
     ))
 
-
+@functools.cache
 def earth_moon_cr3bp(compile=True) -> CR3BPSystem:
     """
     Create Earth-Moon circular restricted 3-body problem system.
     
     Models spacecraft motion in the rotating Earth-Moon frame.
+
+    Cached: see module docstring. Repeated calls return the same instance.
     
     Parameters
     ----------
@@ -269,11 +280,14 @@ def earth_moon_cr3bp(compile=True) -> CR3BPSystem:
         compile=compile
     ))
 
+@functools.cache
 def earth_sun_cr3bp(compile=True) -> CR3BPSystem:
     """
     Create Sun-Earth circular restricted 3-body problem system.
     
     Models spacecraft motion in the rotating Sun-Earth frame.
+
+    Cached: see module docstring. Repeated calls return the same instance.
     
     Parameters
     ----------
@@ -301,13 +315,15 @@ def earth_sun_cr3bp(compile=True) -> CR3BPSystem:
         compile=compile
     ))
 
-
+@functools.cache
 def moon_2body(compile=True) -> TwoBodySystem:
     """
     Create a point-mass 2-body Moon system.
     
     For lunar orbit propagation. Uses Moon's gravitational parameter
     and radius.
+
+    Cached: see module docstring. Repeated calls return the same instance.
     
     Parameters
     ----------
@@ -321,12 +337,14 @@ def moon_2body(compile=True) -> TwoBodySystem:
     """
     return cast(TwoBodySystem, System('2body', MOON, compile=compile))
 
-
+@functools.cache
 def moon_j2(compile=True) -> TwoBodySystem:
     """
     Create a 2-body Moon system with J2 oblateness.
     
     Includes J2 zonal harmonic for Moon's equatorial bulge.
+
+    Cached: see module docstring. Repeated calls return the same instance.
     
     Parameters
     ----------
@@ -344,13 +362,15 @@ def moon_j2(compile=True) -> TwoBodySystem:
         compile=compile
     ))
 
-
+@functools.cache
 def mars_2body(compile=True) -> TwoBodySystem:
     """
     Create a point-mass 2-body Mars system.
     
     For Mars orbit propagation. Uses Mars's gravitational parameter
     and radius.
+
+    Cached: see module docstring. Repeated calls return the same instance.
     
     Parameters
     ----------
@@ -364,12 +384,14 @@ def mars_2body(compile=True) -> TwoBodySystem:
     """
     return cast(TwoBodySystem, System('2body', MARS, compile=compile))
 
-
+@functools.cache
 def mars_j2(compile=True) -> TwoBodySystem :
     """
     Create a 2-body Mars system with J2 oblateness.
     
     Includes J2 zonal harmonic for Mars's equatorial bulge.
+
+    Cached: see module docstring. Repeated calls return the same instance.
     
     Parameters
     ----------
@@ -386,3 +408,82 @@ def mars_j2(compile=True) -> TwoBodySystem :
         perturbations=('J2',), 
         compile=compile
     ))
+
+@functools.cache
+def lyapunov_orbit() -> PeriodicOrbit:
+    """
+    Canonical L1 Lyapunov periodic orbit in the Earth-Moon CR3BP.
+
+    A pre-converged planar Lyapunov orbit about the Earth-Moon L1 point,
+    provided as a convenient reference orbit for examples and tests. Unstable,
+    but well-behaved over a single period and far less stiff than an NRHO.
+
+    Cached (see module docstring): repeated calls return the same instance.
+    The orbit holds a reference to the cached canonical Earth-Moon CR3BP
+    System (via earth_moon_cr3bp()), keeping that System alive as well; clear
+    both caches if a fresh build is required.
+
+    Returns
+    -------
+    PeriodicOrbit
+        The L1 Lyapunov orbit, with monodromy and stability data available.
+    """
+    # Pre-converged initial conditions and period (nondimensional).
+    initial_state = np.array([0.787904556873149, 0.0, 0.0, 
+                                0.0, 0.419844679804609, 0.0])
+    period = 3.744163087739812
+
+    # Canonical Earth-Moon CR3BP system (itself cached).
+    sys = earth_moon_cr3bp()
+
+    # Propagate the pre-converged orbit WITH the STM so the PeriodicOrbit
+    # constructor can read the monodromy directly, without repropagating.
+    traj = sys.propagate(initial_state, [0.0, period], with_stm=True)
+
+    # Promote to a verified PeriodicOrbit. Passing period explicitly selects
+    # the 'explicit' path and skips geometric inference, which is correct here
+    # since the period is known from the pre-converged solution.
+    return PeriodicOrbit(traj, period, name='L1 Lyapunov')
+
+@functools.cache
+def gateway_orbit() -> PeriodicOrbit:
+    """
+    Canonical Gateway L2 NRHO in the Earth-Moon CR3BP.
+
+    The 9:2 synodic-resonant near-rectilinear halo orbit (NRHO) about the
+    Earth-Moon L2 point -- the baseline orbit for the lunar Gateway station --
+    provided as the realistic, stiffer reference orbit for examples and tests.
+    As an NRHO it sits near the stability boundary (only weakly unstable), but
+    it is numerically stiff through its fast, close perilune passage, which
+    makes it the harder reference case relative to the L1 Lyapunov orbit.
+
+    Cached (see module docstring): repeated calls return the same instance.
+    The orbit holds a reference to the cached canonical Earth-Moon CR3BP
+    System (via earth_moon_cr3bp()), keeping that System alive as well; clear
+    both caches if a fresh build is required.
+
+    Returns
+    -------
+    PeriodicOrbit
+        The Gateway L2 NRHO, with monodromy and stability data available.
+    """
+    # Initial conditions and period (nondimensional), converged by the Kyklos
+    # shooter to a constraint tolerance of 1e-14 (5 iterations). Symmetry dust
+    # (y, vx, vz ~ 1e-14) zeroed explicitly; the full-period orbit still closes
+    # to a residual of 3.5e-12, so the stored ICs make the mirror symmetry exact
+    # without meaningfully changing closure.
+    initial_state = np.array([1.021993596119699e+00, 0.0, -1.820775162891188e-01,
+                                0.0, -1.031955222404240e-01, 0.0])
+    period = 1.510743174597360
+
+    # Canonical Earth-Moon CR3BP system (itself cached).
+    sys = earth_moon_cr3bp()
+
+    # Propagate the pre-converged orbit WITH the STM so the PeriodicOrbit
+    # constructor can read the monodromy directly, without repropagating.
+    traj = sys.propagate(initial_state, [0.0, period], with_stm=True)
+
+    # Promote to a verified PeriodicOrbit. Passing period explicitly selects
+    # the 'explicit' path and skips geometric inference, which is correct here
+    # since the period is known from the pre-converged solution.
+    return PeriodicOrbit(traj, period, name='Gateway L2 NRHO')
