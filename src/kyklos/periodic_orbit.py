@@ -473,5 +473,5 @@ class PeriodicOrbit:
         label = f"'{self._name}'" if self._name else "unnamed"
         return (
             f"PeriodicOrbit({label}, period={self._period:.6g}, "
-            f"jacobi={self.jacobi:.6g}, stability_index={self.stability_index:.3g}, "
+            f"jacobi={self.jacobi:.6g}, stability_index={self.stability_index:.3g}"
         )

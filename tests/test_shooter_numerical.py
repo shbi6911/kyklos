@@ -147,7 +147,7 @@ def _mirror_guess(system, orbit, free, perturb_rel=1e-2, t_scale=1.0,
     system : System
         Compiled CR3BP system.
     orbit : PeriodicOrbit
-        Reference orbit; orbit.state is OrbitalElements, orbit.period a float.
+        Reference orbit; orbit.initial_state is OrbitalElements, orbit.period a float.
     free : sequence of str
         Component names to perturb (the symmetric IC's nonzero entries).
     perturb_rel : float, optional
@@ -161,7 +161,7 @@ def _mirror_guess(system, orbit, free, perturb_rel=1e-2, t_scale=1.0,
     Trajectory
         Single-segment guess over [0, orbit.period / 2].
     """
-    x = np.asarray(orbit.state.elements, dtype=float).copy()
+    x = np.asarray(orbit.initial_state.elements, dtype=float).copy()
     x[[_IDX['y'], _IDX['vx'], _IDX['vz']]] = 0.0
     for name in free:
         x[_IDX[name]] *= (1.0 + perturb_rel)
@@ -193,15 +193,6 @@ class TestAssembleDFFiniteDifference:
         """
         guess = make_periodic_guess(lyapunov_orbit, n_periods=0.5)
         _check_DF(guess, free_vars='all', constraints=[Periodicity()])
-
-        ctx = _ShootingContext.from_guess(guess, 'all', [Periodicity()], None)
-        X = _pack(guess, ctx)
-        DF_an = _analytic_DF(X, ctx)
-        for eps in (3e-8, 1e-7, 2e-7, 3e-7, 1e-6):
-            DF_fd = _fd_DF(X, ctx, eps_rel=eps)
-            stiff = abs(DF_fd[4, 0] - DF_an[4, 0]) / abs(DF_an[4, 0])  # truncation-limited
-            zero = abs(DF_fd[0, 2] - DF_an[0, 2])                      # atol-limited, analytic 0
-            print(f"eps={eps:.0e}  stiff_rel={stiff:.2e}  zero_abs={zero:.2e}")
 
     def test_single_shoot_free_final_time(self, make_periodic_guess,
                                           lyapunov_orbit):
@@ -284,7 +275,7 @@ class TestSingleShootingConvergence:
         np.testing.assert_allclose(end, x0, atol=1e-8)
 
         # Converged onto the stored orbit (same family member), not a neighbor.
-        stored = np.asarray(lyapunov_orbit.state.elements, dtype=float)
+        stored = np.asarray(lyapunov_orbit.initial_state.elements, dtype=float)
         np.testing.assert_allclose(x0[[0, 4]], stored[[0, 4]], atol=1e-6)
 
     def test_gateway_nrho(self, cr3bp_system, gateway_orbit):
@@ -312,7 +303,7 @@ class TestSingleShootingConvergence:
         end = full.state_at_raw(gateway_orbit.period)
         np.testing.assert_allclose(end, x0, atol=1e-7)
 
-        stored = np.asarray(gateway_orbit.state.elements, dtype=float)
+        stored = np.asarray(gateway_orbit.initial_state.elements, dtype=float)
         np.testing.assert_allclose(x0[[0, 2, 4]], stored[[0, 2, 4]], atol=1e-6)
 
 class TestMultipleShootingConvergence:
@@ -340,7 +331,7 @@ class TestMultipleShootingConvergence:
         full = cr3bp_system.propagate(x0, [0.0, lyapunov_orbit.period])
         end = full.state_at_raw(lyapunov_orbit.period)
         np.testing.assert_allclose(end, x0, atol=1e-8)
-        stored = np.asarray(lyapunov_orbit.state.elements, dtype=float)
+        stored = np.asarray(lyapunov_orbit.initial_state.elements, dtype=float)
         np.testing.assert_allclose(x0[[0, 4]], stored[[0, 4]], atol=1e-6)
 
     def test_gateway_nrho(self, make_multiseg_guess, cr3bp_system,
@@ -363,7 +354,7 @@ class TestMultipleShootingConvergence:
         full = cr3bp_system.propagate(x0, [0.0, gateway_orbit.period])
         end = full.state_at_raw(gateway_orbit.period)
         np.testing.assert_allclose(end, x0, atol=1e-7)
-        stored = np.asarray(gateway_orbit.state.elements, dtype=float)
+        stored = np.asarray(gateway_orbit.initial_state.elements, dtype=float)
         np.testing.assert_allclose(x0[[0, 2, 4]], stored[[0, 2, 4]], atol=1e-6)
 
 
@@ -393,7 +384,7 @@ class TestFreeTimeConvergence:
         full = cr3bp_system.propagate(x0, [0.0, 2.0 * t_half])
         end = full.state_at_raw(2.0 * t_half)
         np.testing.assert_allclose(end, x0, atol=1e-8)
-        stored = np.asarray(lyapunov_orbit.state.elements, dtype=float)
+        stored = np.asarray(lyapunov_orbit.initial_state.elements, dtype=float)
         assert abs(x0[4] - stored[4]) < 1e-6
 
     def test_gateway_nrho(self, cr3bp_system, gateway_orbit):
@@ -416,7 +407,7 @@ class TestFreeTimeConvergence:
         full = cr3bp_system.propagate(x0, [0.0, 2.0 * t_half])
         end = full.state_at_raw(2.0 * t_half)
         np.testing.assert_allclose(end, x0, atol=1e-7)
-        stored = np.asarray(gateway_orbit.state.elements, dtype=float)
+        stored = np.asarray(gateway_orbit.initial_state.elements, dtype=float)
         np.testing.assert_allclose(x0[[2, 4]], stored[[2, 4]], atol=1e-6)
 
 

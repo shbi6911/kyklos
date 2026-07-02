@@ -443,7 +443,7 @@ def lyapunov_orbit() -> PeriodicOrbit:
     # Promote to a verified PeriodicOrbit. Passing period explicitly selects
     # the 'explicit' path and skips geometric inference, which is correct here
     # since the period is known from the pre-converged solution.
-    return PeriodicOrbit(traj, period, name='L1 Lyapunov')
+    return PeriodicOrbit(traj, period, name='L1 Lyapunov (C=3.0355...)')
 
 @functools.cache
 def gateway_orbit() -> PeriodicOrbit:

@@ -1,5 +1,6 @@
 """
 Shared fixtures and test doubles for the shooter / System / Trajectory suite.
+Also some fixtures for other tests, added as needed.
 
 The shooter tests run in two tiers:
 
@@ -33,6 +34,28 @@ from typing import cast, Callable
 
 import kyklos as ky
 
+# ===========================================================================
+# 2BP fixture (currently only used by test_periodic_orbit
+# ===========================================================================
+
+@pytest.fixture(scope="session")
+def earth_2bp_system():
+    """
+    Canonical Earth two-body system for the test suite.
+
+    Produced by the cached earth_2body() factory, so instance-sharing and
+    the one-time (slow) integrator/variational compilation are handled there --
+    this fixture returns that same cached instance, it does not construct or
+    compete with it. Its purpose as a fixture is to give the suite a single
+    injection point: other fixtures compose against this system rather than
+    calling the factory directly, so the canonical test system can be swapped
+    or overridden for a subtree of tests in one place.
+
+    Session-scoped and shared read-only. Tests must treat it as immutable; if a
+    test needs an isolated System, override this fixture in that test's scope
+    rather than mutating the shared instance.
+    """
+    return ky.earth_2body()
 
 # ===========================================================================
 # Tier 2 -- real CR3BP fixtures (used by @pytest.mark.slow tests)
@@ -41,12 +64,20 @@ import kyklos as ky
 @pytest.fixture(scope="session")
 def cr3bp_system():
     """
-    Compiled Earth-Moon CR3BP system, shared read-only across the session.
+    Canonical Earth-Moon CR3BP system for the test suite.
 
-    The integrator and variational integrator compile lazily on first use
-    and are cached on the System instance, so reusing one session-scoped
-    system pays the (slow) compilation cost once per test run rather than
-    once per test. Tests must treat it as immutable.
+    Produced by the cached earth_moon_cr3bp() factory, so instance-sharing and
+    the one-time (slow) integrator/variational compilation are handled there --
+    this fixture returns that same cached instance, it does not construct or
+    compete with it. Its purpose as a fixture is to give the suite a single
+    injection point: other fixtures (make_periodic_guess, make_multiseg_guess,
+    and the reference-orbit fixtures) compose against cr3bp_system rather than
+    calling the factory directly, so the canonical test system can be swapped
+    or overridden for a subtree of tests in one place.
+
+    Session-scoped and shared read-only. Tests must treat it as immutable; if a
+    test needs an isolated System, override this fixture in that test's scope
+    rather than mutating the shared instance.
     """
     return ky.earth_moon_cr3bp()
 
@@ -58,13 +89,13 @@ def lyapunov_orbit():
     slow tests. Unstable, but well-behaved over a single period and far
     less stiff than an NRHO.
     """
-    return ky.LYAPUNOV_ORBIT
+    return ky.lyapunov_orbit()
 
 
 @pytest.fixture(scope="session")
 def gateway_orbit():
     """Default Gateway NRHO -- the realistic, stiffer reference case."""
-    return ky.GATEWAY_ORBIT
+    return ky.gateway_orbit()
 
 
 @pytest.fixture
@@ -81,10 +112,13 @@ def make_periodic_guess(cr3bp_system):
     multiple-shooting chunk, where the patch points must be made
     discontinuous enough for Mode-1 propagation to infer FreeJunctionNodes
     rather than NullJunctionNodes.
+
+    Only reads initial_state and period from the input PeriodicOrbit, 
+    can potentially change input types later.
     """
     def _make(orbit, n_periods=1.0, with_stm=True):
         tf = orbit.period * n_periods
-        return cr3bp_system.propagate(orbit.state, [0.0, tf], with_stm=with_stm)
+        return cr3bp_system.propagate(orbit.initial_state, [0.0, tf], with_stm=with_stm)
     return _make
 
 @pytest.fixture
@@ -111,6 +145,9 @@ def make_multiseg_guess(cr3bp_system):
     needed. With symmetric=True the start patch point is forced onto the xz-plane 
     (y = vx = vz = 0) for the mirror formulation.
 
+    Only reads initial_state and period from the input PeriodicOrbit, 
+    can potentially change input types later.
+
     Used by the slow finite-difference Jacobian checks and the
     multiple-shooting convergence tests.
     """
@@ -125,7 +162,7 @@ def make_multiseg_guess(cr3bp_system):
 
         # Sample the orbit at the start of each segment from a single
         # continuous propagation (states only, so no STM needed).
-        base = cr3bp_system.propagate(orbit.state, [0.0, tf], with_stm=False)
+        base = cr3bp_system.propagate(orbit.initial_state, [0.0, tf], with_stm=False)
         nominal = np.atleast_2d(base.evaluate_raw(times[:-1]))   # (n_seg, 6)
 
         # Position offset: large enough to clear the continuity tolerance (so

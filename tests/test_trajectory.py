@@ -769,7 +769,7 @@ class TestWithJunctionNodes:
     def multiseg_traj(self, cr3bp_system, lyapunov_orbit):
         tf = lyapunov_orbit.period / 2.0
         times = np.linspace(0.0, tf, 4)
-        base = cr3bp_system.propagate(lyapunov_orbit.state, [0.0, tf],
+        base = cr3bp_system.propagate(lyapunov_orbit.initial_state, [0.0, tf],
                                       with_stm=False)
         ics = [base.state_at_raw(t) for t in times[:-1]]
         return cr3bp_system.propagate(ics, times, with_stm=False)
