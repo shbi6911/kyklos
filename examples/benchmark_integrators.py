@@ -29,7 +29,7 @@ from plotly.subplots import make_subplots
 import sys
 sys.path.insert(0, '/mnt/project')
 from kyklos import System, OrbitalElements, Timer, earth_moon_cr3bp
-from kyklos import EARTH, MOON, LYAPUNOV_ORBIT, GATEWAY_ORBIT
+from kyklos import EARTH, MOON, lyapunov_orbit, gateway_orbit
 
 
 # ============================================================================
@@ -133,17 +133,17 @@ def get_test_cases():
         0.0, -0.02, 0.005
     ])
     
-    # use Kyklos default trajectories LYAPUNOV_ORBIT (an L1 Lyapunov periodic orbit)
-    # and GATEWAY_ORBIT (a 9:2 synodic resonant L2 Near Rectilinear Halo Orbit)
+    # use Kyklos factory defaults lyapunov_orbit (an L1 Lyapunov periodic orbit)
+    # and gateway_orbit (a 9:2 synodic resonant L2 Near Rectilinear Halo Orbit)
     test_cases = {
         'L1 Lyapunov (3 periods)': {
-            'state': LYAPUNOV_ORBIT.state.elements,
-            't_end': 3.0 * LYAPUNOV_ORBIT.period,
+            'state': lyapunov_orbit().initial_state.elements,
+            't_end': 3.0 * lyapunov_orbit().period,
             'description': 'unstable periodic orbit around L1'
         },
         'L2 Halo (10 periods)': {
-            'state': GATEWAY_ORBIT.state.elements,
-            't_end': 10.0 * GATEWAY_ORBIT.period,
+            'state': gateway_orbit().initial_state.elements,
+            't_end': 10.0 * gateway_orbit().period,
             'description': 'quasi-stable periodic orbit associated with L2'
         },
         'Chaotic (25 time units)': {

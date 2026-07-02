@@ -6,15 +6,15 @@ import numpy as np
 sys = ky.earth_moon_cr3bp()
 
 # use the default 9:2 resonant L2 Halo orbit as an initial guess
-elements = ky.GATEWAY_ORBIT.state
+elements = ky.gateway_orbit().initial_state
 
 # we will target a member of the L2 Halo family with a period of +1 hour
 # propagate a guess from the stored initial state (at apolune) for the stored period
 # plus an hour (nondimensionalized)
-orbit_guess = sys.propagate(elements,[0, (ky.GATEWAY_ORBIT.period + sys.t2nd(3600))])
+orbit_guess = sys.propagate(elements,[0, (ky.gateway_orbit().period + sys.t2nd(3600))])
 
 # propagate for half the new period for the symmetric formulation
-guess_half = sys.propagate(elements,[0, (ky.GATEWAY_ORBIT.period + sys.t2nd(3600))/2])
+guess_half = sys.propagate(elements,[0, (ky.gateway_orbit().period + sys.t2nd(3600))/2])
 
 #instantiate a DifferentialCorrector instance with all settings as package default
 dc = ky.DifferentialCorrector()

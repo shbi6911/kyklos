@@ -35,7 +35,7 @@ from typing import cast, Callable
 import kyklos as ky
 
 # ===========================================================================
-# 2BP fixture (currently only used by test_periodic_orbit
+# 2BP fixture (currently only used by test_periodic_orbit)
 # ===========================================================================
 
 @pytest.fixture(scope="session")

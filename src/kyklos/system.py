@@ -153,40 +153,6 @@ class AtmoParams:
         if self.r0 <= 0:
             raise ValueError(f"Reference radius must be positive, got {self.r0}")
 
-
-# ========== PERIODIC ORBIT DATACLASS ==========
-
-@dataclass(frozen=True)
-class PeriodicOrbit:
-    """
-    Initial conditions and period for a periodic CR3BP orbit.
-
-    The period is a dynamical property that cannot be computed from the
-    state vector alone -- it must be determined numerically and stored here.
-
-    Parameters
-    ----------
-    state : OrbitalElements
-        Initial conditions (CR3BP nondimensional elements)
-    period : float
-        Nondimensional time for one complete period
-    name : str, optional
-        Human-readable identifier (e.g. 'L1 Lyapunov')
-    jacobi : float, optional
-        Jacobi constant (useful for orbit family identification)
-    """
-    state: OrbitalElements
-    period: float
-    name: str = ""
-    jacobi: Optional[float] = None
-
-    def __post_init__(self):
-        if self.period <= 0:
-            raise ValueError(f"Period must be positive, got {self.period}")
-        if self.state.element_type.value != 'cr3bp':
-            raise ValueError("PeriodicOrbit requires CR3BP elements")
-
-
 # ========== INTERNAL HELPERS ==========
 
 class _BodyParamsWithND:

@@ -43,7 +43,7 @@ class OrbitalElements:
         2. Named parameters (readable for setup):
         OrbitalElements(a=7000, e=0.01, i=0.5, omega=0, w=0, nu=0, mu=398600.4418)
         OrbitalElements(x=-6045, y=-3490, z=2500, vx=-3.457, vy=6.618, vz=2.533, 
-                        system=EARTH)
+                        system=earth_2body())
         
         Parameters
         ----------
