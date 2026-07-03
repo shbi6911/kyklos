@@ -40,7 +40,7 @@ Celestial Body Parameters
 from .orbital_elements import OrbitalElements, OrbitalElements as OE, OEType
 from .system import (
         System, TwoBodySystem, CR3BPSystem,
-        BodyParams, AtmoParams, PeriodicOrbit, SysType
+        BodyParams, AtmoParams, SysType
     )
 from .satellite import Satellite, Satellite as Sat
 from .trajectory import (Trajectory, Trajectory as Traj, Node, 
@@ -53,6 +53,10 @@ from .shooter import (
     DifferentialCorrector, ShooterResult,
     TerminalConstraint, TargetState, Periodicity, CallableConstraint,
 )
+
+# Classes for CR3BP Toolkit
+from .periodic_orbit import PeriodicOrbit
+
 # helper utilities and config control
 from .utils import Timer
 from .config import config, temp_config
