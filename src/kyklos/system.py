@@ -153,6 +153,53 @@ class AtmoParams:
         if self.r0 <= 0:
             raise ValueError(f"Reference radius must be positive, got {self.r0}")
 
+@dataclass(frozen=True)
+class SeederResult:
+    """
+    Immutable result of a linear orbit seeder in the CR3BP.
+
+    Bundles a linear initial guess -- the seed state and its estimated period
+    -- with the modal diagnostics used to produce it. The state and period are
+    the load-bearing pair consumed by the differential corrector; the
+    remaining fields describe the linear mode the seed was drawn from.
+
+    Attributes
+    ----------
+    state : np.ndarray
+        Seed state [x, y, z, vx, vy, vz], shape (6,), nondimensional, in the
+        rotating frame. Marked read-only. For a collinear Lyapunov seed the
+        state lies on the x-axis at a perpendicular crossing (y = 0, vx = 0),
+        so it satisfies the symmetric corrector's constraints exactly.
+    period : float
+        Estimated orbital period [nondimensional time]. For a linear seed this
+        is the full linear period 2 pi / frequency. A symmetric
+        (perpendicular-crossing) corrector integrates a half period, so its
+        free-time guess is pi / frequency, not this value.
+    mode : str
+        Label for the linear mode the seed excites, e.g. 'lyapunov' for the
+        planar center mode about a collinear point. The values 'short_period'
+        and 'long_period' are reserved to distinguish the two triangular-point
+        center modes.
+    frequency : float
+        Linear oscillation frequency omega_p [nondimensional], the modulus of
+        the center eigenvalue pair +- i omega_p. Amplitude-independent in the
+        linear regime, so 2 pi / frequency is the period the family limits to
+        as the amplitude goes to zero.
+    amplitude : float
+        The x-amplitude used to scale the seed [nondimensional], as a
+        displacement from the libration point along x.
+    saddle_rate : float
+        Real, positive eigenvalue +lambda [nondimensional] of the in-plane
+        saddle pair -- the local exponential instability rate. A larger value
+        implies a stiffer corrector and a smaller basin of convergence.
+    """
+    state:          np.ndarray
+    period:         float
+    mode:           str
+    frequency:      float
+    amplitude:      float
+    saddle_rate:    float
+
 # ========== INTERNAL HELPERS ==========
 
 class _BodyParamsWithND:
@@ -2042,6 +2089,133 @@ class CR3BPSystem(System):
             Dimensional time [s].
         """
         return np.asarray(t_nd) * self._T_star
+    
+    # ========== CONTINUATION ==========
+    def planar_seeder(self, point: str, amplitude: float = 1e-3) -> SeederResult:
+        """
+        Linear seed for a planar orbit about a Lagrange point.
+
+        Produces an initial guess for a planar periodic orbit by linearizing the
+        rotating-frame dynamics about an equilibrium (Lagrange) point and reading
+        the seed off the linear center mode. The guess is intended for handoff to
+        the differential corrector, which refines it into a true periodic orbit.
+
+        This is an equilibrium-only operation: the linearization has dynamical
+        meaning only where the vector field vanishes, so the input is a Lagrange
+        point designator, not an arbitrary state. The point is resolved to its
+        stored six-state internally.
+
+        Only the collinear points (L1, L2, L3) are currently supported; they yield
+        the planar Lyapunov family. Triangular points (L4, L5) raise
+        NotImplementedError -- their in-plane linearization has two center modes
+        (short and long period) and lacks the x-axis symmetry the collinear
+        extraction relies on, so they require separate handling.
+
+        Parameters
+        ----------
+        point : str
+            Lagrange point designator, 'L1' through 'L5', case-insensitive.
+            Collinear points ('L1', 'L2', 'L3') are supported; triangular points
+            ('L4', 'L5') are not yet implemented.
+        amplitude : float, optional
+            Nondimensional x-amplitude of the seed, as a displacement from the
+            libration point along x. Default 1e-3. The linear approximation holds
+            only for small amplitudes (small relative to the distance to the
+            nearest primary), so the default is deliberately conservative: grow the
+            family outward by continuation rather than seeding a large orbit
+            directly. Advanced callers may override.
+
+        Returns
+        -------
+        SeederResult
+            The seed state, its estimated period, and the modal diagnostics (mode
+            label, frequency, amplitude, saddle rate). The state array is
+            read-only.
+
+        Raises
+        ------
+        ValueError
+            If point is not a recognized Lagrange point designator, or if the
+            extracted x-amplitude is near zero (indicating the center eigenvector
+            was misidentified).
+        NotImplementedError
+            If point is a triangular point ('L4', 'L5').
+
+        Notes
+        -----
+        The returned period is the full linear period 2 pi / omega_p. A symmetric
+        perpendicular-crossing corrector integrates only to the next crossing (a
+        half period), so the recipe wrapper should pass pi / omega_p as the
+        free-time guess.
+
+        The amplitude ratio between the along-track velocity and the x-amplitude is
+        carried implicitly by the center eigenvector; it is never formed as a
+        separate closed-form expression, which avoids the cancellation that
+        expression can suffer near the libration point.
+        """
+        collinear_points = ['L1', 'L2', 'L3'] 
+        triangular_points = ['L4', 'L5']
+        point = point.upper()
+
+        if point in collinear_points:
+            # get jacobian at the equilibrium point
+            point_state = getattr(self, point)
+            jacobian = self.field_jacobian(point_state)
+
+            # reduce rows and columns to pick out planar form
+            idx_jacob = [0, 1, 3, 4]; 
+            jacobian = jacobian[np.ix_(idx_jacob, idx_jacob)]
+
+            # do eigendecomposition
+            vals, vecs = np.linalg.eig(jacobian)
+            
+            # square eigenvalues and sort vectors
+            squared = (vals ** 2).real
+            center_mask = squared < 0                      # the imaginary pair
+            frequency = np.sqrt(-squared[center_mask].max()) # = sqrt(-Lambda_center)
+            # take the +i*omega_p eigenvector (either of the conjugate pair works)
+            center_idx = np.where(center_mask)[0]
+            pick = center_idx[np.argmax(vals[center_idx].imag)]  # the +imag one
+            eigenvec = vecs[:, pick]
+
+            # pin phase to the x-axis
+            v_re = eigenvec.real
+            v_im = eigenvec.imag
+            seed_plane = v_im[1] * v_re - v_re[1] * v_im
+
+            # store initial guess
+            if not np.isclose(seed_plane[0], 0.0, 
+                        rtol = config.EQUALITY_RTOL, 
+                        atol = config.EQUALITY_ATOL):
+                scale = -amplitude / seed_plane[0]
+            else:
+                raise ValueError("X-perturbation is near zero, possible eigenvector error.")
+            
+            L_x = point_state[0]
+            state = np.array([L_x - amplitude, 0.0, 0.0, 
+                            0.0, scale*seed_plane[3], 0.0])
+            state.flags.writeable=False
+
+            # get the saddle rate
+            saddle_mask = squared > 0
+            saddle_rate = np.sqrt(squared[saddle_mask].max())
+
+            # output result
+            return SeederResult(
+                state=state,
+                period=(2*np.pi)/frequency,
+                mode='lyapunov',
+                frequency=frequency,
+                amplitude=amplitude,
+                saddle_rate=saddle_rate,
+            )
+        
+        elif point in triangular_points:
+            raise NotImplementedError(f"L4 and L5 points not yet implemented")
+        
+        else:
+            raise ValueError(f"Input point must be a Lagrange point in the format:"
+                        f"'L1', 'L2', 'L3', 'L4', 'L5', upper or lowercase, got {point}")
 
     # ========== UTILITY ==========
     def summary(self):
