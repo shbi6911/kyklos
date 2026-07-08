@@ -196,7 +196,7 @@ class SeederResult:
     state:          np.ndarray
     period:         float
     mode:           str
-    frequency:      float
+    omega_planar:      float
     amplitude:      float
     saddle_rate:    float
 
@@ -2172,7 +2172,7 @@ class CR3BPSystem(System):
             # square eigenvalues and sort vectors
             squared = (vals ** 2).real
             center_mask = squared < 0                      # the imaginary pair
-            frequency = np.sqrt(-squared[center_mask].max()) # = sqrt(-Lambda_center)
+            omega_p = np.sqrt(-squared[center_mask].max()) # = sqrt(-Lambda_center)
             # take the +i*omega_p eigenvector (either of the conjugate pair works)
             center_idx = np.where(center_mask)[0]
             pick = center_idx[np.argmax(vals[center_idx].imag)]  # the +imag one
@@ -2203,9 +2203,9 @@ class CR3BPSystem(System):
             # output result
             return SeederResult(
                 state=state,
-                period=(2*np.pi)/frequency,
+                period=(2*np.pi)/omega_p,
                 mode='lyapunov',
-                frequency=frequency,
+                omega_planar=omega_p,
                 amplitude=amplitude,
                 saddle_rate=saddle_rate,
             )

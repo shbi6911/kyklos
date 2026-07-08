@@ -40,7 +40,7 @@ Celestial Body Parameters
 from .orbital_elements import OrbitalElements, OrbitalElements as OE, OEType
 from .system import (
         System, TwoBodySystem, CR3BPSystem,
-        BodyParams, AtmoParams, SysType
+        BodyParams, AtmoParams, SysType, SeederResult,
     )
 from .satellite import Satellite, Satellite as Sat
 from .trajectory import (Trajectory, Trajectory as Traj, Node, 
@@ -56,6 +56,7 @@ from .shooter import (
 
 # Classes for CR3BP Toolkit
 from .periodic_orbit import PeriodicOrbit
+from .registry import CorrectorGuess, available_recipes
 
 # helper utilities and config control
 from .utils import Timer
@@ -102,7 +103,9 @@ __all__ = [
     "CR3BPSystem",
     "BodyParams",
     "AtmoParams",
+    "SeederResult",
     "PeriodicOrbit",
+    "CorrectorGuess",
     "OEType",
     "SysType",
     "Timer",
@@ -123,6 +126,8 @@ __all__ = [
     "TargetState",
     "Periodicity",
     "CallableConstraint",
+    # Module-level Functions
+    "available_recipes",
     # Abbreviations
     "OE",
     "Sat",
