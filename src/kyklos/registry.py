@@ -1,5 +1,5 @@
 """
-Correction recipe registry and corrector-guess input type.
+Correction recipe registry.
 
 This module is the lower-level leaf that both the recipe wrapper and any
 guess-producing code (the planar seeder, bifurcation targeting, user-built
@@ -10,12 +10,6 @@ guesses) depend on. It holds two things:
      which state components are free, which terminal conditions are targeted,
      and how the orbit's phase degeneracy is pinned. Recipes are inert data;
      they carry no algorithm parameters and no problem-specific context.
-
-  2. CorrectorGuess -- the narrow, validating input funnel to the recipe
-     wrapper. Many origins (seeder, continuation step, bifurcation orbit, or a
-     hand-built state) converge on this one type, which validates the state
-     shape, the period, and the recipe label before anything reaches the
-     corrector.
 
 Design notes
 ------------

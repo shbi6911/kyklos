@@ -39,6 +39,7 @@ from typing import Optional, TYPE_CHECKING
 from .orbital_elements import OrbitalElements, OEType
 from .utils import validation_error
 from .config import config
+from .exceptions import ClosureError
 
 if TYPE_CHECKING:
     from .trajectory import Trajectory
@@ -193,11 +194,11 @@ class PeriodicOrbit:
         s1 = full.state_at_raw(full.tf)
         residual = float(np.linalg.norm(s1 - s0))
         if not np.allclose(s1, s0, rtol=config.EQUALITY_RTOL, atol=tol):
-            validation_error(
-                f"Trajectory does not close over the period: "
+           raise ClosureError(residual=residual, threshold=tol, recipe=None,
+                message = (f"Trajectory does not close over the period: "
                 f"|end - start| = {residual:.3e} exceeds tolerance {tol:.3e}. "
                 f"(period={period:.6g}, mode={mode}). If this is a partial arc, "
-                f"supply the correct period explicitly."
+                f"supply the correct period explicitly.")
             )
 
         # ----- Store verified state -----

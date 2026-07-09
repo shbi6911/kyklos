@@ -56,7 +56,8 @@ from .shooter import (
 
 # Classes for CR3BP Toolkit
 from .periodic_orbit import PeriodicOrbit
-from .registry import CorrectorGuess, available_recipes
+from .registry import available_recipes
+from .correction import CorrectorGuess, available_layouts, correct_as
 
 # helper utilities and config control
 from .utils import Timer
@@ -128,6 +129,8 @@ __all__ = [
     "CallableConstraint",
     # Module-level Functions
     "available_recipes",
+    "available_layouts",
+    "correct_as",
     # Abbreviations
     "OE",
     "Sat",

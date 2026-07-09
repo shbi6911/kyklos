@@ -10,15 +10,30 @@ repropagation and closure validation done.
 
 CorrectorGuess lives in this module (it carries a System, so it belongs above
 the dependency-free registry leaf). The registry -- recipe entries and the
-label vocabulary -- stays in registry.py.
+label vocabulary -- exists in registry.py.
+
+This module also contains determinacy-layout transforms.
+
+A correction *recipe* fixes the invariant family geometry (perpendicular-
+crossing free_vars and constraints). A *layout* selects which family member the
+corrector converges to, by choosing which of the recipe's freedoms is pinned
+and whether a node time is freed to keep the shooting system square. Recipe and
+layout are orthogonal: the recipe says which family, the layout says which
+member-selection coordinate.
+
+Currently supported layouts are period_locked (the default) and x_amplitude_locked.
+x_amplitude_locked is used by default when correcting from a planar seed via the 
+CorrectorGuess.from_seeder_result() method.  If a period_locked correction 
+from a seed is desired, the CorrectorGuess can be constructed standalone.
 """
 import numpy as np
 from typing import NamedTuple
 
-from .registry import _RECIPES, _RecipeEntry, available_recipes, period_convention_for
+from .registry import _RECIPES, _RecipeEntry, available_recipes
 from .shooter import DifferentialCorrector, TargetState
 from .periodic_orbit import PeriodicOrbit
-from .system import System
+from .system import System, SysType
+from .exceptions import ConvergenceError
 
 # ===========================================================================
 # Corrector guess
@@ -84,13 +99,17 @@ class CorrectorGuess:
     period : float
         Period guess for the orbit, nondimensional and positive. See
         ``period_is_half`` for the half- vs full-period convention.
-    sys : System
+    system : System
         System to propagate the guess in and feed to the shooter for the solve.
         Currently restricted to CR3BP systems only.  Matching the system to the 
         guessed state is the responsibility of the caller.
     recipe : str
         Family label naming the recipe to correct against, e.g. 'lyapunov' or
         'halo'. Must be a registered recipe (see ``available_recipes()``).
+    layout : str
+        A label naming the layout of variables used for correction, modifies the base
+        recipe.  For example, a 'lyapunov' can be converged with 'period_locked'
+        layout (the default) or 'x_amplitude_locked'
     period_is_half : bool, optional
         Convention flag for ``period``. If True, ``period`` is a half period
         (the time to the next perpendicular crossing), which is what a
@@ -111,6 +130,8 @@ class CorrectorGuess:
         System as supplied, validated to be CR3BP.
     recipe : str
         Validated recipe label.
+    layout : str
+        Validated layout label.
     period_is_half : bool
         The convention flag for ``period``.
 
@@ -118,10 +139,13 @@ class CorrectorGuess:
     ------
     ValueError
         If the state is not a finite (6,) array, the period is not positive and
-        finite, the recipe label is not registered, or the System is not CR3BP.
+        finite, the recipe or layout label is not registered, 
+        or the System is not CR3BP.
     """
 
-    __slots__ = ("_state", "_period", "sys", "_recipe", "_period_is_half")
+    __slots__ = ("_state", "_period", "_system", 
+                 "_recipe", "_layout", "_period_is_half"
+    )
 
     def __init__(
         self,
@@ -129,6 +153,7 @@ class CorrectorGuess:
         period: float,
         system: System,
         recipe: str,
+        layout: str,
         period_is_half: bool = False,
     ):
         # State: validate shape/finiteness, store read-only.
@@ -143,7 +168,7 @@ class CorrectorGuess:
             )
         
         # System: must be a CR3BP system
-        if not system.base_type == '3body':
+        if system.base_type is not SysType.CR3BP:
             raise ValueError(
                 f"CorrectorGuess is only valid for CR3BP Systems, "
                 f"got {system.base_type}"
@@ -156,11 +181,19 @@ class CorrectorGuess:
                 f"Unknown recipe label {recipe!r}; "
                 f"known recipes are {available_recipes()}."
             )
+        
+        # Layout label: must be registered. See _LAYOUTS in this file.
+        if layout not in _LAYOUTS:
+            raise ValueError(
+                f"Unknown layout label {layout!r}; "
+                f"known recipes are {available_layouts()}."
+            )
 
         self._state = arr
         self._period = period
         self._system = system
         self._recipe = recipe
+        self._layout = layout
         self._period_is_half = bool(period_is_half)
 
     # Read-only properties: the guess is immutable once constructed.
@@ -183,6 +216,11 @@ class CorrectorGuess:
     def recipe(self) -> str:
         """Validated recipe label."""
         return self._recipe
+    
+    @property
+    def layout(self) -> str:
+        """Validated layout label."""
+        return self._layout
 
     @property
     def period_is_half(self) -> bool:
@@ -220,6 +258,12 @@ class CorrectorGuess:
         convention (period_is_half=False); the wrapper halves it for a symmetry
         recipe.
 
+        This defaults to the x_amplitude_locked layout, which means it should converge
+        an orbit a distance away from the equilibrium point corresponding to the 
+        amplitude requested from planar_seeder().  If a period-locked orbit is desired,
+        a CorrectorGuess can be directly constructed from SeederResult data, bypassing
+        this convenience method.
+
         Parameters
         ----------
         result : SeederResult
@@ -236,14 +280,15 @@ class CorrectorGuess:
             period=result.period,
             system=system,
             recipe=recipe,
+            layout='x_amplitude_locked',
             period_is_half=False,
         )
 
     def __repr__(self) -> str:
         return (
-            f"CorrectorGuess(recipe={self._recipe!r}, period={self._period!r}, "
-            f"period_is_half={self._period_is_half!r}, state={self._state!r})"
-            f"in system with mass ratio={self._system.mass_ratio}"
+            f"CorrectorGuess(recipe={self._recipe!r}, layout={self._layout!r}, "
+            f"period={self._period!r}, period_is_half={self._period_is_half!r} "
+            f"state={self._state!r}), system.mass ratio={self._system.mass_ratio}"
         )
     
 # ===========================================================================
@@ -294,6 +339,112 @@ def _base_layout(recipe: _RecipeEntry) -> _SolveLayout:
     )
 
 # ===========================================================================
+# Layout transforms
+# ===========================================================================
+def _period_locked(layout: _SolveLayout) -> _SolveLayout:
+    """
+    Pin the period: the base (fixed-time) layout, unchanged.
+
+    x and vy stay free, all node times fixed. The corrector solves for the
+    family member whose period equals the guess period. This is the identity
+    transform -- the recipe's base layout is already period-locked.
+    """
+    return layout
+
+
+def _x_amplitude_locked(layout: _SolveLayout) -> _SolveLayout:
+    """
+    Pin the x-amplitude, free the half-period node.
+
+    Drops x from free_vars (the corrector then holds x at the guess trajectory's
+    value, i.e. the seed amplitude) and frees the end-node time so the system
+    stays square: free_vars becomes (vy,) plus the freed half-period, against
+    {y: 0, vx: 0}. Solves for the family member at the guess amplitude, letting
+    its period be found.
+
+    Raises
+    ------
+    ValueError
+        If x is not among the layout's free_vars -- the layout is incompatible
+        with a recipe that does not free x, and pinning it would leave the
+        system mis-determined. (This is the layout/recipe compatibility guard;
+        for Lyapunov and halo, x is always free.)
+
+    Notes
+    -----
+    The freed node time is the end node, assumed to be index 1: this expects a
+    single-arc (two-node) guess trajectory -- a start node and an end node --
+    which is what the planar seeder produces. A multi-arc guess would need the
+    actual end-node index rather than a hard-coded 1.
+    """
+    if "x" not in layout.free_vars:
+        raise ValueError(
+            f"x_amplitude_locked layout pins x, but x is not in the recipe's "
+            f"free_vars {layout.free_vars}; the layout is incompatible with "
+            f"this recipe."
+        )
+    free_vars = tuple(v for v in layout.free_vars if v != "x")
+    return layout._replace(free_vars=free_vars, free_times=[1])
+
+
+# ===========================================================================
+# Layout registry
+# ===========================================================================
+# Single source of truth for the member-selection layout vocabulary. Label
+# validation (in CorrectorGuess) and discovery (available_layouts) derive from
+# this, so no parallel list of layout labels should exist elsewhere.
+_LAYOUTS = {
+    "period_locked": _period_locked,
+    "x_amplitude_locked": _x_amplitude_locked,
+}
+
+
+def _get_layout(label: str):
+    """
+    Return the layout transform for a member-selection label.
+
+    Parameters
+    ----------
+    label : str
+        Layout label, e.g. 'x_amplitude_locked' or 'period_locked'.
+
+    Returns
+    -------
+    callable
+        A transform mapping a base _SolverLayout to the member-selection layout.
+
+    Raises
+    ------
+    ValueError
+        If the label is not a registered layout. The message enumerates the
+        known layouts.
+    """
+    try:
+        return _LAYOUTS[label]
+    except KeyError:
+        raise ValueError(
+            f"Unknown layout label {label!r}; "
+            f"known layouts are {available_layouts()}."
+        )
+
+
+def available_layouts() -> list[str]:
+    """
+    Return the sorted list of member-selection layout labels.
+
+    Public discovery for the layout vocabulary: a user constructing a
+    CorrectorGuess uses this to know which layout labels are valid, the same way
+    available_recipes() exposes the recipe vocabulary.
+
+    Returns
+    -------
+    list[str]
+        Recognized layout labels, e.g. ['amplitude_locked', 'period_locked'].
+    """
+    return sorted(_LAYOUTS)
+
+
+# ===========================================================================
 # Public wrapper
 # ===========================================================================
 def correct_as(
@@ -340,10 +491,15 @@ def correct_as(
         )
 
     layout = _base_layout(recipe)
+
+    # transform the _SolverLayout according to the 'layout' modifier
+    transform = _get_layout(guess.layout)
+    layout = transform(layout)
+
     # --- SEAM: continuation scheme transform applies here ---------------------
     # A scheme would edit `layout` (pin a var, free a node time, append an
-    # X-aware closing constraint) before assembly. Standalone is the identity
-    # transform, so `layout` passes through unchanged.
+    # X-aware closing constraint) before assembly. This may coincide with the
+    # above transform in some cases.
     # -------------------------------------------------------------------------
 
     corrector = corrector if corrector is not None else DifferentialCorrector()
@@ -371,7 +527,7 @@ def correct_as(
     corrected_arc = corrector.solve(guess_arc, **solve_kwargs)
 
     if corrected_arc.trajectory is None:
-        raise RuntimeError(
+        raise ConvergenceError(
             f"Corrector failed to converge for a {guess.recipe!r} guess; "
             f"the initial guess may be too far from a periodic orbit."
         )
