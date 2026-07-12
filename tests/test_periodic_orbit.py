@@ -39,6 +39,7 @@ import pytest
 
 import kyklos as ky
 from kyklos.periodic_orbit import PeriodicOrbit
+from kyklos.exceptions import ClosureError
 
 
 # ========== MODULE CONSTANTS ==========
@@ -321,7 +322,7 @@ class TestConstructionGuards:
                                     with_stm=True)
         span = quarter.duration
         with ky.temp_config(STRICT_VALIDATION=True):
-            with pytest.raises(ValueError, match="does not close"):
+            with pytest.raises(ClosureError, match="does not close"):
                 PeriodicOrbit(quarter, period=span)
 
 

@@ -25,11 +25,7 @@ Correction-tolerance note
 The slow success tests pass a tightened DifferentialCorrector (tol = 1e-11).
 At the default corrector tolerance the amplitude-locked correction of a 1e-4
 seed closes to ~5e-9, which exceeds PeriodicOrbit's 1e-9 closure threshold and
-raises ClosureError; at 1e-11 it closes to ~1e-13, comfortably below. This is
-the corrector-tolerance / closure coupling documented in the design discussion
-(the half-arc residual is amplified over the full period by the orbit's
-instability), not a fixed magic number -- an adaptive-tolerance retry is
-deferred.
+raises ClosureError; at 1e-11 it closes to ~1e-13, comfortably below.
 """
 
 import types
@@ -278,8 +274,8 @@ class TestClosureErrorPath:
 
     def test_loose_corrector_raises_closure_error(self, cr3bp_system):
         """
-        A deliberately loose corrector (tol=1e-4) converges its half-arc but
-        the mirrored full orbit closes to ~1e-4, far above the 1e-9 threshold,
+        A default corrector (tol=1e-9) converges its half-arc but
+        the mirrored full orbit closes to ~5e-9, just above the 1e-9 threshold,
         so PeriodicOrbit construction raises ClosureError -- and correct_as
         lets it propagate.
         """
@@ -297,9 +293,9 @@ class TestPeriodLockedLayout:
 
     period_locked pins the period at the linear estimate and frees the
     amplitude, so the orbit collapses toward the libration point and the solve
-    is stiff (hence the tight tolerance and the ignored conditioning warning).
-    This exercises the manual CorrectorGuess construction path and the
-    period_locked (identity) layout end to end.
+    is stiff (hence the tight (1e-14) corrector tolerance and the ignored 
+    conditioning warning). This exercises the manual CorrectorGuess construction path 
+    and the period_locked (identity) layout end to end.
     """
 
     def test_period_locked_converges(self, cr3bp_system):

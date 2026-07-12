@@ -2091,7 +2091,7 @@ class CR3BPSystem(System):
         return np.asarray(t_nd) * self._T_star
     
     # ========== CONTINUATION ==========
-    def planar_seeder(self, point: str, amplitude: float = 1e-3) -> SeederResult:
+    def planar_seeder(self, point: str, amplitude: float = 1e-4) -> SeederResult:
         """
         Linear seed for a planar orbit about a Lagrange point.
 
