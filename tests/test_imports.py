@@ -12,7 +12,7 @@ def test_version_exists():
     """Test that version is defined."""
     import kyklos
     assert hasattr(kyklos, '__version__')
-    assert kyklos.__version__ == "0.1.0"
+    assert kyklos.__version__ == "0.2.0"
 
 def test_can_create_orbital_elements():
     """Test basic OrbitalElements creation."""
@@ -22,8 +22,8 @@ def test_can_create_orbital_elements():
 
 def test_can_create_system():
     """Test basic System creation."""
-    from kyklos import System, EARTH
-    sys = System('2body',EARTH)
+    from kyklos import System, earth
+    sys = System('2body',earth())
     assert sys.primary_body.mu == 3.986004415e5
 
 def test_can_create_satellite():

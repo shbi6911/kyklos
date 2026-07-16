@@ -12,7 +12,7 @@ Tests cover:
 import pytest
 import numpy as np
 from kyklos import (
-    System, EARTH, MOON, EARTH_STD_ATMO,
+    System, earth, moon, EARTH_STD_ATMO,
     OE, OrbitalElements, Trajectory
 )
 
@@ -22,7 +22,7 @@ class TestInvalidInitialStates:
     
     def test_nan_in_state_array(self):
         """NaN in state array should be handled gracefully."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         state_with_nan = np.array([7000, 0, 0, np.nan, 0, 7.5])
         
         # Should either raise during validation or propagation
@@ -31,7 +31,7 @@ class TestInvalidInitialStates:
     
     def test_inf_in_state_array(self):
         """Inf in state array should be handled gracefully."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         state_with_inf = np.array([7000, np.inf, 0, 0, 0, 7.5])
         
         with pytest.raises((ValueError, RuntimeError)):
@@ -39,7 +39,7 @@ class TestInvalidInitialStates:
     
     def test_zero_position_vector(self):
         """Zero position vector is unphysical."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         state = np.array([0, 0, 0, 1, 1, 1])
         
         # Should fail during propagation (singularity)
@@ -48,7 +48,7 @@ class TestInvalidInitialStates:
     
     def test_extremely_large_position(self):
         """Extremely large position should work (hyperbolic)."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         # Far away position (escape trajectory)
         state = np.array([1e6, 0, 0, 0, 1, 0])
         
@@ -58,7 +58,7 @@ class TestInvalidInitialStates:
     
     def test_extremely_small_position(self):
         """Position inside body should fail or warn."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         # Position at 100 km (inside Earth)
         state = np.array([100, 0, 0, 0, 7, 0])
         
@@ -74,7 +74,7 @@ class TestInvalidInitialStates:
     
     def test_invalid_orbital_elements_validation(self):
         """Invalid OrbitalElements caught during validation."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         
         # This should raise during OE construction
         with pytest.raises(ValueError):
@@ -86,7 +86,7 @@ class TestExtremePropagationTimes:
     
     def test_zero_duration_raises(self):
         """Trajectory with t_start == t_end."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         
         with pytest.raises(ValueError, match="strictly increasing"):
@@ -94,7 +94,7 @@ class TestExtremePropagationTimes:
     
     def test_very_short_duration(self):
         """Propagation for very short time (microseconds)."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         
         traj = sys.propagate(orbit, times=[0,1e-6])
@@ -105,7 +105,7 @@ class TestExtremePropagationTimes:
     
     def test_very_long_duration(self):
         """Propagation for very long time (years)."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         
         # 1 year in seconds
@@ -120,7 +120,7 @@ class TestExtremePropagationTimes:
     
     def test_extremely_negative_times(self):
         """Propagation with large negative times."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         
         traj = sys.propagate(orbit, times=[-1e6,-1e6 + 100])
@@ -134,7 +134,7 @@ class TestTrajectoryEvaluationErrors:
     
     def test_evaluate_before_t0(self):
         """Evaluating before t0 raises error."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         traj = sys.propagate(orbit, times=[0,100])
         
@@ -143,7 +143,7 @@ class TestTrajectoryEvaluationErrors:
     
     def test_evaluate_after_tf(self):
         """Evaluating after tf raises error."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         traj = sys.propagate(orbit, times=[0,100])
         
@@ -152,7 +152,7 @@ class TestTrajectoryEvaluationErrors:
     
     def test_evaluate_at_boundaries(self):
         """Evaluating exactly at t0 and tf works."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         traj = sys.propagate(orbit, times=[0,100])
         
@@ -164,7 +164,7 @@ class TestTrajectoryEvaluationErrors:
     
     def test_slice_invalid_bounds(self):
         """Slice with invalid bounds raises error."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         traj = sys.propagate(orbit, times=[0,100])
         
@@ -181,7 +181,7 @@ class TestTrajectoryEvaluationErrors:
     
     def test_sample_with_invalid_n_points(self):
         """Sample with n_points < 2 raises error."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         traj = sys.propagate(orbit, times=[0,100])
         
@@ -194,7 +194,7 @@ class TestSystemReuse:
     
     def test_sequential_propagations_same_orbit(self):
         """Can propagate same orbit multiple times."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         
         traj1 = sys.propagate(orbit, times=[0,100])
@@ -210,7 +210,7 @@ class TestSystemReuse:
     
     def test_interleaved_evaluations(self):
         """Can evaluate multiple trajectories in any order."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit1 = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         orbit2 = OE(a=8000, e=0.02, i=np.radians(30), 
                    omega=0, w=0, nu=0)
@@ -230,7 +230,7 @@ class TestSystemReuse:
     
     def test_propagate_after_long_idle(self):
         """Can propagate after System has been idle."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         
         # First propagation
@@ -248,7 +248,7 @@ class TestErrorMessageClarity:
     
     def test_missing_satellite_params_error_message(self):
         """Missing satellite params has clear error."""
-        sys = System('2body', EARTH,
+        sys = System('2body', earth(),
                     perturbations=('drag',),
                     atmosphere=EARTH_STD_ATMO)
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
@@ -263,7 +263,7 @@ class TestErrorMessageClarity:
     
     def test_trajectory_bounds_error_message(self):
         """Out of bounds error has clear message."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         traj = sys.propagate(orbit, times=[0,100])
         
@@ -278,7 +278,7 @@ class TestErrorMessageClarity:
     def test_invalid_perturbation_error_message(self):
         """Invalid perturbation has clear error."""
         with pytest.raises(ValueError) as exc_info:
-            sys = System('2body', EARTH, 
+            sys = System('2body', earth(), 
                         perturbations=('invalid_pert',))
         
         error_msg = str(exc_info.value)
@@ -292,7 +292,7 @@ class TestNumericalEdgeCases:
     
     def test_circular_orbit(self):
         """Perfectly circular orbit (e=0)."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.0, i=0, omega=0, w=0, nu=0)
         
         traj = sys.propagate(orbit, times=[0,5400])
@@ -302,7 +302,7 @@ class TestNumericalEdgeCases:
     
     def test_equatorial_orbit(self):
         """Equatorial orbit (i=0)."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         
         traj = sys.propagate(orbit, times=[0,5400])
@@ -312,7 +312,7 @@ class TestNumericalEdgeCases:
     
     def test_polar_orbit(self):
         """Polar orbit (i=90°)."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=np.radians(90), 
                   omega=0, w=0, nu=0)
         
@@ -323,7 +323,7 @@ class TestNumericalEdgeCases:
     
     def test_high_eccentricity(self):
         """High eccentricity orbit (e=0.9)."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=20000, e=0.9, i=np.radians(30),
                   omega=0, w=0, nu=0)
         
@@ -334,7 +334,7 @@ class TestNumericalEdgeCases:
     
     def test_retrograde_orbit(self):
         """Retrograde orbit (i>90°)."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=np.radians(120),
                   omega=0, w=0, nu=0)
         
@@ -349,8 +349,8 @@ class TestCR3BPEdgeCases:
     
     def test_near_primary(self):
         """State very close to primary body."""
-        sys = System('3body', EARTH,
-                    secondary_body=MOON,
+        sys = System('3body', earth(),
+                    secondary_body=moon(),
                     distance=384400.0)
         
         # Near Earth (mu is mass ratio, Earth is at -mu)
@@ -365,8 +365,8 @@ class TestCR3BPEdgeCases:
     
     def test_near_secondary(self):
         """State very close to secondary body."""
-        sys = System('3body', EARTH,
-                    secondary_body=MOON,
+        sys = System('3body', earth(),
+                    secondary_body=moon(),
                     distance=384400.0)
         
         # Near Moon (Moon is at 1-mu)
@@ -380,8 +380,8 @@ class TestCR3BPEdgeCases:
     
     def test_far_from_both_bodies(self):
         """State far from both primary and secondary."""
-        sys = System('3body', EARTH,
-                    secondary_body=MOON,
+        sys = System('3body', earth(),
+                    secondary_body=moon(),
                     distance=384400.0)
         
         # Far in z-direction

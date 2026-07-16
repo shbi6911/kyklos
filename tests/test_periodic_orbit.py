@@ -117,7 +117,8 @@ class TestMonodromyInvariants:
         integration path (correct variational integration, correct composite
         object from get_stm, correct position/velocity state ordering).
 
-        Note that Hamiltonian generalized momenta must be used in order to use the canonical sypmplectic J form.  
+        Note that Hamiltonian generalized momenta must be used in order to use the 
+        canonical sypmplectic J form.  
         """
         M = reference_orbit.monodromy
         J = _velocity_symplectic_form()

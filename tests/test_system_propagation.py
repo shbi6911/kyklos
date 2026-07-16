@@ -11,7 +11,7 @@ Tests cover:
 import pytest
 import numpy as np
 from kyklos import (
-    System, EARTH, MOON, MARS, EARTH_STD_ATMO,
+    System, earth, moon, mars, EARTH_STD_ATMO,
     OE, OrbitalElements, OEType, Trajectory, Satellite
 )
 from kyklos.trajectory import (
@@ -25,7 +25,7 @@ class TestPropagationInterface:
     
     def test_accepts_orbital_elements_input(self):
         """propagate() accepts OrbitalElements."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         
         traj = sys.propagate(orbit, times=[0, 100])
@@ -34,7 +34,7 @@ class TestPropagationInterface:
     
     def test_accepts_numpy_array_input(self):
         """propagate() accepts numpy array."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         state = np.array([-6045, -3490, 2500, -3.457, 6.618, 2.533])
         
         traj = sys.propagate(state, times=[0, 100])
@@ -43,7 +43,7 @@ class TestPropagationInterface:
     
     def test_accepts_keplerian_elements(self):
         """propagate() works with Keplerian elements."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=np.radians(45), 
                   omega=0, w=0, nu=0)
         
@@ -53,7 +53,7 @@ class TestPropagationInterface:
     
     def test_accepts_equinoctial_elements(self):
         """propagate() works with Equinoctial elements."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         # Create via conversion to ensure valid equinoctial
         kep = OE(a=7000, e=0.01, i=np.radians(45), omega=0, w=0, nu=0)
         equi = kep.to_equinoctial()
@@ -64,7 +64,7 @@ class TestPropagationInterface:
     
     def test_returns_trajectory_object(self):
         """propagate() returns Trajectory instance."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         
         traj = sys.propagate(orbit, times=[0, 100])
@@ -76,7 +76,7 @@ class TestPropagationInterface:
     
     def test_trajectory_has_correct_times(self):
         """Returned Trajectory has correct t0 and tf."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         
         traj = sys.propagate(orbit, times=[10, 500])
@@ -86,7 +86,7 @@ class TestPropagationInterface:
     
     def test_trajectory_references_system(self):
         """Returned Trajectory references the System."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         
         traj = sys.propagate(orbit, times=[0, 100])
@@ -99,7 +99,7 @@ class TestParameterHandling:
     
     def test_no_params_system_propagates_without_params(self):
         """System without perturbations doesn't need satellite_params."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         
         # Should work without satellite_params
@@ -109,7 +109,7 @@ class TestParameterHandling:
     
     def test_drag_system_requires_params(self):
         """System with drag requires satellite_params."""
-        sys = System('2body', EARTH,
+        sys = System('2body', earth(),
                     perturbations=('drag',),
                     atmosphere=EARTH_STD_ATMO)
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
@@ -119,7 +119,7 @@ class TestParameterHandling:
     
     def test_drag_system_accepts_satellite(self):
         """System with drag accepts dict satellite_params."""
-        sys = System('2body', EARTH,
+        sys = System('2body', earth(),
                     perturbations=('drag',),
                     atmosphere=EARTH_STD_ATMO)
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
@@ -135,7 +135,7 @@ class TestTimeHandling:
     
     def test_forward_propagation(self):
         """Forward propagation (t_end > t_start) works."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         
         traj = sys.propagate(orbit, times=[0, 1000])
@@ -145,14 +145,14 @@ class TestTimeHandling:
     
     def test_backward_propagation_raises(self):
         """propagate() no longer accepts backward time arrays."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         with pytest.raises(ValueError, match="strictly increasing"):
             sys.propagate(orbit, [1000, 0])
     
     def test_negative_times(self):
         """Propagation works with negative times."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         
         traj = sys.propagate(orbit, times=[-500, 500])
@@ -162,7 +162,7 @@ class TestTimeHandling:
     
     def test_large_time_values(self):
         """Propagation works with large time values."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         
         traj = sys.propagate(orbit, times=[1e6, 1e6 + 1000])
@@ -176,7 +176,7 @@ class TestSmokeTests:
     
     def test_2body_point_mass_smoke(self):
         """2-body point mass propagates successfully."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=np.radians(45), 
                   omega=0, w=0, nu=0)
         
@@ -195,7 +195,7 @@ class TestSmokeTests:
     
     def test_2body_j2_smoke(self):
         """2-body with J2 propagates successfully."""
-        sys = System('2body', EARTH, perturbations=('J2',))
+        sys = System('2body', earth(), perturbations=('J2',))
         orbit = OE(a=7000, e=0.01, i=np.radians(45),
                   omega=0, w=0, nu=0)
         
@@ -207,7 +207,7 @@ class TestSmokeTests:
     
     def test_2body_drag_smoke(self):
         """2-body with drag propagates successfully."""
-        sys = System('2body', EARTH,
+        sys = System('2body', earth(),
                     perturbations=('drag',),
                     atmosphere=EARTH_STD_ATMO)
         orbit = OE(a=6800, e=0.001, i=np.radians(45),
@@ -223,7 +223,7 @@ class TestSmokeTests:
     
     def test_2body_j2_drag_smoke(self):
         """2-body with J2 + drag propagates successfully."""
-        sys = System('2body', EARTH,
+        sys = System('2body', earth(),
                     perturbations=('J2', 'drag'),
                     atmosphere=EARTH_STD_ATMO)
         orbit = OE(a=6800, e=0.001, i=np.radians(98),
@@ -239,8 +239,8 @@ class TestSmokeTests:
     
     def test_cr3bp_smoke(self):
         """CR3BP propagates successfully."""
-        sys = System('3body', EARTH,
-                    secondary_body=MOON,
+        sys = System('3body', earth(),
+                    secondary_body=moon(),
                     distance=384400.0)
         
         # Use nondimensional CR3BP state
@@ -259,7 +259,7 @@ class TestMultiplePropagations:
     
     def test_same_system_multiple_propagations(self):
         """Can propagate multiple times with same System."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit1 = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         orbit2 = OE(a=8000, e=0.02, i=np.radians(30), 
                    omega=0, w=0, nu=0)
@@ -273,7 +273,7 @@ class TestMultiplePropagations:
     
     def test_multiple_propagations_different_times(self):
         """Can propagate same orbit over different time spans."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         
         traj_short = sys.propagate(orbit, times=[0, 100])
@@ -284,7 +284,7 @@ class TestMultiplePropagations:
     
     def test_propagations_independent(self):
         """Multiple propagations don't interfere with each other."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         
         traj1 = sys.propagate(orbit, times=[0, 100])
@@ -302,7 +302,7 @@ class TestDifferentBodies:
     
     def test_moon_propagation(self):
         """Can propagate around Moon."""
-        sys = System('2body', MOON)
+        sys = System('2body', moon())
         orbit = OE(a=2000, e=0.01, i=np.radians(45),
                   omega=0, w=0, nu=0, system=sys)
         
@@ -312,7 +312,7 @@ class TestDifferentBodies:
     
     def test_mars_propagation(self):
         """Can propagate around Mars."""
-        sys = System('2body', MARS)
+        sys = System('2body', mars())
         orbit = OE(a=5000, e=0.01, i=np.radians(45),
                   omega=0, w=0, nu=0, system=sys)
         
@@ -327,7 +327,7 @@ class TestNewPropagationModes:
 
     def test_nodes_and_initial_state_raises(self):
         """Providing both nodes and initial_state raises ValueError."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         state = np.array([7000.0, 0.0, 0.0, 0.0, 7.546, 0.0])
         start = StartBoundaryNode(0.0, state)
@@ -338,7 +338,7 @@ class TestNewPropagationModes:
 
     def test_nodes_and_times_raises(self):
         """Providing both nodes and times raises ValueError."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         state = np.array([7000.0, 0.0, 0.0, 0.0, 7.546, 0.0])
         start = StartBoundaryNode(0.0, state)
         end   = EndBoundaryNode(100.0, state)
@@ -348,7 +348,7 @@ class TestNewPropagationModes:
 
     def test_neither_nodes_nor_initial_state_raises(self):
         """Omitting both nodes and initial_state raises ValueError."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
 
         with pytest.raises(ValueError, match="[Mm]ust provide"):
             sys.propagate(times=[0, 100])
@@ -357,7 +357,7 @@ class TestNewPropagationModes:
 
     def test_times_length_one_raises(self):
         """times of length 1 raises ValueError."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
 
         with pytest.raises(ValueError, match="length >= 2"):
@@ -365,7 +365,7 @@ class TestNewPropagationModes:
 
     def test_non_increasing_times_raises(self):
         """Non-monotonic times raises ValueError."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
 
         with pytest.raises(ValueError, match="strictly increasing"):
@@ -375,7 +375,7 @@ class TestNewPropagationModes:
 
     def test_mode1_list_of_states(self):
         """Mode 1: list of states + times produces multi-segment Trajectory."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
 
         ref = sys.propagate(orbit, [0, 200])
@@ -391,7 +391,7 @@ class TestNewPropagationModes:
 
     def test_mode1_2d_numpy_array(self):
         """Mode 1: 2D numpy array of shape (n_seg, 6) works."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
 
         ref    = sys.propagate(orbit, [0, 200])
@@ -404,7 +404,7 @@ class TestNewPropagationModes:
 
     def test_mode1_length_mismatch_raises(self):
         """Mode 1: len(initial_states) != len(times) - 1 raises ValueError."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         s = sys.propagate(orbit, [0, 100]).state_at_raw(0)
 
@@ -413,7 +413,7 @@ class TestNewPropagationModes:
 
     def test_mode1_single_segment_via_list(self):
         """Mode 1: single-element list with two times is valid."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         s = sys.propagate(orbit, [0, 100]).state_at_raw(0)
 
@@ -426,7 +426,7 @@ class TestNewPropagationModes:
 
     def test_mode2_basic_smoke(self):
         """Mode 2: two-node list produces a valid single-segment Trajectory."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         ref   = sys.propagate(orbit, [0, 100])
 
@@ -441,7 +441,7 @@ class TestNewPropagationModes:
 
     def test_mode2_preserves_start_node(self):
         """Mode 2: input start_node is preserved on the returned Trajectory."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         ref   = sys.propagate(orbit, [0, 100])
 
@@ -454,7 +454,7 @@ class TestNewPropagationModes:
 
     def test_mode2_two_segments(self):
         """Mode 2: three-node list produces a two-segment Trajectory."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         ref   = sys.propagate(orbit, [0, 200])
 
@@ -474,7 +474,7 @@ class TestNewPropagationModes:
 
     def test_mode2_wrong_first_node_raises(self):
         """Mode 2: non-BoundaryNode first element raises ValueError."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         s     = sys.propagate(orbit, [0, 100]).state_at_raw(0)
 
@@ -486,7 +486,7 @@ class TestNewPropagationModes:
 
     def test_mode2_too_few_nodes_raises(self):
         """Mode 2: single-element nodes list raises ValueError."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         s     = sys.propagate(orbit, [0, 100]).state_at_raw(0)
 
@@ -497,7 +497,7 @@ class TestNewPropagationModes:
 
     def test_boundary_node_as_initial_state(self):
         """StartBoundaryNode accepted as initial_state."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         s     = sys.propagate(orbit, [0, 100]).state_at_raw(0)
         start = StartBoundaryNode(0.0, s)
@@ -509,7 +509,7 @@ class TestNewPropagationModes:
 
     def test_boundary_node_time_mismatch_raises(self):
         """BoundaryNode time not matching times[0] raises ValueError."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         s     = sys.propagate(orbit, [0, 100]).state_at_raw(0)
         start = StartBoundaryNode(50.0, s)   # node says t=50, times[0]=0

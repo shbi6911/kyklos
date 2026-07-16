@@ -10,7 +10,7 @@ Tests cover:
 
 import pytest
 import numpy as np
-from kyklos import System, EARTH, MOON, EARTH_STD_ATMO
+from kyklos import System, earth, moon, EARTH_STD_ATMO
 
 
 class TestEagerCompilation:
@@ -18,26 +18,26 @@ class TestEagerCompilation:
     
     def test_default_compiles_immediately(self):
         """System compiles by default during construction."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         
         assert sys.is_compiled
     
     def test_compiled_has_cached_integrator(self):
         """Compiled system has non-None integrator."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         
         # This is testing internal state, but important for the pattern
         assert sys._cached_integrator is not None
     
     def test_compiles_with_perturbations(self):
         """System with perturbations compiles successfully."""
-        sys = System('2body', EARTH, perturbations=('J2',))
+        sys = System('2body', earth(), perturbations=('J2',))
         
         assert sys.is_compiled
     
     def test_compiles_with_drag(self):
         """System with drag compiles successfully."""
-        sys = System('2body', EARTH,
+        sys = System('2body', earth(),
                     perturbations=('drag',),
                     atmosphere=EARTH_STD_ATMO)
         
@@ -45,8 +45,8 @@ class TestEagerCompilation:
     
     def test_cr3bp_compiles(self):
         """CR3BP system compiles successfully."""
-        sys = System('3body', EARTH,
-                    secondary_body=MOON,
+        sys = System('3body', earth(),
+                    secondary_body=moon(),
                     distance=384400.0)
         
         assert sys.is_compiled
@@ -57,13 +57,13 @@ class TestLazyCompilation:
     
     def test_compile_false_defers_compilation(self):
         """compile=False prevents immediate compilation."""
-        sys = System('2body', EARTH, compile=False)
+        sys = System('2body', earth(), compile=False)
         
         assert not sys.is_compiled
     
     def test_explicit_compile_method(self):
         """Can explicitly compile via .compile() method."""
-        sys = System('2body', EARTH, compile=False)
+        sys = System('2body', earth(), compile=False)
         assert not sys.is_compiled
         
         result = sys.compile()
@@ -73,7 +73,7 @@ class TestLazyCompilation:
     
     def test_compile_is_idempotent(self):
         """Calling .compile() multiple times is safe."""
-        sys = System('2body', EARTH, compile=False)
+        sys = System('2body', earth(), compile=False)
         
         sys.compile()
         assert sys.is_compiled
@@ -84,7 +84,7 @@ class TestLazyCompilation:
     
     def test_already_compiled_compile_does_nothing(self):
         """Calling .compile() on already-compiled system is no-op."""
-        sys = System('2body', EARTH, compile=True)
+        sys = System('2body', earth(), compile=True)
         integrator_before = sys._cached_integrator
         
         sys.compile()
@@ -100,7 +100,7 @@ class TestAutoCompilation:
         """propagate() automatically compiles if needed."""
         from kyklos import OE
         
-        sys = System('2body', EARTH, compile=False)
+        sys = System('2body', earth(), compile=False)
         assert not sys.is_compiled
         
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
@@ -114,7 +114,7 @@ class TestAutoCompilation:
         """propagate() works on already-compiled system."""
         from kyklos import OE
         
-        sys = System('2body', EARTH, compile=True)
+        sys = System('2body', earth(), compile=True)
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         
         # Should work without recompiling
@@ -128,15 +128,15 @@ class TestMultipleSystemsIndependence:
     
     def test_different_systems_independent_integrators(self):
         """Different systems have different integrator objects."""
-        sys1 = System('2body', EARTH)
-        sys2 = System('2body', MOON)
+        sys1 = System('2body', earth())
+        sys2 = System('2body', moon())
         
         assert sys1._cached_integrator is not sys2._cached_integrator
     
     def test_same_config_different_integrators(self):
         """Even identically-configured systems have separate integrators."""
-        sys1 = System('2body', EARTH, perturbations=('J2',))
-        sys2 = System('2body', EARTH, perturbations=('J2',))
+        sys1 = System('2body', earth(), perturbations=('J2',))
+        sys2 = System('2body', earth(), perturbations=('J2',))
         
         assert sys1._cached_integrator is not sys2._cached_integrator
     
@@ -144,8 +144,8 @@ class TestMultipleSystemsIndependence:
         """Propagating one system doesn't affect another."""
         from kyklos import OE
         
-        sys1 = System('2body', EARTH)
-        sys2 = System('2body', EARTH)
+        sys1 = System('2body', earth())
+        sys2 = System('2body', earth())
         
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         
@@ -165,32 +165,32 @@ class TestCompilationWithDifferentConfigurations:
     
     def test_point_mass_compiles(self):
         """Point mass (no perturbations) compiles."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         assert sys.is_compiled
     
     def test_j2_only_compiles(self):
         """J2 perturbation compiles."""
-        sys = System('2body', EARTH, perturbations=('J2',))
+        sys = System('2body', earth(), perturbations=('J2',))
         assert sys.is_compiled
     
     def test_drag_only_compiles(self):
         """Drag perturbation compiles."""
-        sys = System('2body', EARTH,
+        sys = System('2body', earth(),
                     perturbations=('drag',),
                     atmosphere=EARTH_STD_ATMO)
         assert sys.is_compiled
     
     def test_j2_plus_drag_compiles(self):
         """Combined J2 + drag compiles."""
-        sys = System('2body', EARTH,
+        sys = System('2body', earth(),
                     perturbations=('J2', 'drag'),
                     atmosphere=EARTH_STD_ATMO)
         assert sys.is_compiled
     
     def test_cr3bp_compiles(self):
         """CR3BP compiles."""
-        sys = System('3body', EARTH,
-                    secondary_body=MOON,
+        sys = System('3body', earth(),
+                    secondary_body=moon(),
                     distance=384400.0)
         assert sys.is_compiled
 
@@ -200,7 +200,7 @@ class TestCompilationOrder:
     
     def test_compile_before_accessing_eom(self):
         """Can compile before accessing cached_eom."""
-        sys = System('2body', EARTH, compile=False)
+        sys = System('2body', earth(), compile=False)
         
         sys.compile()
         eom = sys.cached_eom
@@ -210,7 +210,7 @@ class TestCompilationOrder:
     
     def test_access_eom_before_compile(self):
         """Can access cached_eom before compiling."""
-        sys = System('2body', EARTH, compile=False)
+        sys = System('2body', earth(), compile=False)
         
         eom = sys.cached_eom
         assert eom is not None

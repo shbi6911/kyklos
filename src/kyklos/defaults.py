@@ -3,12 +3,16 @@ Default Orbits and System Configurations
 ==============================
 
 Default values for Solar System BodyParams, as well as Standard Atmosphere models
-and some predefined orbits
+and some predefined orbits.
+
+BodyParams factory functions accept a 'source' parameter, which defaults to 'vallado'.
+This pulls values from a local dict drawn from Vallado, Fundamentals of Astrodynamics
+& Applications, Appendix D.
 
 Factory functions for commonly-used orbital systems. These functions
 create System objects on demand, avoiding memory overhead until needed.
 
-All functions accept a ``compile`` parameter (default True) to control
+All System functions accept a ``compile`` parameter (default True) to control
 whether the Heyoka integrator is compiled immediately or deferred.
 
 All factory functions are cached: repeated calls with the same arguments return
@@ -18,6 +22,8 @@ build. Because System objects are immutable, sharing a single instance
 across callers is safe.  Note that distinct ``compile`` values are cached separately, 
 so a compiled and a deferred System can coexist.
 
+BodyParams objects are not cached, as they are cheap to construct.
+
 Examples
 --------
 >>> from kyklos import earth_2body, earth_moon_cr3bp
@@ -26,7 +32,7 @@ Examples
 """
 import numpy as np
 import functools
-from typing import cast
+from typing import Literal, Final, cast, assert_never, get_args
 from .orbital_elements import OrbitalElements
 from .system import (
         System, TwoBodySystem, CR3BPSystem,
@@ -35,133 +41,242 @@ from .system import (
 from .periodic_orbit import PeriodicOrbit
 
 """
-Predefined Solar System bodies for System creation
+Predefined Solar System bodies
 Values taken from Vallado, Fundamentals of Astrdynamics, Fifth Edition, 2022, Appendix D
 Units referenced to km (i.e. mu = km^3/s^2)
 """
-MERCURY = BodyParams(
+
+# Canonical list of available body data sources, not including 'user'
+BodySource = Literal['vallado', 'spice']
+
+# Dictionary of static body data drawn from Vallado, Fundamentals of Astrodynamics
+# & Applications, 5th ed, Appendix D (data source for factory defaults)
+_VALLADO_DATA: Final[dict[str, BodyParams]] = {'mercury' : BodyParams(
     mu=2.2032e4,
     radius=2439.0,
     J2=6.0e-5,
     rotation_rate=1.24001e-6,
-    name='Mercury'
-)
+    name='Mercury',
+    source='vallado'
+),
 
-VENUS = BodyParams(
+'venus' : BodyParams(
     mu=3.257e5,
     radius=6052.0,
     J2=2.7e-5,
     rotation_rate=-2.9926e-7,
-    name='Venus'
-)
-EARTH = BodyParams(
+    name='Venus',
+    source='vallado'
+),
+
+'earth' : BodyParams(
     mu=3.986004415e5,
     radius=6378.1363,
     J2=1.0826269e-3,
     rotation_rate=7.2921150e-5,
-    name='Earth'
-)
+    name='Earth',
+    source='vallado'
+),
 
-MOON = BodyParams(
+'moon' : BodyParams(
     mu=4.902799e3,
     radius=1738.0,
     J2=2.027e-4,
     rotation_rate=2.661700e-6,
-    name='Moon'
-)
+    name='Moon',
+    source='vallado'
+),
 
-MARS = BodyParams(
+'mars' : BodyParams(
     mu=4.305e4,
     radius=3397.2,
     J2=1.964e-3,
     rotation_rate=7.0882181e-5,
-    name='Mars'
-)
+    name='Mars',
+    source='vallado'
+),
 
-JUPITER = BodyParams(
+'jupiter' : BodyParams(
     mu=1.268e8,
     radius=71492.0,
     J2=1.475e-2,
     rotation_rate=1.7585e-4,
-    name='Jupiter'
-)
+    name='Jupiter',
+    source='vallado'
+),
 
-SATURN = BodyParams(
+'saturn' : BodyParams(
     mu=3.794e7,
     radius=60268.0,
     J2=1.645e-2,
     rotation_rate=1.662e-4,
-    name='Saturn'
-)
+    name='Saturn',
+    source='vallado'
+),
 
-URANUS = BodyParams(
+'uranus' : BodyParams(
     mu=5.794e6,
     radius=25559.0,
     J2=1.2e-2,
     rotation_rate=-1.12e-4,
-    name='Uranus'
-)
+    name='Uranus',
+    source='vallado'
+),
 
-NEPTUNE = BodyParams(
+'neptune' : BodyParams(
     mu=6.809e6,
     radius=24764.0,
     J2=4.0e-3,
     rotation_rate=9.47e-5,
-    name='Neptune'
-)
+    name='Neptune',
+    source='vallado'
+),
 
-SUN = BodyParams(
+'sun' : BodyParams(
     mu=1.32712428e11,
     radius=6.96e5,
     J2=None,
     rotation_rate=None,
-    name='Sun'
+    name='Sun',
+    source='vallado'
 )
+}
 
-"""
-Predefined standard atmosphere models for System creation
-"""
+def body(name: str, source: BodySource='vallado', ) -> BodyParams:
+    """
+    Look up parameters for a Solar System body from the requested source.
+
+    The general lookup behind the named per-body factories (earth(), moon(),
+    ...). Those are thin wrappers over this; call them for discoverability, or
+    call body() directly when the name is dynamic.
+
+    Parameters
+    ----------
+    name : str
+        Body name, case- and whitespace-insensitive (e.g. 'Earth', ' earth ').
+    source : {'vallado', 'spice'}, optional
+        Data source. 'vallado' (default) returns values from Vallado,
+        Fundamentals of Astrodynamics, 5th ed., Appendix D. 'spice' is not
+        yet implemented.
+
+    Returns
+    -------
+    BodyParams
+        Immutable parameters for the requested body, tagged with its source.
+
+    Raises
+    ------
+    ValueError
+        If `source` is not a recognized source, or if `name` is not available
+        from that source.
+    NotImplementedError
+        If `source` is 'spice' (pending SPICE integration).
+    """
+
+    if source not in get_args(BodySource):
+        raise ValueError(
+            f"Unknown body data source {source!r}. "
+            f"Valid sources: {', '.join(get_args(BodySource))}."
+        )
+    
+    key = name.strip().lower()
+    
+    if source == 'vallado':
+        try:
+            return _VALLADO_DATA[key]
+        except KeyError:
+            raise ValueError(
+                f"No Vallado data for body {name!r}. "
+                f"Known bodies: {', '.join(sorted(_VALLADO_DATA))}"
+            ) from None
+    elif source == 'spice':
+        raise NotImplementedError(
+            "SPICE-sourced body parameters are not yet implemented."
+        )
+    else:
+        assert_never(source)
+
+# ==================================================
+# Default wrappers for common Solar System bodies
+# ==================================================
+
+def mercury(source: BodySource = 'vallado') -> BodyParams:
+    """Mercury parameters. See module docstring for source semantics."""
+    return body('mercury', source)
+
+def venus(source: BodySource = 'vallado') -> BodyParams:
+    """Venus parameters. See module docstring for source semantics."""
+    return body('venus', source)
+
+def earth(source: BodySource = 'vallado') -> BodyParams:
+    """Earth parameters. See module docstring for source semantics."""
+    return body('earth', source)
+
+def moon(source: BodySource = 'vallado') -> BodyParams:
+    """Lunar parameters. See module docstring for source semantics."""
+    return body('moon', source)
+
+def mars(source: BodySource = 'vallado') -> BodyParams:
+    """Mars parameters. See module docstring for source semantics."""
+    return body('mars', source)
+
+def jupiter(source: BodySource = 'vallado') -> BodyParams:
+    """Jupiter parameters. See module docstring for source semantics."""
+    return body('jupiter', source)
+
+def saturn(source: BodySource = 'vallado') -> BodyParams:
+    """Saturn parameters. See module docstring for source semantics."""
+    return body('saturn', source)
+
+def uranus(source: BodySource = 'vallado') -> BodyParams:
+    """Uranus parameters. See module docstring for source semantics."""
+    return body('uranus', source)
+
+def neptune(source: BodySource = 'vallado') -> BodyParams:
+    """Neptune parameters. See module docstring for source semantics."""
+    return body('neptune', source)
+
+def sun(source: BodySource = 'vallado') -> BodyParams:
+    """Solar parameters. See module docstring for source semantics."""
+    return body('sun', source)
+
+# ==================================================
+# ========== Predefined atmospheric models
+# ==================================================
 EARTH_STD_ATMO = AtmoParams(
     rho0=1.225,
     H=8500.0,
     r0=6378136.3
 )
 
-"""
-Predefined orbits for convenience
-"""
+# ==================================================
+# ========== Predefined 2BP orbits
+# ==================================================
+
 ISS_ORBIT = OrbitalElements(
-    a=EARTH.radius + 400, e=0.0001, i=np.radians(51.6),
-    omega=0, w=0, nu=0, mu=EARTH.mu
+    a=earth().radius + 400, e=0.0001, i=np.radians(51.6),
+    omega=0, w=0, nu=0, mu=earth().mu
 )
 
 GEO_ORBIT = OrbitalElements(
     a=42164.0, e=0.0, i=0.0,
-    omega=0, w=0, nu=0, mu=EARTH.mu
+    omega=0, w=0, nu=0, mu=earth().mu
 )
 
 LEO_ORBIT = OrbitalElements(
-    a=EARTH.radius+300, e=0.0, i=0.0,
-    omega=0, w=0, nu=0, mu=EARTH.mu
+    a=earth().radius+300, e=0.0, i=0.0,
+    omega=0, w=0, nu=0, mu=earth().mu
 )
 
 SSO_ORBIT = OrbitalElements(
-    a=EARTH.radius+500, e=0.001, i=np.radians(97.4016),
-    omega=np.radians(140), w=0, nu=0, mu=EARTH.mu
+    a=earth().radius+500, e=0.001, i=np.radians(97.4016),
+    omega=np.radians(140), w=0, nu=0, mu=earth().mu
 )
 
 MOLNIYA_ORBIT = OrbitalElements(
     a = 26554, e = 0.737, i = np.radians(63.4),
-    omega=np.radians(100), w=np.radians(270), nu=0, mu=EARTH.mu
+    omega=np.radians(100), w=np.radians(270), nu=0, mu=earth().mu
 )
-
-# GATEWAY_ORBIT = PeriodicOrbit(
-#     state=OrbitalElements([1.02199359562483, 6.4331268586775e-24, -0.182077530534944,
-#                         1.54184910480928e-14, -0.103195530587244, 1.78907594356382e-12],
-#                         'cr3bp', mu=0.012150581477176512),
-#     period=1.51074317459736,
-#     name='NRHO (Gateway)'
-# )
 
 @functools.cache
 def earth_2body(compile=True) -> TwoBodySystem:
@@ -184,7 +299,7 @@ def earth_2body(compile=True) -> TwoBodySystem:
     System
         Configured 2-body Earth system
     """
-    return cast(TwoBodySystem, System('2body', EARTH, compile=compile))
+    return cast(TwoBodySystem, System('2body', earth(), compile=compile))
 
 @functools.cache
 def earth_j2(compile=True) -> TwoBodySystem:
@@ -207,7 +322,7 @@ def earth_j2(compile=True) -> TwoBodySystem:
         2-body Earth system with J2 perturbation
     """
     return cast(TwoBodySystem, System(
-        '2body', EARTH,
+        '2body', earth(),
         perturbations=('J2',),
         compile=compile
     ))
@@ -239,7 +354,7 @@ def earth_drag(compile=True) -> TwoBodySystem:
     uses rho0 = 1.225 kg/m^3 at sea level with scale height H = 8.5 km.
     """
     return cast(TwoBodySystem, System(
-        '2body', EARTH,
+        '2body', earth(),
         perturbations=('drag',),
         atmosphere=EARTH_STD_ATMO,
         compile=compile
@@ -275,7 +390,7 @@ def earth_moon_cr3bp(compile=True) -> CR3BPSystem:
     barycenter with primaries at x = (-mu, 1 - mu).
     """
     return cast(CR3BPSystem, System(
-        '3body', EARTH, MOON,
+        '3body', earth(), moon(),
         distance=384400.0,
         compile=compile
     ))
@@ -310,7 +425,7 @@ def earth_sun_cr3bp(compile=True) -> CR3BPSystem:
     barycenter with primaries at x = (-mu, 1 - mu).
     """
     return cast(CR3BPSystem, System(
-        '3body', SUN, EARTH,
+        '3body', sun(), earth(),
         distance=149597870.7,
         compile=compile
     ))
@@ -335,7 +450,7 @@ def moon_2body(compile=True) -> TwoBodySystem:
     System
         Configured 2-body Moon system
     """
-    return cast(TwoBodySystem, System('2body', MOON, compile=compile))
+    return cast(TwoBodySystem, System('2body', moon(), compile=compile))
 
 @functools.cache
 def moon_j2(compile=True) -> TwoBodySystem:
@@ -357,7 +472,7 @@ def moon_j2(compile=True) -> TwoBodySystem:
         2-body Moon system with J2 perturbation
     """
     return cast(TwoBodySystem, System(
-        '2body', MOON, 
+        '2body', moon(), 
         perturbations=('J2',), 
         compile=compile
     ))
@@ -382,7 +497,7 @@ def mars_2body(compile=True) -> TwoBodySystem:
     System
         Configured 2-body Mars system
     """
-    return cast(TwoBodySystem, System('2body', MARS, compile=compile))
+    return cast(TwoBodySystem, System('2body', mars(), compile=compile))
 
 @functools.cache
 def mars_j2(compile=True) -> TwoBodySystem :
@@ -404,7 +519,7 @@ def mars_j2(compile=True) -> TwoBodySystem :
         2-body Mars system with J2 perturbation
     """
     return cast(TwoBodySystem, System(
-        '2body', MARS, 
+        '2body', mars(), 
         perturbations=('J2',), 
         compile=compile
     ))

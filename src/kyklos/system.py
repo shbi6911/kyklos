@@ -8,8 +8,8 @@ for trajectory propagation. Two concrete system types are provided:
 
 Both are constructed through the unified System factory:
 
-    sys = System('2body', EARTH)
-    sys = System('3body', EARTH, MOON, distance=384400.0)
+    sys = System('2body', earth())
+    sys = System('3body', earth(), moon(), distance=384400.0)
 
 Direct instantiation of TwoBodySystem or CR3BPSystem raises TypeError.
 Use isinstance() checks where type-specific branching is needed:
@@ -22,8 +22,8 @@ Created with the assistance of Claude Sonnet 4.6 by Anthropic.
 
 import numpy as np
 import warnings
-from dataclasses import dataclass
-from typing import Optional, Dict, List, Tuple, Any
+from dataclasses import dataclass, replace
+from typing import Optional, List, Tuple, Any, Literal
 from enum import Enum
 import heyoka as hy
 from .orbital_elements import OrbitalElements, OEType
@@ -54,6 +54,8 @@ class SysType(Enum):
 
 # ========== PARAMETER DATACLASSES ==========
 
+Provenance = Literal['vallado', 'spice', 'user']
+
 @dataclass(frozen=True)
 class BodyParams:
     """
@@ -76,6 +78,15 @@ class BodyParams:
         Required if atmospheric drag is enabled.
     name : str, optional
         Human-readable body name.
+    source : {'vallado', 'spice', 'user'}, optional
+        Provenance of the numerical data. Defaults to 'user'.  This makes the 
+        origin of a body's constants auditable.
+
+        Note that `source` participates in equality and hashing, so two
+        bodies with identical numbers but different provenance are intended to
+        compare unequal.
+
+        (BodyParams).modified() is preferred for replacement, see below.
     """
     mu: float
     radius: float
@@ -83,6 +94,7 @@ class BodyParams:
     J3: Optional[float] = None
     rotation_rate: Optional[float] = None
     name: Optional[str] = None
+    source: Provenance = 'user'
 
     def __post_init__(self):
         if self.mu <= 0:
@@ -117,6 +129,46 @@ class BodyParams:
                     "If J2=0.0 was set intentionally, consider whether this "
                     "model represents your intended gravity field."
                 )
+        
+        # Runtime check is belt-and-suspenders, type checkers should flag this
+        if self.source not in ('vallado', 'spice', 'user'):
+            raise ValueError(
+                f"Unknown provenance {self.source!r}. "
+                "Expected one of: 'vallado', 'spice', 'user'."
+            )
+        
+    def modified(self, **changes) -> 'BodyParams':
+        """
+        Return a copy with fields replaced, re-tagged as user-modified.
+
+        Preferred over calling dataclasses.replace() directly. 
+
+        This method forces source='user' unless the caller overrides it
+        explicitly, preserving the convention that a 'vallado'/'spice' tag
+        means the numbers are unmodified from that source.
+
+        Parameters
+        ----------
+        **changes
+            Field values to override, as for dataclasses.replace(). Pass
+            source=... explicitly to set a provenance other than 'user'.
+
+        Returns
+        -------
+        BodyParams
+            A new instance with the requested changes applied and provenance
+            reset to 'user' (unless overridden).
+
+        Examples
+        --------
+        >>> from kyklos import earth
+        >>> e = earth()                 # source='vallado'
+        >>> e2 = e.modified(J2=0.0)     # source='user', honestly
+        >>> e2.source
+        'user'
+        """
+        changes.setdefault('source', 'user')
+        return replace(self, **changes)
 
 
 @dataclass(frozen=True)
@@ -196,7 +248,7 @@ class SeederResult:
     state:          np.ndarray
     period:         float
     mode:           str
-    omega_planar:      float
+    omega_planar:   float
     amplitude:      float
     saddle_rate:    float
 
@@ -2119,7 +2171,7 @@ class CR3BPSystem(System):
             ('L4', 'L5') are not yet implemented.
         amplitude : float, optional
             Nondimensional x-amplitude of the seed, as a displacement from the
-            libration point along x. Default 1e-3. The linear approximation holds
+            libration point along x. Default 1e-4. The linear approximation holds
             only for small amplitudes (small relative to the distance to the
             nearest primary), so the default is deliberately conservative: grow the
             family outward by continuation rather than seeding a large orbit

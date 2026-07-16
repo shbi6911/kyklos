@@ -13,7 +13,7 @@ Tests cover:
 import pytest
 import numpy as np
 
-from kyklos import System, EARTH, OE, OrbitalElements, earth_2body
+from kyklos import System, earth, OE, OrbitalElements, earth_2body
 from kyklos.trajectory import (
     Trajectory,
     StartBoundaryNode,

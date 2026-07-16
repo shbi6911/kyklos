@@ -35,8 +35,55 @@ from typing import cast, Callable
 import kyklos as ky
 
 # ===========================================================================
-# 2BP fixture (currently only used by test_periodic_orbit)
+# Shared reference bodies and canonical systems
 # ===========================================================================
+#
+# A third fixture category, distinct from the Tier-1 fakes and the Tier-2
+# real-dynamics fixtures above: the standard Solar System bodies and the
+# handful of systems built on them that many test files need read-only.
+#
+# Every body is obtained through its factory function (earth(), moon(), ...)
+# rather than a bare imported constant. Routing through the factory is the
+# whole point of this block: it is the single seam where body provenance is
+# selected, so when a second data source lands (SPICE), only these fixtures
+# change -- not the test files that request them.
+#
+# All fixtures are session-scoped and MUST be treated as immutable. BodyParams
+# and AtmoParams are frozen, so a shared instance is safe by construction; the
+# factories are themselves cheap (and the System factories are already cached),
+# so session scope costs nothing and keeps a single instance in play across the
+# run.
+
+@pytest.fixture(scope="session")
+def earth_body():
+    """
+    Vallado Earth parameters, shared read-only across the session.
+
+    Obtained via ky.earth(); the default data source is used. To exercise
+    the suite against additional sources once they exist, promote this to a
+    parametrized fixture, e.g.
+
+        @pytest.fixture(scope="session", params=['vallado'])  # + 'spice'
+        def earth_body(request):
+            return ky.earth(request.param)
+
+    at which point every test requesting earth_body runs once per source
+    with no change to the test bodies.
+    """
+    return ky.earth()
+
+
+@pytest.fixture(scope="session")
+def moon_body():
+    """Vallado Moon parameters, shared read-only across the session."""
+    return ky.moon()
+
+
+@pytest.fixture(scope="session")
+def mars_body():
+    """Vallado Mars parameters, shared read-only across the session."""
+    return ky.mars()
+
 
 @pytest.fixture(scope="session")
 def earth_2bp_system():
@@ -56,6 +103,17 @@ def earth_2bp_system():
     rather than mutating the shared instance.
     """
     return ky.earth_2body()
+
+@pytest.fixture(scope="session")
+def earth_j2_system():
+    """Compiled 2-body Earth system with J2 oblateness, shared read-only."""
+    return ky.earth_j2()
+
+
+@pytest.fixture(scope="session")
+def moon_2body_system():
+    """Compiled point-mass 2-body Moon system, shared read-only."""
+    return ky.moon_2body()
 
 # ===========================================================================
 # Tier 2 -- real CR3BP fixtures (used by @pytest.mark.slow tests)

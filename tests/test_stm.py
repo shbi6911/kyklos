@@ -7,7 +7,7 @@ Tests basic STM propagation features and API.
 
 import pytest
 import numpy as np
-from kyklos import System, OrbitalElements, earth_2body, ISS_ORBIT
+from kyklos import OrbitalElements, earth_2body
 
 # ========== MODULE-LEVEL FIXTURES  ==========
 
@@ -849,10 +849,10 @@ class TestSTMEdgeCases:
     @pytest.fixture
     def system_j2_drag(self):
         """Create Earth system with J2 and drag."""
-        from kyklos import System, EARTH, EARTH_STD_ATMO
+        from kyklos import System, earth, EARTH_STD_ATMO
         return System(
             '2body',
-            EARTH,
+            earth(),
             perturbations=('J2', 'drag'),
             atmosphere=EARTH_STD_ATMO,
             compile=True

@@ -6,7 +6,7 @@ Tests r2nd, r2d, v2nd, v2d, t2nd, t2d methods
 import pytest
 import numpy as np
 
-from kyklos import System, EARTH, MOON
+from kyklos import System, earth, moon
 
 class TestNondimensionalization:
     """Test suite for CR3BP nondimensionalization methods"""
@@ -16,13 +16,13 @@ class TestNondimensionalization:
         """Create Earth-Moon CR3BP system for testing"""
         # Earth-Moon distance
         distance = 384400.0  # km
-        sys = System('3body', EARTH, MOON, distance=distance)
+        sys = System('3body', earth(), moon(), distance=distance)
         return sys
     
     @pytest.fixture
     def earth_2body_system(self):
         """Create 2-body system to test error handling"""
-        return System('2body', EARTH)
+        return System('2body', earth())
     
     def test_r2nd_scalar(self, earth_moon_system):
         """Test position nondimensionalization with scalar input"""
@@ -196,7 +196,7 @@ class TestNondimensionalization:
         assert np.isclose(earth_moon_system.L_star, 384400.0, rtol=1e-12)
         
         # T_star = sqrt(L_star^3 / mu_total)
-        mu_total = EARTH.mu + MOON.mu
+        mu_total = earth().mu + moon().mu
         T_expected = np.sqrt(earth_moon_system.L_star**3 / mu_total)
         assert np.isclose(earth_moon_system.T_star, T_expected, rtol=1e-12)
         
@@ -210,23 +210,23 @@ class TestNondimensionalization:
     def test_primary_body_radius_nd(self, earth_moon_system):
         """Test nondimensional radius property for primary body"""
         r_nd = earth_moon_system.primary_body.radius_nd
-        expected = EARTH.radius / earth_moon_system.L_star
+        expected = earth().radius / earth_moon_system.L_star
         assert np.isclose(r_nd, expected, rtol=1e-12)
 
     def test_secondary_body_radius_nd(self, earth_moon_system):
         """Test nondimensional radius property for secondary body"""
         r_nd = earth_moon_system.secondary_body.radius_nd
-        expected = MOON.radius / earth_moon_system.L_star
+        expected = moon().radius / earth_moon_system.L_star
         assert np.isclose(r_nd, expected, rtol=1e-12)
 
     def test_body_params_delegation(self, earth_moon_system):
         """Test that other BodyParams attributes still work with wrapper"""
         # All normal BodyParams attributes should still be accessible
-        assert earth_moon_system.primary_body.mu == EARTH.mu
-        assert earth_moon_system.primary_body.radius == EARTH.radius
-        assert earth_moon_system.primary_body.J2 == EARTH.J2
-        assert earth_moon_system.secondary_body.mu == MOON.mu
-        assert earth_moon_system.secondary_body.radius == MOON.radius
+        assert earth_moon_system.primary_body.mu == earth().mu
+        assert earth_moon_system.primary_body.radius == earth().radius
+        assert earth_moon_system.primary_body.J2 == earth().J2
+        assert earth_moon_system.secondary_body.mu == moon().mu
+        assert earth_moon_system.secondary_body.radius == moon().radius
 
     def test_radius_nd_consistency_with_r2nd(self, earth_moon_system):
         """Test that radius_nd matches using r2nd method"""
@@ -235,8 +235,8 @@ class TestNondimensionalization:
         r2_nd = earth_moon_system.secondary_body.radius_nd
         
         # Using r2nd method
-        r1_nd_method = earth_moon_system.r2nd(EARTH.radius)
-        r2_nd_method = earth_moon_system.r2nd(MOON.radius)
+        r1_nd_method = earth_moon_system.r2nd(earth().radius)
+        r2_nd_method = earth_moon_system.r2nd(moon().radius)
         
         assert np.isclose(r1_nd, r1_nd_method, rtol=1e-12)
         assert np.isclose(r2_nd, r2_nd_method, rtol=1e-12)
@@ -252,12 +252,12 @@ class TestLagrangePoints:
     @pytest.fixture
     def earth_moon_system(self):
         """Create Earth-Moon CR3BP system for testing."""
-        return System('3body', EARTH, MOON, distance=384400.0)
+        return System('3body', earth(), moon(), distance=384400.0)
     
     @pytest.fixture
     def earth_2body_system(self):
         """Create 2-body system to test error handling."""
-        return System('2body', EARTH)
+        return System('2body', earth())
     
     def test_all_points_computed(self, earth_moon_system):
         """All five Lagrange points are computed and accessible."""

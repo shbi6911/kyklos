@@ -14,7 +14,7 @@ import pytest
 import numpy as np
 import plotly.graph_objects as go
 from kyklos import (
-    System, EARTH, MOON, EARTH_STD_ATMO,
+    System, earth, moon, EARTH_STD_ATMO,
     OE, OEType, Trajectory, Satellite, earth_2body
 )
 from kyklos import FreeJunctionNode
@@ -25,7 +25,7 @@ class TestElementTypeParameter:
     
     def test_state_at_with_keplerian(self):
         """state_at() can return Keplerian elements."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         traj = sys.propagate(orbit, times=[0,100])
         
@@ -36,7 +36,7 @@ class TestElementTypeParameter:
     
     def test_state_at_with_equinoctial(self):
         """state_at() can return Equinoctial elements."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         traj = sys.propagate(orbit, times=[0,100])
         
@@ -46,7 +46,7 @@ class TestElementTypeParameter:
     
     def test_state_at_with_enum(self):
         """state_at() accepts OEType enum."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         traj = sys.propagate(orbit, times=[0,100])
         
@@ -56,7 +56,7 @@ class TestElementTypeParameter:
     
     def test_state_at_auto_detect_2body(self):
         """state_at() auto-detects Cartesian for 2-body."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         traj = sys.propagate(orbit, times=[0,100])
         
@@ -66,7 +66,7 @@ class TestElementTypeParameter:
     
     def test_state_at_auto_detect_cr3bp(self):
         """state_at() auto-detects CR3BP for 3-body systems."""
-        sys = System('3body', EARTH, secondary_body=MOON, distance=384400.0)
+        sys = System('3body', earth(), secondary_body=moon(), distance=384400.0)
         state = np.array([0.8, 0.0, 0.0, 0.0, 0.1, 0.0])
         traj = sys.propagate(state, times=[0,5])
         
@@ -76,7 +76,7 @@ class TestElementTypeParameter:
     
     def test_evaluate_with_keplerian(self):
         """evaluate() can return Keplerian elements."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         traj = sys.propagate(orbit, times=[0,100])
         
@@ -88,7 +88,7 @@ class TestElementTypeParameter:
     
     def test_evaluate_scalar_with_element_type(self):
         """evaluate() with scalar respects element_type."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         traj = sys.propagate(orbit, times=[0,100])
         
@@ -98,7 +98,7 @@ class TestElementTypeParameter:
     
     def test_sample_with_equinoctial(self):
         """sample() can return Equinoctial elements."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         traj = sys.propagate(orbit, times=[0,100])
         
@@ -109,7 +109,7 @@ class TestElementTypeParameter:
     
     def test_invalid_element_type_string(self):
         """Invalid element type string raises error."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         traj = sys.propagate(orbit, times=[0,100])
         
@@ -122,7 +122,7 @@ class TestRawArrayMethods:
     
     def test_state_at_raw_returns_1d_array(self):
         """state_at_raw() returns 1D array of shape (6,)."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         traj = sys.propagate(orbit, times=[0,100])
         
@@ -133,7 +133,7 @@ class TestRawArrayMethods:
     
     def test_evaluate_raw_scalar_returns_1d(self):
         """evaluate_raw() with scalar returns 1D array."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         traj = sys.propagate(orbit, times=[0,100])
         
@@ -144,7 +144,7 @@ class TestRawArrayMethods:
     
     def test_evaluate_raw_array_returns_2d(self):
         """evaluate_raw() with array returns 2D array."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         traj = sys.propagate(orbit, times=[0,100])
         
@@ -156,7 +156,7 @@ class TestRawArrayMethods:
     
     def test_sample_raw_returns_2d_array(self):
         """sample_raw() returns 2D array."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         traj = sys.propagate(orbit, times=[0,100])
         
@@ -167,7 +167,7 @@ class TestRawArrayMethods:
     
     def test_raw_methods_return_finite_values(self):
         """Raw methods return finite (non-NaN, non-Inf) values."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         traj = sys.propagate(orbit,times=[0,100])
         
@@ -185,7 +185,7 @@ class TestTrajectorySpecificMethods:
     
     def test_extend_creates_new_trajectory(self):
         """extend() creates a new Trajectory with correct times."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         traj1 = sys.propagate(orbit, times=[0,100])
         
@@ -199,7 +199,7 @@ class TestTrajectorySpecificMethods:
     
     def test_extend_original_unchanged(self):
         """extend() doesn't modify original trajectory."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         traj1 = sys.propagate(orbit, times=[0,100])
         
@@ -210,7 +210,7 @@ class TestTrajectorySpecificMethods:
     
     def test_extend_validates_new_tf(self):
         """extend() requires new_tf > current tf."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         traj = sys.propagate(orbit, times=[0,100])
         
@@ -222,7 +222,7 @@ class TestTrajectorySpecificMethods:
     
     def test_extend_with_drag_system(self):
         """extend() works with drag systems requiring satellite input."""
-        sys = System('2body', EARTH,
+        sys = System('2body', earth(),
                     perturbations=('drag',),
                     atmosphere=EARTH_STD_ATMO)
         sat = Satellite.for_drag_only(100,11)
@@ -236,7 +236,7 @@ class TestTrajectorySpecificMethods:
     
     def test_get_times_returns_correct_array(self):
         """get_times() returns uniform time array."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         traj = sys.propagate(orbit, times=[0,100])
         
@@ -250,7 +250,7 @@ class TestTrajectorySpecificMethods:
     
     def test_callable_syntax(self):
         """__call__() syntax works as alias for state_at()."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         traj = sys.propagate(orbit, times=[0,100])
         
@@ -261,7 +261,7 @@ class TestTrajectorySpecificMethods:
     
     def test_callable_with_element_type(self):
         """__call__() accepts element_type parameter."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         traj = sys.propagate(orbit, times=[0,100])
         
@@ -276,7 +276,7 @@ class TestEdgeCases:
     def test_backward_propagation_raises(self):
         """Backward propagation via propagate() now raises ValueError.
         Use Trajectory.extend_back() for backward extension."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
 
         with pytest.raises(ValueError, match="strictly increasing"):
@@ -284,7 +284,7 @@ class TestEdgeCases:
     
     def test_zero_duration_raises(self):
         """Trajectory with t_start == t_end."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         
         with pytest.raises(ValueError, match="strictly increasing"):
@@ -292,7 +292,7 @@ class TestEdgeCases:
     
     def test_negative_times(self):
         """Trajectory with negative times."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         
         traj = sys.propagate(orbit, times=[-100,100])
@@ -311,7 +311,7 @@ class TestStringRepresentations:
     
     def test_repr_doesnt_crash(self):
         """__repr__() executes without error."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         traj = sys.propagate(orbit, times=[0,100])
         
@@ -322,7 +322,7 @@ class TestStringRepresentations:
     
     def test_str_doesnt_crash(self):
         """__str__() executes without error."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         traj = sys.propagate(orbit, times=[0,100])
         
@@ -333,7 +333,7 @@ class TestStringRepresentations:
     
     def test_repr_contains_time_info(self):
         """__repr__() contains trajectory time information."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         traj = sys.propagate(orbit, times=[0,100])
         
@@ -348,7 +348,7 @@ class TestPlotting:
     
     def test_plot_3d_2body_returns_figure(self):
         """plot_3d() returns a valid Figure for 2-body."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=np.radians(45), 
                   omega=0, w=0, nu=0)
         traj = sys.propagate(orbit, times=[0,5400])
@@ -360,7 +360,7 @@ class TestPlotting:
     
     def test_plot_3d_2body_with_show_body_false(self):
         """plot_3d() with show_body=False."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         traj = sys.propagate(orbit, times=[0,5400])
         
@@ -370,7 +370,7 @@ class TestPlotting:
     
     def test_plot_3d_cr3bp_returns_figure(self):
         """plot_3d() returns valid Figure for CR3BP."""
-        sys = System('3body', EARTH, secondary_body=MOON, distance=384400.0)
+        sys = System('3body', earth(), secondary_body=moon(), distance=384400.0)
         state = np.array([0.8, 0.0, 0.0, 0.0, 0.1, 0.0])
         traj = sys.propagate(state, times=[0,10])
         
@@ -381,7 +381,7 @@ class TestPlotting:
     
     def test_plot_3d_cr3bp_with_show_body_false(self):
         """plot_3d() for CR3BP with show_body=False."""
-        sys = System('3body', EARTH, secondary_body=MOON, distance=384400.0)
+        sys = System('3body', earth(), secondary_body=moon(), distance=384400.0)
         state = np.array([0.8, 0.0, 0.0, 0.0, 0.1, 0.0])
         traj = sys.propagate(state, times=[0,10])
         
@@ -391,7 +391,7 @@ class TestPlotting:
     
     def test_add_to_plot_doesnt_crash(self):
         """add_to_plot() executes without error."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         traj = sys.propagate(orbit, times=[0,5400])
         
@@ -406,7 +406,7 @@ class TestPlotting:
     
     def test_add_to_plot_with_multiple_trajectories(self):
         """add_to_plot() can add multiple trajectories to same figure."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit1 = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         orbit2 = OE(a=8000, e=0.02, i=np.radians(30), 
                    omega=0, w=0, nu=0)

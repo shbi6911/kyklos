@@ -48,7 +48,7 @@ For the Jacobian, correctness is checked against two independent references:
 import numpy as np
 import pytest
 
-from kyklos import System, EARTH, MOON
+from kyklos import System, earth, moon
 
 # Real dynamics, real compilation: Tier 2.
 pytestmark = pytest.mark.slow
@@ -121,7 +121,7 @@ def fresh_cr3bp() -> System:
     which the vector-field path does not need -- the cfunc is built from the
     cached symbolic EOM independently of the integrator.
     """
-    return System('3body', EARTH, MOON, distance=_EM_DISTANCE, compile=False)
+    return System('3body', earth(), moon(), distance=_EM_DISTANCE, compile=False)
 
 
 # ========================================================================

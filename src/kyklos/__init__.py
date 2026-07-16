@@ -10,7 +10,7 @@ Quick Start
 Create a system and propagate an orbit:
 
 >>> from kyklos import earth_j2, OrbitalElements
->>> sys = System('2body', EARTH, perturbations=('J2',), compile=compile)
+>>> sys = System('2body', earth(), perturbations=('J2',), compile=compile)
 >>> orbit = OE(a=7000, e=0.01, i=0.5, omega=0, w=0, nu=0)
 >>> state0 = orbit.to_cartesian()
 >>> traj = sys.propagate(state0.elements, [0 5400])
@@ -32,7 +32,7 @@ Default Systems (Factory Functions)
     mars_2body, mars_j2 : Mars systems
 
 Celestial Body Parameters
-    EARTH, MOON, MARS : Predefined body parameters
+    earth(), moon(), mars() : Predefined body parameters
     EARTH_STD_ATMO : Standard atmosphere model
 """
 
@@ -63,9 +63,9 @@ from .correction import CorrectorGuess, available_layouts, correct_as
 from .utils import Timer
 from .config import config, temp_config
 
-# Commonly-used celestial bodies
-from .defaults import MERCURY, VENUS, EARTH, MOON, MARS, JUPITER, SATURN, URANUS
-from .defaults import NEPTUNE, SUN
+# Commonly-used celestial bodies (factory functions)
+from .defaults import (mercury, venus, earth, moon, mars, jupiter, saturn, uranus,
+    neptune, sun)
 
 # Standard atmosphere model
 from .defaults import EARTH_STD_ATMO
@@ -89,7 +89,7 @@ from .defaults import (
 )
 
 # Package metadata
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 __author__ = "Shane Billingsley"
 
 # Define what gets imported with "from kyklos import *"
@@ -156,16 +156,17 @@ __all__ = [
     "moon_j2",
     "mars_2body",
     "mars_j2",
-    # Constants
-    "MERCURY",
-    "VENUS",
-    "EARTH",
-    "MOON",
-    "MARS",
-    "JUPITER",
-    "SATURN",
-    "URANUS",
-    "NEPTUNE",
-    "SUN",
+    # Predefined default bodies
+    "mercury",
+    "venus",
+    "earth",
+    "moon",
+    "mars",
+    "jupiter",
+    "saturn",
+    "uranus",
+    "neptune",
+    "sun",
+    # Predefined atmosphere model
     "EARTH_STD_ATMO",
 ]

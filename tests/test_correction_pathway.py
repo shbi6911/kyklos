@@ -34,8 +34,8 @@ import numpy as np
 import pytest
 
 import kyklos as ky
-from kyklos import System, EARTH, MOON
-from kyklos.system import SysType
+from kyklos.defaults import earth, moon
+from kyklos.system import System, SysType
 from kyklos.periodic_orbit import PeriodicOrbit
 from kyklos.exceptions import ClosureError
 
@@ -67,7 +67,7 @@ def uncompiled_cr3bp():
     base_type check but not a compiled one -- compile=False skips the JIT and
     keeps the fast tier genuinely fast.
     """
-    return System("3body", EARTH, MOON, distance=_EM_DISTANCE, compile=False)
+    return System("3body", earth(), moon(), distance=_EM_DISTANCE, compile=False)
 
 
 # ===========================================================================

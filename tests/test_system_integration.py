@@ -10,7 +10,7 @@ Tests cover:
 import pytest
 import numpy as np
 from kyklos import (
-    System, EARTH, MOON, EARTH_STD_ATMO,
+    System, earth, moon, EARTH_STD_ATMO,
     OE, OrbitalElements, OEType, Trajectory
 )
 
@@ -20,7 +20,7 @@ class TestOrbitalElementsIntegration:
     
     def test_propagate_from_keplerian(self):
         """Can propagate from Keplerian elements."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         kep = OE(a=7000, e=0.01, i=np.radians(45),
                 omega=0, w=0, nu=0)
         
@@ -30,7 +30,7 @@ class TestOrbitalElementsIntegration:
     
     def test_propagate_from_cartesian(self):
         """Can propagate from Cartesian elements."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         cart = OE(x=-6045, y=-3490, z=2500,
                  vx=-3.457, vy=6.618, vz=2.533)
         
@@ -40,7 +40,7 @@ class TestOrbitalElementsIntegration:
     
     def test_propagate_from_equinoctial(self):
         """Can propagate from Equinoctial elements."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         # Create via conversion
         kep = OE(a=7000, e=0.01, i=np.radians(45),
                 omega=0, w=0, nu=0)
@@ -52,16 +52,16 @@ class TestOrbitalElementsIntegration:
     
     def test_orbital_elements_with_system_reference(self):
         """OrbitalElements can reference System for mu."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0, 
                   system=sys)
         
         assert orbit.system is sys
-        assert orbit.mu == EARTH.mu
+        assert orbit.mu == earth().mu
     
     def test_propagate_preserves_element_validity(self):
         """Propagation from valid elements produces valid trajectory."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=np.radians(45),
                   omega=0, w=0, nu=0)
         
@@ -79,7 +79,7 @@ class TestTrajectoryIntegration:
     
     def test_trajectory_state_at_returns_orbital_elements(self):
         """Trajectory.state_at() returns OrbitalElements."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         traj = sys.propagate(orbit, times=[0,100])
         
@@ -89,7 +89,7 @@ class TestTrajectoryIntegration:
     
     def test_trajectory_returns_cartesian_elements(self):
         """Trajectory returns Cartesian elements by default."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         traj = sys.propagate(orbit, times=[0,100])
         
@@ -99,7 +99,7 @@ class TestTrajectoryIntegration:
     
     def test_trajectory_callable_syntax(self):
         """Trajectory supports traj(t) syntax."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         traj = sys.propagate(orbit, times=[0,100])
         
@@ -109,7 +109,7 @@ class TestTrajectoryIntegration:
     
     def test_trajectory_evaluate_multiple_times(self):
         """Trajectory.evaluate() works with array of times."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         traj = sys.propagate(orbit, times=[0,100])
         
@@ -121,7 +121,7 @@ class TestTrajectoryIntegration:
     
     def test_trajectory_sample(self):
         """Trajectory.sample() returns list of OrbitalElements."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         traj = sys.propagate(orbit, times=[0,100])
         
@@ -132,7 +132,7 @@ class TestTrajectoryIntegration:
     
     def test_trajectory_has_system_reference(self):
         """Trajectory maintains reference to System."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         traj = sys.propagate(orbit, times=[0,100])
         
@@ -144,7 +144,7 @@ class TestRoundTripWorkflows:
     
     def test_keplerian_round_trip(self):
         """Can convert Keplerian → propagate → Keplerian."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         kep_initial = OE(a=7000, e=0.01, i=np.radians(45),
                         omega=0, w=0, nu=0)
         
@@ -162,7 +162,7 @@ class TestRoundTripWorkflows:
     
     def test_cartesian_round_trip(self):
         """Can work entirely in Cartesian coordinates."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         cart_initial = OE(x=-6045, y=-3490, z=2500,
                          vx=-3.457, vy=6.618, vz=2.533)
         
@@ -173,7 +173,7 @@ class TestRoundTripWorkflows:
     
     def test_equinoctial_round_trip(self):
         """Can convert Equinoctial → propagate → Equinoctial."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         kep = OE(a=7000, e=0.01, i=np.radians(45),
                 omega=0, w=0, nu=0)
         equi_initial = kep.to_equinoctial()
@@ -186,7 +186,7 @@ class TestRoundTripWorkflows:
     
     def test_multi_conversion_workflow(self):
         """Can chain conversions: Kep → propagate → Cart → Kep."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         kep_initial = OE(a=7000, e=0.01, i=np.radians(45),
                         omega=0, w=0, nu=0)
         
@@ -207,7 +207,7 @@ class TestElementTypePreservation:
     
     def test_propagation_works_regardless_of_input_type(self):
         """Propagation works for any input element type."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         
         kep = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         cart = kep.to_cartesian()
@@ -224,7 +224,7 @@ class TestElementTypePreservation:
     
     def test_trajectory_always_returns_cartesian(self):
         """Trajectory.state_at() always returns Cartesian."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         
         kep = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         cart = kep.to_cartesian()
@@ -245,8 +245,8 @@ class TestCR3BPIntegration:
     
     def test_cr3bp_propagation_workflow(self):
         """CR3BP propagation workflow."""
-        sys = System('3body', EARTH,
-                    secondary_body=MOON,
+        sys = System('3body', earth(),
+                    secondary_body=moon(),
                     distance=384400.0)
         
         # Nondimensional state
@@ -261,8 +261,8 @@ class TestCR3BPIntegration:
 
     def test_cr3bp_with_cr3bp_orbital_elements(self):
         """CR3BP system accepts CR3BP OrbitalElements."""
-        sys = System('3body', EARTH,
-                    secondary_body=MOON,
+        sys = System('3body', earth(),
+                    secondary_body=moon(),
                     distance=384400.0)
         
         # Create CR3BP OrbitalElements
@@ -279,8 +279,8 @@ class TestCR3BPIntegration:
 
     def test_cr3bp_rejects_dimensional_orbital_elements(self):
         """CR3BP system rejects Cartesian/Keplerian OrbitalElements."""
-        sys = System('3body', EARTH,
-                    secondary_body=MOON,
+        sys = System('3body', earth(),
+                    secondary_body=moon(),
                     distance=384400.0)
         
         # Try to use Cartesian elements (dimensional, wrong for CR3BP)
@@ -299,8 +299,8 @@ class TestCR3BPIntegration:
     
     def test_cr3bp_jacobi_constant_accessible(self):
         """Can compute Jacobi constant for CR3BP states."""
-        sys = System('3body', EARTH,
-                    secondary_body=MOON,
+        sys = System('3body', earth(),
+                    secondary_body=moon(),
                     distance=384400.0)
         
         # Create OrbitalElements with CR3BP type
@@ -318,7 +318,7 @@ class TestTrajectoryMethods:
     
     def test_trajectory_to_dataframe(self):
         """Trajectory.to_dataframe() produces valid DataFrame."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         traj = sys.propagate(orbit, times=[0,100])
         
@@ -332,7 +332,7 @@ class TestTrajectoryMethods:
     
     def test_trajectory_slice(self):
         """Trajectory.slice() creates valid sub-trajectory."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         traj = sys.propagate(orbit, times=[0,100])
         
@@ -348,7 +348,7 @@ class TestTrajectoryMethods:
     
     def test_trajectory_contains_time(self):
         """Trajectory.contains_time() works correctly."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         traj = sys.propagate(orbit, times=[0,100])
         
@@ -363,7 +363,7 @@ class TestBatchOperations:
     
     def test_propagate_multiple_orbits_sequentially(self):
         """Can propagate multiple different orbits."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         
         orbits = [
             OE(a=7000, e=0.01, i=np.radians(i), omega=0, w=0, nu=0)
@@ -378,7 +378,7 @@ class TestBatchOperations:
     
     def test_evaluate_all_trajectories_at_same_time(self):
         """Can evaluate multiple trajectories at same time."""
-        sys = System('2body', EARTH)
+        sys = System('2body', earth())
         
         orbits = [
             OE(a=7000, e=0.01, i=np.radians(i), omega=0, w=0, nu=0)

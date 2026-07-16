@@ -21,7 +21,7 @@ from kyklos import (
     System, OE, Sat,
     ISS_ORBIT, GEO_ORBIT, LEO_ORBIT, SSO_ORBIT, MOLNIYA_ORBIT,
     earth_2body, earth_j2, earth_drag,
-    EARTH, MOON
+    earth, moon
 )
 
 # =============================================================================
@@ -274,8 +274,8 @@ class TestCR3BPIntegration:
         # Create Earth-Moon CR3BP system
         system = System(
             '3body', 
-            EARTH, 
-            secondary_body=MOON,
+            earth(), 
+            secondary_body=moon(),
             distance=384400.0
         )
         
