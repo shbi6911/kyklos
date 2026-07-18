@@ -54,7 +54,7 @@ from .shooter import (
     TerminalConstraint, TargetState, Periodicity, CallableConstraint,
 )
 
-# Classes for CR3BP Toolkit
+# Classes and functions for CR3BP Toolkit
 from .periodic_orbit import PeriodicOrbit
 from .registry import available_recipes
 from .correction import CorrectorGuess, available_layouts, correct_as
@@ -63,6 +63,10 @@ from .correction import CorrectorGuess, available_layouts, correct_as
 from .utils import Timer
 from .config import config, temp_config
 
+# Specified orbit-type constructors
+from .orbit_design import (circular_orbit, synchronous_orbit, molniya_orbit, 
+                           sun_synchronous_orbit)
+
 # Commonly-used celestial bodies (factory functions)
 from .defaults import (mercury, venus, earth, moon, mars, jupiter, saturn, uranus,
     neptune, sun)
@@ -70,22 +74,14 @@ from .defaults import (mercury, venus, earth, moon, mars, jupiter, saturn, uranu
 # Standard atmosphere model
 from .defaults import EARTH_STD_ATMO
 
-# Some commonly-used Earth orbits
-from .defaults import ISS_ORBIT, GEO_ORBIT, LEO_ORBIT, SSO_ORBIT, MOLNIYA_ORBIT
+# Default systems (factory functions)
+from .defaults import (earth_2body, earth_j2, earth_drag, earth_moon_cr3bp,
+    earth_sun_cr3bp, moon_2body, moon_j2, mars_2body, mars_j2, 
+)
 
-# Default systems and CR3BP orbits (factory functions)
-from .defaults import (
-    earth_2body,
-    earth_j2,
-    earth_drag,
-    earth_moon_cr3bp,
-    earth_sun_cr3bp,
-    moon_2body,
-    moon_j2,
-    mars_2body,
-    mars_j2,
-    lyapunov_orbit,
-    gateway_orbit,
+# Some commonly-used Earth 2BP orbits and Earth-Moon CR3BP orbits
+from .defaults import (iss_orbit, geo_orbit, leo_orbit, sso_orbit, 
+                       default_molniya_orbit, lyapunov_orbit, gateway_orbit
 )
 
 # Package metadata
@@ -138,14 +134,18 @@ __all__ = [
     # Configuration
     "config",
     "temp_config",
-    # Default Orbits
-    "ISS_ORBIT",
-    "GEO_ORBIT",
-    "LEO_ORBIT",
-    "SSO_ORBIT",
-    "MOLNIYA_ORBIT",
+    # Default Orbits and Orbit Constructors
+    "iss_orbit",
+    "geo_orbit",
+    "leo_orbit",
+    "sso_orbit",
+    "default_molniya_orbit",
     "lyapunov_orbit",
     "gateway_orbit",
+    "circular_orbit",
+    "synchronous_orbit",
+    "sun_synchronous_orbit",
+    "molniya_orbit",
     # Default systems
     "earth_2body",
     "earth_j2",

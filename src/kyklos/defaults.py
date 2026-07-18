@@ -3,7 +3,7 @@ Default Orbits and System Configurations
 ==============================
 
 Default values for Solar System BodyParams, as well as Standard Atmosphere models
-and some predefined orbits.
+and some predefined Earth orbits, built using specific orbit design constructors.
 
 BodyParams factory functions accept a 'source' parameter, which defaults to 'vallado'.
 This pulls values from a local dict drawn from Vallado, Fundamentals of Astrodynamics
@@ -15,14 +15,14 @@ create System objects on demand, avoiding memory overhead until needed.
 All System functions accept a ``compile`` parameter (default True) to control
 whether the Heyoka integrator is compiled immediately or deferred.
 
-All factory functions are cached: repeated calls with the same arguments return
+All System factory functions are cached: repeated calls with the same arguments return
 the same System instance rather than constructing a new one. This keeps
 Kyklos from duplicating compiled integrators, which are expensive to
 build. Because System objects are immutable, sharing a single instance
 across callers is safe.  Note that distinct ``compile`` values are cached separately, 
 so a compiled and a deferred System can coexist.
 
-BodyParams objects are not cached, as they are cheap to construct.
+BodyParams objects and calculated orbits are not cached, as they are cheap to construct.
 
 Examples
 --------
@@ -39,6 +39,8 @@ from .system import (
         BodyParams, AtmoParams,
     )
 from .periodic_orbit import PeriodicOrbit
+from .orbit_design import (circular_orbit, synchronous_orbit, molniya_orbit,
+                           sun_synchronous_orbit)
 
 """
 Predefined Solar System bodies
@@ -250,33 +252,43 @@ EARTH_STD_ATMO = AtmoParams(
 )
 
 # ==================================================
-# ========== Predefined 2BP orbits
+# ========== Predefined Earth orbits ==========
 # ==================================================
 
-ISS_ORBIT = OrbitalElements(
-    a=earth().radius + 400, e=0.0001, i=np.radians(51.6),
-    omega=0, w=0, nu=0, mu=earth().mu
-)
+def iss_orbit(): 
+    '''Average orbit of the International Space Station, a near-circular inclined
+    Earth orbit at about 420 km altitude.'''
+    return OrbitalElements(
+        a=earth().radius + 420, e=0.0007, i=np.radians(51.64),
+        omega=0.0, w=0.0, nu=0.0, mu=earth().mu
+    )
 
-GEO_ORBIT = OrbitalElements(
-    a=42164.0, e=0.0, i=0.0,
-    omega=0, w=0, nu=0, mu=earth().mu
-)
+def geo_orbit():
+    '''A geostationary Earth orbit'''
+    return synchronous_orbit(body=earth())
 
-LEO_ORBIT = OrbitalElements(
-    a=earth().radius+300, e=0.0, i=0.0,
-    omega=0, w=0, nu=0, mu=earth().mu
-)
+def leo_orbit():
+    '''A circular, equatorial Low Earth Orbit'''
+    return circular_orbit(body=earth(), altitude=300)
 
-SSO_ORBIT = OrbitalElements(
-    a=earth().radius+500, e=0.001, i=np.radians(97.4016),
-    omega=np.radians(140), w=0, nu=0, mu=earth().mu
-)
+def sso_orbit():
+    '''A 500 km altitude, near-circular sun-synchronous Earth orbit. The target
+    node rate is Earth's mean heliocentric rate, 2*pi per tropical year
+    (2*pi / (365.2422 * 86400) ~ 1.991e-7 rad/s) -- the rate of the mean Sun,
+    not Earth's inertial orbital rate (see sun_synchronous_orbit).'''
+    return sun_synchronous_orbit(body=earth(), a=earth().radius + 500,
+            e=0.001, node_rate=(2*np.pi / (365.2422 * 86400))
+    )
 
-MOLNIYA_ORBIT = OrbitalElements(
-    a = 26554, e = 0.737, i = np.radians(63.4),
-    omega=np.radians(100), w=np.radians(270), nu=0, mu=earth().mu
-)
+def default_molniya_orbit(): 
+    ''' A traditional Molniya orbit with a half-sidereal day period, at a 
+    critical inclination to fix argument of periapsis at 270 degrees, over the
+    northern hemisphere, with a 600 km perigee altitude and 0 RAAN.'''
+    return molniya_orbit(body=earth())
+
+# ==================================================
+# ========== Predefined Systems ==========
+# ==================================================
 
 @functools.cache
 def earth_2body(compile=True) -> TwoBodySystem:

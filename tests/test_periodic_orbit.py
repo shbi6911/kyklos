@@ -280,7 +280,7 @@ class TestConstructionGuards:
         NOTE: adjust the fixture name / construction below to match conftest.
         """
         # A minimal 2-body trajectory; the point is only that base_type != 3body.
-        oe = ky.LEO_ORBIT
+        oe = ky.leo_orbit()
         traj = earth_2bp_system.propagate(oe, [0.0, 100.0], with_stm=True)
         with pytest.raises(ValueError, match="CR3BP"):
             PeriodicOrbit(traj)

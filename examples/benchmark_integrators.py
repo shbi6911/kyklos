@@ -29,7 +29,7 @@ from plotly.subplots import make_subplots
 import sys
 sys.path.insert(0, '/mnt/project')
 from kyklos import System, OrbitalElements, Timer, earth_moon_cr3bp
-from kyklos import EARTH, MOON, lyapunov_orbit, gateway_orbit
+from kyklos import earth, moon, lyapunov_orbit, gateway_orbit
 
 
 # ============================================================================
@@ -380,8 +380,8 @@ def run_benchmarks(rtol=1e-10, atol=1e-12):
     print("\nInitializing Earth-Moon CR3BP system...")
     system = System(
         base_type='CR3BP',
-        primary_body=EARTH,
-        secondary_body=MOON,
+        primary_body=earth(),
+        secondary_body=moon(),
         distance=384400.0,  # km
         compile=True
     )

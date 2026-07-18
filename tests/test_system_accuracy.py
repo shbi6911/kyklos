@@ -19,7 +19,7 @@ from pathlib import Path
 
 from kyklos import (
     System, OE, Sat,
-    ISS_ORBIT, GEO_ORBIT, LEO_ORBIT, SSO_ORBIT, MOLNIYA_ORBIT,
+    iss_orbit, geo_orbit, leo_orbit, sso_orbit, default_molniya_orbit,
     earth_2body, earth_j2, earth_drag,
     earth, moon
 )
@@ -43,11 +43,11 @@ SAT = Sat.for_drag_only(
 
 # Orbit name to default orbit mapping
 ORBIT_MAP = {
-    'iss': ISS_ORBIT,
-    'geo': GEO_ORBIT,
-    'leo': LEO_ORBIT,
-    'sso': SSO_ORBIT,
-    'mol': MOLNIYA_ORBIT
+    'iss': iss_orbit,
+    'geo': geo_orbit,
+    'leo': leo_orbit,
+    'sso': sso_orbit,
+    'mol': default_molniya_orbit
 }
 
 # System type to factory function mapping
@@ -189,7 +189,7 @@ class TestTwoBodyIntegration:
         matlab_states = matlab_data[['x', 'y', 'z', 'vx', 'vy', 'vz']].values
         
         # Get initial orbit and system
-        initial_orbit = ORBIT_MAP[orbit_name]
+        initial_orbit = ORBIT_MAP[orbit_name]()
         system = SYSTEM_MAP[system_name]()
         
         # Propagate with appropriate parameters
@@ -345,7 +345,7 @@ class TestErrorGrowth:
         times = matlab_data['t'].values
         matlab_states = matlab_data[['x', 'y', 'z', 'vx', 'vy', 'vz']].values
         
-        initial_orbit = ORBIT_MAP[orbit_name]
+        initial_orbit = ORBIT_MAP[orbit_name]()
         system = earth_2body()
         
         traj = system.propagate(initial_orbit, [times[0], times[-1]])

@@ -567,7 +567,7 @@ class TestSTMMATLABValidation:
     
     def test_iss_orbit_matlab_validation(self, matlab_reference):
         """Validate ISS orbit propagation with J2 against MATLAB."""
-        from kyklos import earth_j2, ISS_ORBIT
+        from kyklos import earth_j2, iss_orbit
         
         # Get reference data
         ref_col = matlab_reference['iss']
@@ -578,7 +578,7 @@ class TestSTMMATLABValidation:
         # Propagate with Kyklos
         system = earth_j2()
         traj = system.propagate(
-            ISS_ORBIT,
+            iss_orbit(),
             times=[0, t_final],
             with_stm=True
         )
@@ -607,7 +607,7 @@ class TestSTMMATLABValidation:
     
     def test_geo_orbit_matlab_validation(self, matlab_reference):
         """Validate GEO orbit propagation with J2 against MATLAB."""
-        from kyklos import earth_j2, GEO_ORBIT
+        from kyklos import earth_j2, geo_orbit
         
         ref_col = matlab_reference['geo']
         t_final = ref_col.iloc[0]
@@ -616,7 +616,7 @@ class TestSTMMATLABValidation:
         
         system = earth_j2()
         traj = system.propagate(
-            GEO_ORBIT,
+            geo_orbit(),
             times=[0, t_final],
             with_stm=True
         )
@@ -642,7 +642,7 @@ class TestSTMMATLABValidation:
     
     def test_leo_orbit_matlab_validation(self, matlab_reference):
         """Validate LEO orbit propagation with J2 against MATLAB."""
-        from kyklos import earth_j2, LEO_ORBIT
+        from kyklos import earth_j2, leo_orbit
         
         ref_col = matlab_reference['leo']
         t_final = ref_col.iloc[0]
@@ -651,7 +651,7 @@ class TestSTMMATLABValidation:
         
         system = earth_j2()
         traj = system.propagate(
-            LEO_ORBIT,
+            leo_orbit(),
             times=[0, t_final],
             with_stm=True
         )
@@ -677,7 +677,7 @@ class TestSTMMATLABValidation:
     
     def test_sso_orbit_matlab_validation(self, matlab_reference):
         """Validate SSO orbit propagation with J2 against MATLAB."""
-        from kyklos import earth_j2, SSO_ORBIT
+        from kyklos import earth_j2, sso_orbit
         
         ref_col = matlab_reference['sso']
         t_final = ref_col.iloc[0]
@@ -686,7 +686,7 @@ class TestSTMMATLABValidation:
         
         system = earth_j2()
         traj = system.propagate(
-            SSO_ORBIT,
+            sso_orbit(),
             times=[0, t_final],
             with_stm=True
         )
@@ -712,7 +712,7 @@ class TestSTMMATLABValidation:
     
     def test_molniya_orbit_matlab_validation(self, matlab_reference):
         """Validate Molniya orbit propagation with J2 against MATLAB."""
-        from kyklos import earth_j2, MOLNIYA_ORBIT
+        from kyklos import earth_j2, default_molniya_orbit
         
         ref_col = matlab_reference['mol']
         t_final = ref_col.iloc[0]
@@ -721,7 +721,7 @@ class TestSTMMATLABValidation:
         
         system = earth_j2()
         traj = system.propagate(
-            MOLNIYA_ORBIT,
+            default_molniya_orbit(),
             times=[0, t_final],
             with_stm=True
         )
