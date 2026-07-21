@@ -130,6 +130,13 @@ class KyklosConfig:
     PROXIMITY_THRESHOLD: float = 10.0
     RENDERER: str = 'browser'
 
+    # Lagrange point plotting defaults
+    DEFAULT_LAGRANGE_COLOR: str = 'black'
+    DEFAULT_LAGRANGE_SYMBOL: str = 'x'
+    DEFAULT_LAGRANGE_SIZE: int = 5
+    LAGRANGE_BBOX_MARGIN: float = 0.25
+    LAGRANGE_MIN_EXTENT_FRAC: float = 0.05
+
     @property
     def HASH_DECIMALS(self) -> int:
         """
@@ -193,6 +200,10 @@ class KyklosConfig:
         lines.append(f"    DEFAULT_BODY_OPACITY = {self.DEFAULT_BODY_OPACITY}")
         lines.append(f"    PROXIMITY_THRESHOLD = {self.PROXIMITY_THRESHOLD}")
         lines.append(f"    RENDERER = {self.RENDERER}")
+        lines.append(f"    DEFAULT_LAGRANGE_COLOR = {self.DEFAULT_LAGRANGE_COLOR}")
+        lines.append(f"    DEFAULT_LAGRANGE_SYMBOL = {self.DEFAULT_LAGRANGE_SYMBOL}")
+        lines.append(f"    LAGRANGE_BBOX_MARGIN = {self.LAGRANGE_BBOX_MARGIN}")
+        lines.append(f"    LAGRANGE_MIN_EXTENT_FRAC = {self.LAGRANGE_MIN_EXTENT_FRAC}")
         return "\n".join(lines)
 
 

@@ -10,7 +10,7 @@ import warnings
 import heyoka as hy
 import plotly.graph_objects as go
 import bisect
-from typing import Union, Optional, cast, Any, TYPE_CHECKING
+from typing import Sequence, Optional, cast, Any, TYPE_CHECKING
 from numpy.typing import ArrayLike
 from abc import ABC, abstractmethod
 from .orbital_elements import OrbitalElements, OEType
@@ -28,6 +28,139 @@ _NODE_COLORS = {
     'ImpulsiveJunctionNode': '#e67e22',  # dark orange
     'FreeJunctionNode':      '#9b59b6',  # purple
 }
+
+_LAGRANGE_NAMES = ('L1', 'L2', 'L3', 'L4', 'L5')
+
+# ========== PLOTTING HELPERS ==========
+
+def _expanded_bbox(positions: np.ndarray,
+                   margin: float,
+                   min_extent_frac: float) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Compute an axis-aligned bounding box around a set of positions.
+
+    The raw bounding box of the sample points is expanded outward from its
+    center by a fractional margin, then each half-width is floored at a
+    fraction of the largest half-width. The floor prevents degenerate boxes:
+    a planar trajectory has zero z-extent, and without the floor no
+    out-of-plane point could ever be judged "in frame."
+
+    Parameters
+    ----------
+    positions : np.ndarray, shape (N, 3)
+        Sample positions defining the box.
+    margin : float
+        Fractional expansion applied to each half-width. A value of 0.25
+        grows each half-width by 25 percent. Must be non-negative.
+    min_extent_frac : float
+        Floor on each half-width, expressed as a fraction of the largest
+        half-width after expansion. Must be non-negative.
+
+    Returns
+    -------
+    lo : np.ndarray, shape (3,)
+        Lower corner of the expanded box.
+    hi : np.ndarray, shape (3,)
+        Upper corner of the expanded box.
+
+    Notes
+    -----
+    If all sample points coincide, every half-width is zero and the floor
+    has nothing to scale from. The box then degenerates to the single point
+    and only an exactly coincident test point is contained. This is a
+    pathological input for a trajectory and is not special-cased.
+    """
+    positions = np.asarray(positions, dtype=float)
+    if positions.ndim != 2 or positions.shape[1] != 3:
+        raise ValueError(
+            f"positions must have shape (N, 3), got {positions.shape}"
+        )
+    if positions.shape[0] == 0:
+        raise ValueError("positions must contain at least one point")
+    if margin < 0.0:
+        raise ValueError(f"margin must be non-negative, got {margin}")
+    if min_extent_frac < 0.0:
+        raise ValueError(
+            f"min_extent_frac must be non-negative, got {min_extent_frac}"
+        )
+
+    raw_lo = positions.min(axis=0)
+    raw_hi = positions.max(axis=0)
+
+    center = 0.5 * (raw_lo + raw_hi)
+    half = 0.5 * (raw_hi - raw_lo) * (1.0 + margin)
+
+    # Floor each dimension against the largest, so a flat box still has
+    # meaningful thickness in its degenerate direction.
+    half = np.maximum(half, min_extent_frac * half.max())
+
+    return center - half, center + half
+
+
+def _in_bbox(point: np.ndarray,
+             lo: np.ndarray,
+             hi: np.ndarray) -> bool:
+    """
+    Test whether a point lies within an axis-aligned bounding box.
+
+    Parameters
+    ----------
+    point : array-like, shape (3,)
+        Position to test.
+    lo, hi : np.ndarray, shape (3,)
+        Lower and upper corners of the box, as returned by _expanded_bbox.
+
+    Returns
+    -------
+    bool
+        True if the point lies within the closed box in all three axes.
+    """
+    point = np.asarray(point, dtype=float)
+    return bool(np.all(point >= lo) and np.all(point <= hi))
+
+
+def _figure_line_positions(fig: go.Figure) -> np.ndarray | None:
+    """
+    Gather positions from all trajectory line traces on a figure.
+
+    Used by the automatic Lagrange point visibility test when points are
+    added to an existing figure: the relevant spatial extent is that of
+    everything already drawn, not of any single trajectory.
+
+    Only traces drawn in a line mode are considered. Marker-only traces
+    (nodes, previously placed Lagrange points) are excluded so that
+    repeated calls cannot bootstrap the box outward.
+
+    Parameters
+    ----------
+    fig : go.Figure
+        Figure to inspect.
+
+    Returns
+    -------
+    np.ndarray or None
+        Shape (N, 3) stacked positions, or None if the figure contains no
+        qualifying traces.
+    """
+    chunks = []
+    for trace in fig.data:
+        if not isinstance(trace, go.Scatter3d):
+            continue
+        if 'lines' not in (trace.mode or ''):
+            continue
+        if trace.x is None or trace.y is None or trace.z is None:
+            continue
+        chunks.append(np.column_stack([
+            np.asarray(trace.x, dtype=float),
+            np.asarray(trace.y, dtype=float),
+            np.asarray(trace.z, dtype=float),
+        ]))
+
+    if not chunks:
+        return None
+    return np.vstack(chunks)
+
+# ========== MAIN TRAJECTORY CLASS ==========
 
 class Trajectory:
     """
@@ -1791,10 +1924,12 @@ class Trajectory:
     
     # ========== PLOTTING ==========
     # these methods are temporary until a Visualization module is established
+
     def plot_3d(self, n_points: int | None = None, 
                       show_body: bool = True,
                       show_nodes: bool = True,
                       node_symbol: str = 'circle',
+                      lagrange_points: bool | str | Sequence[str] | None = None,
                       traj_name: str | None = None, 
                       body_color: str | None = None, 
                       traj_color: str | None = None,
@@ -1814,6 +1949,17 @@ class Trajectory:
                 Whether to plot trajectory Node locations (default: True)
             node_symbol : str, optional
                 Plotly symbol to use for this Trajectory's Nodes (default: 'circle')
+            lagrange_points : bool, str, or sequence of str, optional
+                Lagrange points to draw. True runs an automatic visibility
+                test and shows any point falling within the trajectory's
+                bounding box, expanded by config.LAGRANGE_BBOX_MARGIN. A
+                designator such as 'L1', or a sequence such as
+                ('L1', 'L2'), draws exactly those points regardless of the
+                automatic test. None or False draws nothing. Ignored
+                silently when True on a non-CR3BP system; raises when a
+                designator is named explicitly on one. For control over
+                marker styling, use add_lagrange_points() instead.
+                (default: None)
             traj_name : str, optional
                 Label for this trajectory in the legend and hover text 
                 (default: Trajectory)
@@ -1952,7 +2098,14 @@ class Trajectory:
         # Add nodes if specified
         if show_nodes:
             for trace in self._build_node_traces(node_symbol, traj_name):
-                fig.add_trace(trace)
+                fig.add_trace(trace)\
+        
+        # Add Lagrange points if specified. Delegated so that the styling
+        # knobs live on add_lagrange_points() rather than inflating this
+        # signature; plot_3d exposes only the selection.
+        if lagrange_points is not None and lagrange_points is not False:
+            self.add_lagrange_points(fig, points=lagrange_points,
+                                     n_points=n_points)
         
         # Set layout
         units = 'nd' if is_cr3bp else 'km'
@@ -2135,6 +2288,306 @@ class Trajectory:
             first_node_overall = False
 
         return traces
+
+    def _resolve_lagrange_names(
+        self,
+        spec: bool | str | Sequence[str] | None,
+        positions: np.ndarray,
+        margin: float | None = None,
+        min_extent_frac: float | None = None) -> list[str]:
+        """
+        Resolve a Lagrange point selection into a list of point names.
+
+        Handles the three selection modes accepted by the plotting methods:
+        no selection, automatic visibility test, and explicit request.
+        An explicit request always overrides the automatic test -- if the
+        user names a point, it is drawn regardless of where it falls.
+
+        Parameters
+        ----------
+        spec : bool, str, sequence of str, or None
+            None or False selects nothing. True runs the automatic
+            bounding box test over all five points. A string selects one
+            point. A sequence of strings selects several. Designators are
+            case-insensitive.
+        positions : np.ndarray, shape (N, 3)
+            Positions defining the spatial extent used by the automatic
+            test. Ignored when spec is an explicit selection.
+        margin : float, optional
+            Bounding box expansion fraction. If None, uses
+            config.LAGRANGE_BBOX_MARGIN (default: None).
+        min_extent_frac : float, optional
+            Bounding box degenerate-dimension floor. If None, uses
+            config.LAGRANGE_MIN_EXTENT_FRAC (default: None).
+
+        Returns
+        -------
+        list of str
+            Selected point designators in canonical L1..L5 order. Empty if
+            nothing was selected, or if the system is not a CR3BP system
+            and the selection was automatic.
+
+        Raises
+        ------
+        ValueError
+            If a point is explicitly requested on a non-CR3BP system, or if
+            a designator is not one of 'L1' through 'L5'.
+
+        Notes
+        -----
+        An explicit request on a non-CR3BP system is a caller error and
+        raises. An automatic request on a non-CR3BP system returns an empty
+        selection silently: the caller asked for whatever is relevant, and
+        for two-body dynamics the answer is nothing.
+        """
+        from .system import SysType
+
+        if spec is None or spec is False:
+            return []
+
+        is_cr3bp = self.system.base_type == SysType.CR3BP
+
+        # Automatic selection
+        if spec is True:
+            if not is_cr3bp:
+                return []
+            if margin is None:
+                margin = config.LAGRANGE_BBOX_MARGIN
+            if min_extent_frac is None:
+                min_extent_frac = config.LAGRANGE_MIN_EXTENT_FRAC
+
+            lo, hi = _expanded_bbox(positions, margin, min_extent_frac)
+            return [
+                name for name in _LAGRANGE_NAMES
+                if _in_bbox(getattr(self.system, name)[:3], lo, hi)
+            ]
+
+        # Explicit selection
+        if isinstance(spec, str):
+            requested = [spec]
+        else:
+            requested = list(spec)
+
+        if not is_cr3bp:
+            raise ValueError(
+                "Lagrange points were explicitly requested, but this "
+                f"trajectory belongs to a {self.system.base_type.value} "
+                "system. Lagrange points are defined only for CR3BP systems."
+            )
+
+        names = []
+        for item in requested:
+            if not isinstance(item, str):
+                raise ValueError(
+                    f"Lagrange point designators must be strings, got "
+                    f"{type(item).__name__}: {item!r}"
+                )
+            name = item.strip().upper()
+            if name not in _LAGRANGE_NAMES:
+                raise ValueError(
+                    f"Unknown Lagrange point designator {item!r}. "
+                    f"Valid designators are {', '.join(_LAGRANGE_NAMES)}, "
+                    "case-insensitive."
+                )
+            if name not in names:
+                names.append(name)
+
+        # Return in canonical order rather than request order, so the
+        # legend ordering is stable regardless of how the caller listed them.
+        return [name for name in _LAGRANGE_NAMES if name in names]
+
+    def _build_lagrange_traces(
+        self,
+        names: Sequence[str],
+        color: str,
+        symbol: str,
+        size: int,
+        labels: bool,
+        skip_names: set | None = None) -> list:
+        """
+        Build Plotly Scatter3d traces for the named Lagrange points.
+
+        One trace is produced per point, all assigned to the
+        'lagrange_points' legend group. This yields a titled legend section
+        in which individual points can be toggled independently.
+
+        Lagrange point positions are read from the parent System, which
+        computes them at construction. The caller is responsible for having
+        validated that the system is a CR3BP system.
+
+        Parameters
+        ----------
+        names : sequence of str
+            Canonical designators ('L1'..'L5') to draw, already validated.
+        color : str
+            Marker color.
+        symbol : str
+            Plotly 3D marker symbol.
+        size : int
+            Marker size.
+        labels : bool
+            Whether to draw the designator as text beside each marker.
+        skip_names : set, optional
+            Designators already present on the target figure. These are
+            omitted entirely to avoid duplicate markers and legend entries.
+            Default: None (nothing skipped).
+
+        Returns
+        -------
+        list
+            List of go.Scatter3d traces ready to add to a figure.
+        """
+        if skip_names is None:
+            skip_names = set()
+
+        mode = 'markers+text' if labels else 'markers'
+
+        traces = []
+        first = True
+        for name in names:
+            if name in skip_names:
+                continue
+
+            pos = getattr(self.system, name)[:3]
+
+            traces.append(go.Scatter3d(
+                x=[pos[0]], y=[pos[1]], z=[pos[2]],
+                mode=mode,
+                marker=dict(
+                    color=color,
+                    size=size,
+                    symbol=symbol,
+                ),
+                text=[name],
+                textposition='top center',
+                textfont=dict(color=color, size=11),
+                name=name,
+                hovertemplate=(
+                    f'{name}<br>'
+                    'x: %{x:.6g}<br>y: %{y:.6g}<br>z: %{z:.6g}'
+                    '<extra></extra>'
+                ),
+                legendgroup='lagrange_points',
+                legendgrouptitle=dict(text='Lagrange Points') if first else None,
+                showlegend=True
+            ))
+            first = False
+
+        return traces
+
+    def add_lagrange_points(
+        self,
+        fig: go.Figure,
+        points: bool | str | Sequence[str] = True,
+        color: str | None = None,
+        symbol: str | None = None,
+        size: int | None = None,
+        labels: bool = True,
+        n_points: int | None = None,
+        margin: float | None = None,
+        min_extent_frac: float | None = None) -> go.Figure:
+        """
+        Add Lagrange point markers to an existing Plotly figure.
+
+        Positions are taken from this trajectory's parent System, which
+        computes all five points at construction. The caller selects which
+        points to draw; no coordinates are supplied.
+
+        This is the full-control entry point. For the common case, pass
+        lagrange_points to plot_3d instead, which delegates here with
+        default styling.
+
+        Parameters
+        ----------
+        fig : go.Figure
+            Existing figure to modify in place.
+        points : bool, str, or sequence of str, optional
+            Selection of points to draw. True runs the automatic visibility
+            test; a designator such as 'L1' or a sequence such as
+            ('L1', 'L2') draws exactly those points regardless of where they
+            fall relative to the plotted trajectories. False draws nothing.
+            Default: True.
+        color : str, optional
+            Marker and label color.
+            If None, uses config.DEFAULT_LAGRANGE_COLOR (default: None)
+        symbol : str, optional
+            Plotly 3D marker symbol.
+            If None, uses config.DEFAULT_LAGRANGE_SYMBOL (default: None)
+        size : int, optional
+            Marker size.
+            If None, uses config.DEFAULT_LAGRANGE_SIZE (default: None)
+        labels : bool, optional
+            Whether to draw the designator as text beside each marker
+            (default: True)
+        n_points : int, optional
+            Number of trajectory samples used for the automatic visibility
+            test, in the fallback case where the figure contains no
+            trajectory line traces.
+            If None, uses config.DEFAULT_PLOT_POINTS (default: None)
+        margin : float, optional
+            Bounding box expansion fraction for the automatic test.
+            If None, uses config.LAGRANGE_BBOX_MARGIN (default: None)
+        min_extent_frac : float, optional
+            Bounding box degenerate-dimension floor for the automatic test.
+            If None, uses config.LAGRANGE_MIN_EXTENT_FRAC (default: None)
+
+        Returns
+        -------
+        go.Figure
+            The same figure object, modified in place.
+
+        Raises
+        ------
+        ValueError
+            If points names a designator explicitly and this trajectory does
+            not belong to a CR3BP system, or if a designator is invalid.
+
+        Notes
+        -----
+        In automatic mode the visibility test uses the spatial extent of
+        every trajectory line already drawn on the figure, not just this
+        trajectory. On a figure assembled from a family of orbits, the
+        points shown therefore reflect the whole figure. If the figure has
+        no line traces yet, this trajectory's own samples are used.
+
+        Designators already present on the figure are skipped, so calling
+        this method repeatedly while building a multi-trajectory figure does
+        not produce duplicate markers or legend entries.
+        """
+        if color is None:
+            color = config.DEFAULT_LAGRANGE_COLOR
+        if symbol is None:
+            symbol = config.DEFAULT_LAGRANGE_SYMBOL
+        if size is None:
+            size = config.DEFAULT_LAGRANGE_SIZE
+        if n_points is None:
+            n_points = config.DEFAULT_PLOT_POINTS
+
+        # Automatic mode measures what is actually on the figure; fall back
+        # to this trajectory only if nothing has been drawn yet.
+        positions = _figure_line_positions(fig)
+        if positions is None:
+            positions = self.sample_raw(n_points=n_points)[:, 0:3]
+
+        names = self._resolve_lagrange_names(
+            points, positions,
+            margin=margin,
+            min_extent_frac=min_extent_frac
+        )
+        if not names:
+            return fig
+
+        existing = {
+            trace.name for trace in fig.data
+            if getattr(trace, 'legendgroup', None) == 'lagrange_points'
+        }
+
+        for trace in self._build_lagrange_traces(
+                names, color, symbol, size, labels,
+                skip_names=existing):
+            fig.add_trace(trace)
+
+        return fig
 
 # ========== NODE CLASSES ==========
 # These classes are used by Trajectory to bound and connect Trajectory segments
