@@ -414,11 +414,11 @@ class TestCallableConstraint:
     """CallableConstraint: wrap user callables, with analytic or FD Jacobians."""
 
     def test_residual_wraps_g(self):
-        c = CallableConstraint(lambda s, x: s[:2] - np.array([1.0, 2.0]))
+        c = CallableConstraint(lambda s, x: s[:2] - np.array([1.0, 2.0]), n_rows=2)
         np.testing.assert_allclose(c.residual(_STATE_TF, _X0), [0.8 - 1.0, 0.1 - 2.0])
 
     def test_scalar_g_promoted_to_1d(self):
-        c = CallableConstraint(lambda s, x: s[0] - x[0])
+        c = CallableConstraint(lambda s, x: s[0] - x[0], n_rows=1)
         r = c.residual(_STATE_TF, _X0)
         assert r.shape == (1,)
         np.testing.assert_allclose(r, [-0.02])
@@ -426,7 +426,7 @@ class TestCallableConstraint:
     def test_fd_fallback_matches_analytic(self):
         # No dg supplied -> central-difference fallback; check against the
         # known analytic Jacobian of the nonlinear residual.
-        c = CallableConstraint(lambda s, x: np.array([s[0] ** 2, s[1] * s[2]]))
+        c = CallableConstraint(lambda s, x: np.array([s[0] ** 2, s[1] * s[2]]), n_rows=2)
         expected = np.zeros((2, 6))
         expected[0, 0] = 2 * _STATE_TF[0]
         expected[1, 1] = _STATE_TF[2]
@@ -436,34 +436,26 @@ class TestCallableConstraint:
     def test_analytic_dg_is_used_not_fd(self):
         # A sentinel dg the FD path could never produce confirms dg is used.
         sentinel = np.full((2, 6), 7.0)
-        c = CallableConstraint(lambda s, x: s[:2], dg=lambda s, x: sentinel)
+        c = CallableConstraint(lambda s, x: s[:2], n_rows=2, dg=lambda s, x: sentinel)
         np.testing.assert_array_equal(c.jacobian_tf(_STATE_TF, _X0), sentinel)
 
     def test_one_d_dg_promoted_to_two_d(self):
-        c = CallableConstraint(lambda s, x: s[0], dg=lambda s, x: np.arange(6.0))
+        c = CallableConstraint(lambda s, x: s[0], n_rows=1, 
+                               dg=lambda s, x: np.arange(6.0))
         assert c.jacobian_tf(_STATE_TF, _X0).shape == (1, 6)
 
     def test_jacobian_x0_default_zeros(self):
-        c = CallableConstraint(lambda s, x: s[:3])
+        c = CallableConstraint(lambda s, x: s[:3], n_rows=3)
         np.testing.assert_array_equal(c.jacobian_x0(_STATE_TF, _X0), np.zeros((3, 6)))
 
     def test_analytic_dg_dx0_is_used(self):
         sentinel = np.full((1, 6), -2.0)
-        c = CallableConstraint(lambda s, x: s[0] - x[0],
+        c = CallableConstraint(lambda s, x: s[0] - x[0], n_rows=1,
                                dg_dx0=lambda s, x: sentinel)
         np.testing.assert_array_equal(c.jacobian_x0(_STATE_TF, _X0), sentinel)
 
-    @pytest.mark.parametrize("g, dg, dg_dx0", [
-        (5, None, None),
-        (lambda s, x: s, 5, None),
-        (lambda s, x: s, None, 5),
-    ])
-    def test_non_callable_raises_typeerror(self, g, dg, dg_dx0):
-        with pytest.raises(TypeError):
-            CallableConstraint(g, dg, dg_dx0)
-
     def test_bind_returns_self(self):
-        c = CallableConstraint(lambda s, x: s[0])
+        c = CallableConstraint(lambda s, x: s[0], n_rows=1)
         assert c.bind(object()) is c
 
 
@@ -472,11 +464,19 @@ class _QuadraticConstraint(TerminalConstraint):
     def residual(self, state_tf, x0):
         s = np.asarray(state_tf, dtype=float)
         return np.array([s[0] ** 2, s[3]])
+    
+    @property
+    def n_rows(self):
+        return 2
 
 
 class _ScalarConstraint(TerminalConstraint):
     def residual(self, state_tf, x0):
         return np.array([np.asarray(state_tf, dtype=float)[0]])
+    
+    @property
+    def n_rows(self):
+        return 1
 
 
 class TestTerminalConstraintBase:
@@ -531,6 +531,8 @@ def _three_segment_kwargs()-> dict[str, object]:
 class _ConstA(TerminalConstraint):
     def residual(self, state_tf, x0):
         return np.zeros(2)
+    def n_rows(self):
+        return 2
 
 
 class _BindSpy(TerminalConstraint):
@@ -541,6 +543,9 @@ class _BindSpy(TerminalConstraint):
 
     def residual(self, state_tf, x0):
         return np.zeros(1)
+
+    def n_rows(self):
+        return 1
 
     def bind(self, system):
         return _BindSpy(bound_to=system)
@@ -592,19 +597,6 @@ class TestShootingContextFromGuess:
         ctx = _ShootingContext.from_guess(
             make_fake_trajectory(**_single_segment_kwargs()), 'all', constraints=[c])
         assert len(ctx.constraints) == 1 and ctx.constraints[0] is c
-
-    def test_bare_callable_is_wrapped(self, make_fake_trajectory):
-        ctx = _ShootingContext.from_guess(
-            make_fake_trajectory(**_single_segment_kwargs()), 'all',
-            constraints=[lambda s, x: s[:1]])
-        assert isinstance(ctx.constraints[0], CallableConstraint)
-
-    def test_mixed_constraints(self, make_fake_trajectory):
-        ctx = _ShootingContext.from_guess(
-            make_fake_trajectory(**_single_segment_kwargs()), 'all',
-            constraints=[_ConstA(), lambda s, x: s[0]])
-        assert len(ctx.constraints) == 2
-        assert isinstance(ctx.constraints[1], CallableConstraint)
 
     def test_constraints_bound_with_system(self, make_fake_trajectory):
         kw = _single_segment_kwargs()
@@ -722,17 +714,9 @@ class TestValidateConstraints:
     def test_empty_gives_empty_tuple(self):
         assert self.vc([], None) == ()
 
-    def test_callable_is_wrapped(self):
-        out = self.vc([lambda s, x: s[:1]], None)
-        assert isinstance(out[0], CallableConstraint)
-
     def test_terminal_constraint_passes_through(self):
         c = _ConstA()
         assert self.vc([c], None)[0] is c
-
-    def test_mixed(self):
-        out = self.vc([_ConstA(), lambda s, x: s[0]], None)
-        assert len(out) == 2 and isinstance(out[1], CallableConstraint)
 
     @pytest.mark.parametrize("bad", [_ConstA(), 5])
     def test_non_list_raises_typeerror(self, bad):

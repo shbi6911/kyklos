@@ -238,8 +238,9 @@ class TerminalConstraint(ABC):
     """
     Base class for boundary conditions enforced at the final state.
 
-    A terminal constraint contributes one or more rows to the corrector's
-    constraint vector F and Jacobian DF, through three methods:
+    A terminal constraint declares how many residual rows it contributes
+    (n_rows) and supplies those rows and their Jacobians through three
+    methods:
 
     residual(state_tf, x0)
         The residual, following the package convention
@@ -269,6 +270,21 @@ class TerminalConstraint(ABC):
     # Relative step for the finite-difference Jacobian fallback.
     _fd_eps_rel: float = 1e-7
 
+    @property
+    @abstractmethod
+    def n_rows(self) -> int:
+        """
+        Number of residual rows this constraint contributes.
+
+        Declared up front, from the constraint's spec alone, so the corrector
+        can size the constraint vector F and the Jacobian DF -- and check
+        problem determinacy -- before the first propagation, rather than
+        backing the count out of a propagated Jacobian's shape. The contract:
+        residual(...) returns an array of exactly this length, and
+        jacobian_tf / jacobian_x0 each have this many rows.
+        """
+        ...
+
     def bind(self, system) -> "TerminalConstraint":
         """
         Capture any System-dependent parameters; return the bound constraint.
@@ -292,9 +308,8 @@ class TerminalConstraint(ABC):
 
     def jacobian_x0(self, state_tf: np.ndarray,
                     x0: np.ndarray) -> np.ndarray:
-        """d(residual)/d(x0), shape (m_c, 6). Default: zeros."""
-        m_c = np.atleast_1d(self.residual(state_tf, x0)).size
-        return np.zeros((m_c, 6))
+        """d(residual)/d(x0), shape (n_rows, 6). Default: zeros."""
+        return np.zeros((self.n_rows, 6))
 
 
 class TargetState(TerminalConstraint):
@@ -336,6 +351,11 @@ class TargetState(TerminalConstraint):
         self._idx = np.array([p[0] for p in pairs], dtype=int)
         self._target = np.array([p[1] for p in pairs], dtype=float)
 
+    @property
+    def n_rows(self) -> int:
+        """One residual row per targeted component."""
+        return int(self._idx.size)
+
     def residual(self, state_tf, x0):
         state_tf = np.asarray(state_tf, dtype=float)
         return state_tf[self._idx] - self._target
@@ -371,6 +391,11 @@ class Periodicity(TerminalConstraint):
             if self._idx.size == 0:
                 raise ValueError("Periodicity requires at least one component.")
 
+    @property
+    def n_rows(self) -> int:
+        """One residual row per component enforced equal."""
+        return int(self._idx.size)
+
     def residual(self, state_tf, x0):
         state_tf = np.asarray(state_tf, dtype=float)
         x0 = np.asarray(x0, dtype=float)
@@ -399,6 +424,10 @@ class CallableConstraint(TerminalConstraint):
     g : callable
         Residual function g(state_tf, x0) -> array of shape (m_c,),
         following the actual-minus-target convention.
+    n_rows : int
+        The number of residual elements, which is also the row count of the
+        Jacobian(s), whether derived or provided.  Must be explicitly provided 
+        by the user.
     dg : callable, optional
         Analytic d(residual)/d(state_tf), signature (state_tf, x0) ->
         (m_c, 6). If None, a central finite difference of g is used.
@@ -407,16 +436,34 @@ class CallableConstraint(TerminalConstraint):
         If None, treated as zero (no dependence on the start state).
     """
 
-    def __init__(self, g, dg=None, dg_dx0=None):
+    def __init__(self, g, n_rows, dg=None, dg_dx0=None):
         if not callable(g):
             raise TypeError("g must be callable.")
+        # bool is a subclass of int; reject it so True/False are not silently
+        # treated as 1/0 row counts (same guard style as _parse_free_times).
+        if isinstance(n_rows, bool) or not isinstance(n_rows, (int, np.integer)):
+            raise TypeError(
+                f"n_rows must be an integer row count, got "
+                f"{type(n_rows).__name__}."
+            )
+        n_rows = int(n_rows)
+        if n_rows < 1:
+            raise ValueError(
+                f"n_rows must be a positive integer, got {n_rows}."
+            )
         if dg is not None and not callable(dg):
             raise TypeError("dg must be callable or None.")
         if dg_dx0 is not None and not callable(dg_dx0):
             raise TypeError("dg_dx0 must be callable or None.")
         self._g = g
+        self._n_rows = n_rows
         self._dg = dg
         self._dg_dx0 = dg_dx0
+
+    @property
+    def n_rows(self) -> int:
+        """Residual row count, as declared at construction."""
+        return self._n_rows
 
     def residual(self, state_tf, x0):
         state_tf = np.asarray(state_tf, dtype=float)
@@ -557,8 +604,8 @@ class _ShootingContext:
         free_vars : str or sequence of str
             Free start-state specification; see _parse_free_vars.
         constraints : sequence, optional
-            Terminal constraints -- TerminalConstraint instances or bare
-            callables (auto-wrapped). None or empty yields no terminal
+            Terminal constraints -- TerminalConstraint instances or 
+            CallableConstraints. None or empty yields no terminal
             constraints.
         free_times : sequence of int, or None
             Boundary-time indices that are free, drawn from [1, n_seg].
@@ -688,11 +735,17 @@ class _ShootingContext:
             if isinstance(c, TerminalConstraint):
                 constraint = c
             elif callable(c):
-                constraint = CallableConstraint(c)
+                raise TypeError(
+                    f"A bare callable cannot be passed as a constraint: "
+                    f"the corrector needs its residual row count up front. Wrap "
+                    f"it as CallableConstraint(g, n_rows=<int>[, dg=..., "
+                    f"dg_dx0=...]) and pass that instead. (Got a bare "
+                    f"{type(c).__name__}.)"
+                )
             else:
                 raise TypeError(
-                    f"Each constraint must be a TerminalConstraint or a "
-                    f"callable, got {type(c).__name__}."
+                    f"Each constraint must be a TerminalConstraint, got "
+                    f"{type(c).__name__}."
                 )
             bound.append(constraint.bind(system))
         return tuple(bound)
@@ -1124,8 +1177,8 @@ class DifferentialCorrector:
             Free start-state components: a category ('all', 'position',
             'velocity', 'planar', 'none') or a list of component names.
         constraints : sequence, optional
-            Terminal constraints -- TerminalConstraint instances or bare
-            callables g(state_tf, x0) (auto-wrapped). May be omitted for a
+            Terminal constraints -- TerminalConstraint instances or 
+            CallableConstraints. May be omitted for a
             pure continuity (interior-defect-only) problem.
         free_times : sequence of int, optional
             Boundary-time indices that are free, in [1, n_seg] (index n_seg
