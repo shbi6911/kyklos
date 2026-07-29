@@ -6,7 +6,8 @@ from __future__ import annotations
 
 import warnings
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from enum import Enum, auto
 from typing import Sequence, TYPE_CHECKING
 
 import numpy as np
@@ -489,6 +490,181 @@ class CallableConstraint(TerminalConstraint):
 
 # ========== INTERNAL SOLVE CONTEXT ==========
 
+# ========== DEFECT-JACOBIAN STRUCTURE PLAN ==========
+# The row plan and column plan describe the fixed layout of the constraint
+# vector F and the defect Jacobian DF for a given shooting problem: how many
+# rows each block occupies and in what order (row plan), and how the columns
+# of X partition among the free ICs and free times (column plan). This is a
+# function of the problem spec alone -- node types, free-var and free-time
+# selections, and constraint row counts -- so it is computed once at context
+# construction and never changes over a solve. Iterate-dependent quantities
+# (segment STMs, S_tf, the vector field) are NOT here; the assembler builds
+# them fresh each Newton step and reads this plan to know where to place them.
+
+class _BlockKind(Enum):
+    """Which method-family produces a row block, and how it maps into X.
+
+    The assembler branches on this tag (not on isinstance) to fill a block:
+    an INTERIOR_DEFECT block reads a junction node's state_defect / segment
+    STM and places +I / -Phi directly; a TERMINAL block reads a constraint's
+    residual / jacobian_tf and chains it through S_tf. A block's `index` is
+    read relative to its kind: a junction index (into traj.junction_nodes and
+    the segment STMs) for INTERIOR_DEFECT, a constraint index (into
+    ctx.constraints) for TERMINAL.
+    """
+    INTERIOR_DEFECT = auto()
+    TERMINAL = auto()
+
+
+@dataclass(frozen=True)
+class _RowBlock:
+    """One contiguous block of rows in F / DF.
+
+    Attributes
+    ----------
+    row_offset : int
+        First row of this block in F / DF.
+    row_count : int
+        Number of rows (6 for a Phase 1 interior defect; a constraint's
+        n_rows for a terminal block).
+    kind : _BlockKind
+        Method-family / fill-behavior tag; see _BlockKind.
+    index : int
+        Which object of the kind's family: 0-based junction index for
+        INTERIOR_DEFECT, 0-based constraint index for TERMINAL.
+    """
+    row_offset: int
+    row_count: int
+    kind: _BlockKind
+    index: int
+
+
+@dataclass(frozen=True)
+class _RowPlan:
+    """Ordered row layout of F / DF: interior defects, then terminal blocks."""
+    blocks: tuple[_RowBlock, ...]
+    n_rows: int
+
+
+@dataclass(frozen=True)
+class _Selector:
+    """Free-component selection and column placement for one IC in X.
+
+    Attributes
+    ----------
+    components : tuple of int
+        Ascending state-component indices (subset of 0..5) that are free for
+        this IC. Its length is the IC's column count; it is the column
+        selection applied to a 6-wide STM (the generalized free_idx). Phase 1:
+        free_idx for the start state, all six for every junction post-state.
+    col_start : int
+        First column of this IC's block in X. Precomputed as a running sum of
+        prior ICs' widths, so it stays correct when a junction contributes
+        fewer than six columns (Phase 2), where col_start != n_fs + 6 * j.
+    """
+    components: tuple[int, ...]
+    col_start: int
+
+    @property
+    def width(self) -> int:
+        """Number of free columns this IC contributes to X."""
+        return len(self.components)
+
+
+@dataclass(frozen=True)
+class _ColumnPlan:
+    """Column layout of X: free start comps | junction posts | free times.
+
+    selectors[0] is the start state x0; selectors[j + 1] is the post-state of
+    junction node j (the IC x_{j+1}). The scalar boundaries are stored (though
+    derivable by summing selector widths) because range cuts like [0:n_state]
+    do not need per-IC structure and should not re-sum the selectors.
+    """
+    selectors: tuple[_Selector, ...]
+    n_fs: int
+    n_state_block: int
+    n_X: int
+    free_time_idx: tuple[int, ...]
+
+    def start_span(self) -> tuple[int, int]:
+        """Half-open column range [lo, hi) of the free start components."""
+        s = self.selectors[0]
+        return (s.col_start, s.col_start + s.width)
+
+    def start_components(self) -> tuple[int, ...]:
+        """Free start-state component indices (the classic free_idx)."""
+        return self.selectors[0].components
+
+    def junction_span(self, j: int) -> tuple[int, int]:
+        """Half-open column range [lo, hi) of junction node j's post-state."""
+        s = self.selectors[j + 1]
+        return (s.col_start, s.col_start + s.width)
+
+    def junction_components(self, j: int) -> tuple[int, ...]:
+        """Free component indices of junction node j's post-state."""
+        return self.selectors[j + 1].components
+
+    def free_time_column(self, m: int) -> int:
+        """Column of X holding free boundary-time index m.
+
+        Raises ValueError if boundary time m is not free.
+        """
+        return self.n_state_block + self.free_time_idx.index(m)
+
+
+def _build_row_plan(n_junction: int, constraints: Sequence) -> _RowPlan:
+    """Assemble the row layout: interior defect blocks, then terminal blocks.
+
+    Interior defects first (one block per junction, junction order), then
+    terminal constraints (one block per constraint, constraint order) -- the
+    single source of truth for the row ordering F and DF must share.
+    """
+    blocks: list[_RowBlock] = []
+    offset = 0
+    for j in range(n_junction):
+        # Phase 1: every FreeJunctionNode contributes a full 6-row defect.
+        # Phase 2 makes this per-node (3 for position-only continuity).
+        blocks.append(_RowBlock(offset, 6, _BlockKind.INTERIOR_DEFECT, j))
+        offset += 6
+    for i, c in enumerate(constraints):
+        n = int(c.n_rows)
+        blocks.append(_RowBlock(offset, n, _BlockKind.TERMINAL, i))
+        offset += n
+    return _RowPlan(tuple(blocks), offset)
+
+
+def _build_column_plan(
+    free_idx: np.ndarray,
+    n_seg: int,
+    free_time_idx: np.ndarray,
+) -> _ColumnPlan:
+    """Assemble the column layout of X from the free-var / free-time spec.
+
+    Column regions in order: free start components ([0, n_fs)), junction
+    post-states (six columns each in Phase 1), then free-time columns.
+    col_start accumulates as a running sum so the layout stays correct if a
+    junction ever contributes fewer than six columns (Phase 2).
+    """
+    n_junction = n_seg - 1
+    n_fs = int(free_idx.size)
+
+    selectors: list[_Selector] = [_Selector(tuple(int(i) for i in free_idx), 0)]
+    col = n_fs
+    for _ in range(n_junction):
+        # Phase 1: every junction post-state is fully free (all six comps).
+        selectors.append(_Selector(tuple(range(6)), col))
+        col += 6
+
+    n_state_block = col
+    n_X = n_state_block + int(free_time_idx.size)
+    return _ColumnPlan(
+        selectors=tuple(selectors),
+        n_fs=n_fs,
+        n_state_block=n_state_block,
+        n_X=n_X,
+        free_time_idx=tuple(int(m) for m in free_time_idx),
+    )
+
 @dataclass(frozen=True)
 class _ShootingContext:
     """
@@ -530,6 +706,14 @@ class _ShootingContext:
         Terminal boundary conditions, already bound to the system. May be
         empty (an interior-defect-only problem -- e.g. closing the gaps of
         a discontinuous guess with no terminal targeting).
+    row_plan : _RowPlan
+        A custom object laying out the row structure of the defect Jacobian (DF).
+        the ordering encoded here is used by _assemble_F() and _assemble_DF() to
+        coordinate the residual vector X and Jacobian DF rows.
+    column_plan : _ColumnPlan
+        A custom object detailing the column ordering of the defect Jacobian (DF).
+        Contains the ordering of all free variables in the shooting problem,
+        consisting of initial free variables, interior nodes, and free times.
 
     Notes
     -----
@@ -545,6 +729,8 @@ class _ShootingContext:
     times_ref: np.ndarray
     free_time_idx: np.ndarray
     constraints: tuple
+    row_plan: _RowPlan = field(init=False, repr=False)
+    column_plan: _ColumnPlan = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         # Take ownership of the array fields: store private, read-only
@@ -554,6 +740,14 @@ class _ShootingContext:
             arr = np.array(getattr(self, name), copy=True)
             arr.flags.writeable = False
             object.__setattr__(self, name, arr)
+        object.__setattr__(
+            self, 'row_plan',
+            _build_row_plan(self.n_seg - 1, self.constraints),
+        )
+        object.__setattr__(
+            self, 'column_plan',
+            _build_column_plan(self.free_idx, self.n_seg, self.free_time_idx),
+        )
 
     # --- derived sizes ---
     @property
@@ -580,6 +774,21 @@ class _ShootingContext:
     def n_X(self) -> int:
         """Total length of the free-variable vector X."""
         return self.n_state_block + self.n_free_time
+
+    @property
+    def determinacy(self) -> str:
+        """Row/column shape: 'overdetermined', 'square', or 'underdetermined'.
+
+        A report, not a gate. The least-squares / minimum-norm solver handles
+        all three; this only surfaces the shape for diagnostics and (later)
+        for continuation schemes to check against their intended determinacy.
+        """
+        m, n = self.row_plan.n_rows, self.column_plan.n_X
+        if m > n:
+            return 'overdetermined'
+        if m < n:
+            return 'underdetermined'
+        return 'square'
 
     @classmethod
     def from_guess(

@@ -529,10 +529,12 @@ def _three_segment_kwargs()-> dict[str, object]:
 
 # Minimal constraints for exercising normalization and the bind lifecycle.
 class _ConstA(TerminalConstraint):
-    def residual(self, state_tf, x0):
-        return np.zeros(2)
+    @property
     def n_rows(self):
         return 2
+
+    def residual(self, state_tf, x0):
+        return np.zeros(2)
 
 
 class _BindSpy(TerminalConstraint):
@@ -541,11 +543,12 @@ class _BindSpy(TerminalConstraint):
     def __init__(self, bound_to="UNBOUND"):
         self.bound_to = bound_to
 
-    def residual(self, state_tf, x0):
-        return np.zeros(1)
-
+    @property
     def n_rows(self):
         return 1
+
+    def residual(self, state_tf, x0):
+        return np.zeros(1)
 
     def bind(self, system):
         return _BindSpy(bound_to=system)
