@@ -607,7 +607,7 @@ class Trajectory:
 
         # Fast path for single segment
         if self.n_segments == 1:
-            return self._outputs[0](times)[:, :6]
+            return self._outputs[0](times)[:, :6].copy()
 
         # Multi-segment: group times by segment for batch evaluation
         n_times = len(times)
@@ -931,7 +931,7 @@ class Trajectory:
         if self.n_segments == 1:
             # Fast path: vectorized Heyoka call, no composition needed
             full_states = self._outputs[0](times)
-            return full_states[:, 6:42].reshape(n_times, 6, 6)
+            return full_states[:, 6:42].reshape(n_times, 6, 6).copy()
 
         # Multi-segment: composition requires per-time computation
         return np.array([self.get_stm(t) for t in times])
@@ -1032,7 +1032,7 @@ class Trajectory:
         # Fast path for single segment
         if self.n_segments == 1:
             full_states = self._outputs[0](times)
-            return full_states[:, 6:42].reshape(n_times, 6, 6)
+            return full_states[:, 6:42].reshape(n_times, 6, 6).copy()
 
         # Multi-segment: batch by segment, no composition needed
         result = np.empty((n_times, 6, 6))

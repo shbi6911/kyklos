@@ -692,9 +692,11 @@ class _ShootingContext:
         times and N - 1 interior junctions.
     free_idx : np.ndarray
         Sorted indices of the free start-state components, into [0, 6).
-    x0_ref : np.ndarray
-        Reference start state (6,). Fixed start components are read from
-        here during unpacking; free components are overwritten from X.
+    ics_ref : np.ndarray
+        Reference state for each initial condition (start, then junction post states) 
+        shape (1 + n_junction,6). 
+        Fixed start components are read from here during unpacking; free components 
+        are overwritten from X.
     times_ref : np.ndarray
         Reference boundary times (N + 1,). Fixed times are read from here;
         free times are overwritten from X.
@@ -725,7 +727,7 @@ class _ShootingContext:
     system: "System"
     n_seg: int
     free_idx: np.ndarray
-    x0_ref: np.ndarray
+    ics_ref: np.ndarray
     times_ref: np.ndarray
     free_time_idx: np.ndarray
     constraints: tuple
@@ -736,7 +738,7 @@ class _ShootingContext:
         # Take ownership of the array fields: store private, read-only
         # copies so the shared context is fully immutable and constructing
         # it never mutates caller-held arrays.
-        for name in ('free_idx', 'x0_ref', 'times_ref', 'free_time_idx'):
+        for name in ('free_idx', 'ics_ref', 'times_ref', 'free_time_idx'):
             arr = np.array(getattr(self, name), copy=True)
             arr.flags.writeable = False
             object.__setattr__(self, name, arr)
@@ -749,11 +751,24 @@ class _ShootingContext:
             _build_column_plan(self.free_idx, self.n_seg, self.free_time_idx),
         )
 
+        # Consistency check for column plan and number of IC reference states
+        n_ics = 1 + self.n_junction
+        if self.ics_ref.shape != (n_ics, 6):
+            raise ValueError(
+                f"ics_ref must have shape ({n_ics}, 6) for {self.n_seg} "
+                f"segment(s), got {self.ics_ref.shape}."
+            )
+        if len(self.column_plan.selectors) != n_ics:
+            raise ValueError(
+                f"column plan has {len(self.column_plan.selectors)} "
+                f"selector(s) but there are {n_ics} IC(s)."
+            )
+
     # --- derived sizes ---
     @property
     def n_free_start(self) -> int:
         """Number of free start-state components."""
-        return int(self.free_idx.size)
+        return int(self.column_plan.n_fs)
 
     @property
     def n_junction(self) -> int:
@@ -768,12 +783,12 @@ class _ShootingContext:
     @property
     def n_state_block(self) -> int:
         """Length of the state portion of X (start free comps + junctions)."""
-        return self.n_free_start + 6 * self.n_junction
+        return self.column_plan.n_state_block
 
     @property
     def n_X(self) -> int:
         """Total length of the free-variable vector X."""
-        return self.n_state_block + self.n_free_time
+        return self.column_plan.n_X
 
     @property
     def determinacy(self) -> str:
@@ -861,14 +876,18 @@ class _ShootingContext:
         # No defensive copies here: __post_init__ takes ownership by copying
         # and freezing every array field, so passing fresh-or-not arrays is
         # safe and uniform.
-        x0_ref = np.asarray(traj.start_node.post_state, dtype=float)
+        ic_states = [np.asarray(traj.start_node.post_state, dtype=float)]
+        ic_states += [np.asarray(node.post_state, dtype=float)
+              for node in traj.junction_nodes]
+        ics_ref = np.vstack(ic_states)
+
         times_ref = np.asarray(traj.times, dtype=float)
 
         return cls(
             system=traj.system,
             n_seg=n_seg,
             free_idx=free_idx,
-            x0_ref=x0_ref,
+            ics_ref=ics_ref,
             times_ref=times_ref,
             free_time_idx=free_time_idx,
             constraints=bound_constraints,
@@ -924,8 +943,8 @@ class _ShootingContext:
         """
         Normalize, validate, and bind the terminal constraints.
 
-        Accepts TerminalConstraint instances and bare callables -- the
-        latter wrapped in CallableConstraint and treated as residual
+        Accepts TerminalConstraint instances and callables pre-wrapped 
+        in CallableConstraint and treated as residual
         functions g(state_tf, x0). Each constraint is bound to the system
         once here (the single bind point), so the iteration loop only ever
         evaluates residuals and Jacobians.
@@ -966,11 +985,18 @@ def _pack(traj: "Trajectory", ctx: _ShootingContext) -> np.ndarray:
     """
     Read the free-variable vector X out of a propagated Trajectory.
 
-    Used once at the start of a solve to initialize X from the initial
-    guess. The inverse mapping (X back to segment ICs and times) is
-    _unpack; the two are inverses at the IC/time level, not the Trajectory
-    level -- _pack reads a fully propagated trajectory, while _unpack
-    produces only what is needed to propagate the next one.
+    Used once at the start of a solve to initialize X from the initial guess.
+    The inverse mapping (X back to segment ICs and times) is _unpack; the two
+    are inverses at the IC/time level, not the Trajectory level -- _pack reads
+    a fully propagated trajectory, while _unpack produces only what is needed
+    to propagate the next one.
+
+    Which components of each IC are free is read from the column plan's
+    per-IC selectors, not assumed to be all six: an IC contributes only its
+    free components to X. In Phase 1 every junction post-state is fully free,
+    so this reduces to taking the whole post-state; the selector form is what
+    lets a partially-free junction (Phase 2) pack only its free components
+    without changing this function.
 
     Parameters
     ----------
@@ -982,7 +1008,7 @@ def _pack(traj: "Trajectory", ctx: _ShootingContext) -> np.ndarray:
     -------
     np.ndarray
         The free-variable vector X, shape (ctx.n_X,), laid out as
-        [start free comps, junction post-states, free times].
+        [start free comps, junction free comps, free times].
 
     Raises
     ------
@@ -995,76 +1021,83 @@ def _pack(traj: "Trajectory", ctx: _ShootingContext) -> np.ndarray:
             f"expects {ctx.n_seg}."
         )
 
-    start_state = np.asarray(traj.start_node.post_state, dtype=float)
-    start_free = start_state[ctx.free_idx]
+    cp = ctx.column_plan
 
-    if ctx.n_junction > 0:
-        junction_posts = np.concatenate([
-            np.asarray(node.post_state, dtype=float)
-            for node in traj.junction_nodes
-        ])
-    else:
-        junction_posts = np.array([], dtype=float)
+    # Start-state free components (selector 0).
+    start_state = np.asarray(traj.start_node.post_state, dtype=float)
+    start_free = start_state[list(cp.start_components())]
+
+    # Each junction post-state contributes only its free components. The
+    # list() cast is required: a tuple index on a 1D array is read as
+    # multidimensional indexing, whereas a list is fancy (component) indexing.
+    junction_blocks = [
+        np.asarray(node.post_state, dtype=float)[list(cp.junction_components(j))]
+        for j, node in enumerate(traj.junction_nodes)
+    ]
 
     times_arr = np.asarray(traj.times, dtype=float)
     free_times = times_arr[ctx.free_time_idx]
 
-    return np.concatenate([start_free, junction_posts, free_times])
+    return np.concatenate([start_free, *junction_blocks, free_times])
 
 
 def _unpack(
-    X: np.ndarray,
+X: np.ndarray,
     ctx: _ShootingContext,
 ) -> tuple[list[np.ndarray], np.ndarray]:
     """
     Map a free-variable vector X to segment initial conditions and times.
 
-    Integrator-free: this only reshuffles numbers into the form
-    System.propagate expects in Mode 1 -- a list of segment ICs plus a
-    boundary-time array. Fixed start components and fixed times are taken
-    from the context's reference values; free entries come from X.
+    Integrator-free: this only reshuffles numbers into the form the
+    propagator needs. It is the inverse of _pack at the IC/time level --
+    _pack reads free components out of a propagated trajectory, _unpack
+    scatters them back into full states ready to re-propagate.
+
+    Every IC is reconstructed by the same operation, uniform across the start
+    state and every junction post: seed the full state from the IC's
+    reference row (ics_ref), then overwrite its free components with the
+    corresponding slice of X. Which components are free, and where their
+    columns sit in X, come from the column plan's per-IC selectors -- so a
+    partially-free IC (Phase 2) scatters only its free components with no
+    change here, and fixed components keep their reference value.
 
     Parameters
     ----------
     X : np.ndarray
-        Free-variable vector, shape (ctx.n_X,).
+        The free-variable vector, shape (ctx.n_X,).
     ctx : _ShootingContext
 
     Returns
     -------
     ics : list of np.ndarray
-        Segment initial conditions [x0, x1, ..., x_{n_seg-1}], each a fresh
-        writable (6,) array independent of X.
+        One full (6,) initial condition per segment, in segment order.
     times : np.ndarray
-        Boundary times (n_seg + 1,), a fresh copy with free entries updated.
+        Full boundary-time vector, shape (ctx.n_seg + 1,); free times taken
+        from X, fixed times from the reference.
 
     Raises
     ------
     ValueError
-        If X does not have length ctx.n_X.
+        If X does not have shape (ctx.n_X,).
     """
     X = np.asarray(X, dtype=float)
     if X.shape != (ctx.n_X,):
-        raise ValueError(f"X has shape {X.shape}, expected ({ctx.n_X},).")
+        raise ValueError(f"X must have shape ({ctx.n_X},), got {X.shape}.")
 
-    n_fs = ctx.n_free_start
-    n_state = ctx.n_state_block
+     # Reconstruct each IC uniformly, ics_ref rows and column-plan selectors are
+    # index-aligned (guaranteed at context construction), so zip pairs each
+    # reference state with the selector saying which of its components are
+    # free and where they live in X. list(...) forces fancy (per-component)
+    # indexing; a raw tuple would be read as multidimensional.
+    ics = []
+    for ref, sel in zip(ctx.ics_ref, ctx.column_plan.selectors):
+        full = ref.copy()
+        full[list(sel.components)] = X[sel.col_start:sel.col_start + sel.width]
+        ics.append(full)
 
-    start_free = X[:n_fs]
-    junction_block = X[n_fs:n_state].reshape(ctx.n_junction, 6)
-    time_block = X[n_state:]
-
-    # Start state: fixed components from reference, free components from X.
-    x0 = ctx.x0_ref.copy()
-    x0[ctx.free_idx] = start_free
-
-    ics = [x0]
-    for k in range(ctx.n_junction):
-        ics.append(junction_block[k].copy())
-
-    # Boundary times: fixed from reference, free from X.
+    # Free boundary times are the tail of X; fixed times keep their reference.
     times = ctx.times_ref.copy()
-    times[ctx.free_time_idx] = time_block
+    times[ctx.free_time_idx] = X[ctx.n_state_block:]
 
     return ics, times
 
