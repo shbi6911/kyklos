@@ -32,7 +32,7 @@ from dataclasses import FrozenInstanceError
 from kyklos.shooter import (
     TerminalConstraint, TargetState, Periodicity, CallableConstraint,
     _ShootingContext, _BlockKind, _RowBlock, _RowPlan, _Selector,
-    _ColumnPlan, _build_row_plan, _build_column_plan,
+    _ColumnPlan, _build_row_plan, _build_column_plan, _select,
 )
 
 
@@ -286,7 +286,7 @@ def _ctx(n_seg, free_idx, free_time_idx=None, constraints=()):
         system=None,                       # type: ignore  (never read here)
         n_seg=n_seg,
         free_idx=np.asarray(free_idx, dtype=int),
-        x0_ref=np.zeros(6),
+        ics_ref=np.zeros((n_seg, 6)),
         times_ref=np.arange(n_seg + 1, dtype=float),
         free_time_idx=fti,
         constraints=tuple(constraints),
@@ -309,15 +309,15 @@ class TestBuildRowPlan:
         plan = _build_row_plan(0, (c,))
         assert plan.n_rows == 3
         assert plan.blocks == (
-            _RowBlock(0, 3, _BlockKind.TERMINAL, 0),
+            _RowBlock(0, 3, None, _BlockKind.TERMINAL, 0),
         )
 
     def test_interior_defects_only(self):
         plan = _build_row_plan(2, ())
         assert plan.n_rows == 12
         assert plan.blocks == (
-            _RowBlock(0, 6, _BlockKind.INTERIOR_DEFECT, 0),
-            _RowBlock(6, 6, _BlockKind.INTERIOR_DEFECT, 1),
+            _RowBlock(0, 6, tuple(range(6)), _BlockKind.INTERIOR_DEFECT, 0),
+            _RowBlock(6, 6, tuple(range(6)), _BlockKind.INTERIOR_DEFECT, 1),
         )
 
     def test_interior_then_terminal_ordering_and_offsets(self):
@@ -325,9 +325,9 @@ class TestBuildRowPlan:
         plan = _build_row_plan(2, (c,))
         assert plan.n_rows == 18
         assert plan.blocks == (
-            _RowBlock(0, 6, _BlockKind.INTERIOR_DEFECT, 0),
-            _RowBlock(6, 6, _BlockKind.INTERIOR_DEFECT, 1),
-            _RowBlock(12, 6, _BlockKind.TERMINAL, 0),
+            _RowBlock(0, 6, tuple(range(6)), _BlockKind.INTERIOR_DEFECT, 0),
+            _RowBlock(6, 6, tuple(range(6)), _BlockKind.INTERIOR_DEFECT, 1),
+            _RowBlock(12, 6, None, _BlockKind.TERMINAL, 0),
         )
 
     def test_multiple_constraints_stack_in_order(self):
@@ -338,10 +338,10 @@ class TestBuildRowPlan:
         # one interior defect (rows 0-5), then 1 + 2 + 3 terminal rows.
         assert plan.n_rows == 6 + 1 + 2 + 3
         assert plan.blocks == (
-            _RowBlock(0, 6, _BlockKind.INTERIOR_DEFECT, 0),
-            _RowBlock(6, 1, _BlockKind.TERMINAL, 0),
-            _RowBlock(7, 2, _BlockKind.TERMINAL, 1),
-            _RowBlock(9, 3, _BlockKind.TERMINAL, 2),
+            _RowBlock(0, 6, tuple(range(6)), _BlockKind.INTERIOR_DEFECT, 0),
+            _RowBlock(6, 1, None, _BlockKind.TERMINAL, 0),
+            _RowBlock(7, 2, None, _BlockKind.TERMINAL, 1),
+            _RowBlock(9, 3, None, _BlockKind.TERMINAL, 2),
         )
 
     def test_interior_index_is_zero_based_junction_index(self):
@@ -437,32 +437,38 @@ class TestBuildColumnPlan:
 # Column plan accessors
 # --------------------------------------------------------------------------
 class TestColumnPlanAccessors:
-    """Span / component / free-time-column lookups over the column plan."""
+    """Column placement is read directly off selectors: selectors[0] is the
+    start state, selectors[j+1] is junction j's post-state. col_slice gives
+    the X-column range; components gives the free state-component indices."""
 
-    def test_start_span_and_components(self):
+    def test_start_selector_slice_and_components(self):
         cp = _build_column_plan(np.array([0, 1, 3, 4]), n_seg=3,
                                 free_time_idx=np.array([], dtype=int))
-        assert cp.start_span() == (0, 4)
-        assert cp.start_components() == (0, 1, 3, 4)
+        start = cp.selectors[0]
+        assert start.col_slice == slice(0, 4)
+        assert start.components == (0, 1, 3, 4)
 
-    def test_junction_spans(self):
+    def test_junction_slices(self):
         cp = _build_column_plan(np.arange(6), n_seg=3,
                                 free_time_idx=np.array([], dtype=int))
-        assert cp.junction_span(0) == (6, 12)
-        assert cp.junction_span(1) == (12, 18)
+        assert cp.selectors[1].col_slice == slice(6, 12)   # junction 0
+        assert cp.selectors[2].col_slice == slice(12, 18)  # junction 1
 
     def test_junction_components_full_six_in_phase1(self):
         cp = _build_column_plan(np.array([0, 1, 3, 4]), n_seg=3,
                                 free_time_idx=np.array([], dtype=int))
-        assert cp.junction_components(0) == ALL6
-        assert cp.junction_components(1) == ALL6
+        assert cp.selectors[1].components == ALL6
+        assert cp.selectors[2].components == ALL6
 
-    def test_junction_span_uses_running_sum_not_fixed_stride(self):
-        # With a 4-wide start, junction 0 begins at 4, not at n_fs=6 for a
-        # full start -- confirms spans follow col_start, ready for Phase 2.
+    def test_col_start_uses_running_sum_not_fixed_stride(self):
+        # With a 4-wide start, junction 0 begins at column 4, not at n_fs=6 as
+        # it would under a fixed-6 stride from a full start -- confirms col_start
+        # is the running sum of prior widths, ready for Phase 2 partial nodes.
         cp = _build_column_plan(np.array([0, 1, 3, 4]), n_seg=2,
                                 free_time_idx=np.array([], dtype=int))
-        assert cp.junction_span(0) == (4, 10)
+        j0 = cp.selectors[1]
+        assert j0.col_start == 4
+        assert j0.col_slice == slice(4, 10)
 
     def test_free_time_column_maps_position(self):
         cp = _build_column_plan(np.arange(6), n_seg=3,
@@ -560,7 +566,7 @@ class TestPlanImmutability:
             ctx.row_plan = _RowPlan((), 0)          # type: ignore
 
     def test_row_block_is_frozen(self):
-        b = _RowBlock(0, 6, _BlockKind.INTERIOR_DEFECT, 0)
+        b = _RowBlock(0, 6, tuple(range(6)), _BlockKind.INTERIOR_DEFECT, 0)
         with pytest.raises(FrozenInstanceError):
             b.row_offset = 5                          # type: ignore
 
@@ -574,3 +580,84 @@ class TestPlanImmutability:
                                 np.array([], dtype=int))
         with pytest.raises(FrozenInstanceError):
             cp.n_X = 99                               # type: ignore
+
+class TestSelectSubBlock:
+    """_select extracts an outer-product sub-block by component indices.
+
+    Phase 1 only ever calls _select with all-6 row and column tuples, so the
+    np.ix_ (outer-product, not pairwise) behavior is never exercised on a
+    genuine sub-block. These tests hit it on non-uniform, non-contiguous, and
+    unequal-length selections -- the shapes a Phase 2 partial node will
+    produce -- so a row/column axis swap or a pairwise-vs-outer-product
+    regression is caught now rather than surfacing as a 'Phase 2 bug'.
+    """
+
+    def test_full_selection_is_identity_on_input(self):
+        M = np.arange(36.0).reshape(6, 6)
+        np.testing.assert_array_equal(
+            _select(M, tuple(range(6)), tuple(range(6))), M)
+
+    def test_square_subblock_outer_product(self):
+        # rows (0,1,2) x cols (3,4,5): the top-right 3x3 quadrant. Must be the
+        # outer product, NOT the pairwise diagonal [M[0,3], M[1,4], M[2,5]].
+        M = np.arange(36.0).reshape(6, 6)
+        out = _select(M, (0, 1, 2), (3, 4, 5))
+        assert out.shape == (3, 3)
+        np.testing.assert_array_equal(out, M[np.ix_([0, 1, 2], [3, 4, 5])])
+        # explicit guard against the pairwise-indexing regression:
+        assert out[0, 0] == M[0, 3] and out[1, 1] == M[1, 4]
+        assert out[0, 1] == M[0, 4]        # off-diagonal present -> outer product
+
+    def test_rectangular_subblock_unequal_lengths(self):
+        # 3 rows x 6 cols: the shape a 3-row position-continuity defect against
+        # a full-6 free post-state produces. Row count != col count, so a swap
+        # of the two index axes would change the shape and fail loudly.
+        M = np.arange(36.0).reshape(6, 6)
+        out = _select(M, (0, 1, 2), tuple(range(6)))
+        assert out.shape == (3, 6)
+        np.testing.assert_array_equal(out, M[np.ix_([0, 1, 2], list(range(6)))])
+
+    def test_non_contiguous_selection(self):
+        # continuity components need not be the leading indices; (0,2,4) must
+        # select exactly those rows, not range(len)=(0,1,2).
+        M = np.arange(36.0).reshape(6, 6)
+        out = _select(M, (0, 2, 4), (1, 3))
+        assert out.shape == (3, 2)
+        np.testing.assert_array_equal(out, M[np.ix_([0, 2, 4], [1, 3])])
+
+    def test_row_and_col_axes_not_swapped(self):
+        # An asymmetric M where M[i,j] != M[j,i], selecting different row and
+        # col tuples: proves rows index axis 0 and cols index axis 1.
+        M = np.arange(36.0).reshape(6, 6)     # M[i,j] = 6i + j, not symmetric
+        out = _select(M, (1,), (4,))
+        assert out.shape == (1, 1)
+        assert out[0, 0] == M[1, 4]           # == 10, not M[4,1] == 25
+
+
+class TestRowBlockConsistencyGuard:
+    """_RowBlock.__post_init__ enforces row_count == len(continuity_components)
+    for interior blocks, and permits None (terminal blocks) unchecked."""
+
+    def test_consistent_interior_block_constructs(self):
+        b = _RowBlock(0, 3, (0, 1, 2), _BlockKind.INTERIOR_DEFECT, 0)
+        assert b.row_count == 3 and b.continuity_components == (0, 1, 2)
+
+    def test_full_interior_block_constructs(self):
+        b = _RowBlock(0, 6, tuple(range(6)), _BlockKind.INTERIOR_DEFECT, 0)
+        assert b.row_count == len(b.continuity_components)      #type: ignore
+
+    def test_row_count_mismatch_raises(self):
+        # row_count 3 but six components -> the guard must fire.
+        with pytest.raises(ValueError):
+            _RowBlock(0, 3, tuple(range(6)), _BlockKind.INTERIOR_DEFECT, 0)
+
+    def test_row_count_mismatch_other_direction_raises(self):
+        # row_count 6 but three components.
+        with pytest.raises(ValueError):
+            _RowBlock(0, 6, (0, 1, 2), _BlockKind.INTERIOR_DEFECT, 0)
+
+    def test_terminal_none_components_not_checked(self):
+        # Terminal blocks carry None continuity_components and any row_count;
+        # the guard must skip them (no ValueError).
+        b = _RowBlock(6, 4, None, _BlockKind.TERMINAL, 0)
+        assert b.continuity_components is None and b.row_count == 4

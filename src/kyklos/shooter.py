@@ -525,8 +525,13 @@ class _RowBlock:
     row_offset : int
         First row of this block in F / DF.
     row_count : int
-        Number of rows (6 for a Phase 1 interior defect; a constraint's
-        n_rows for a terminal block).
+        Number of rows this block occupies in F / DF (varies by block type)
+    continuity_components : tuple of int
+        Ascending state-component indices (subset of 0..5) that are constrained to be
+        continuous for this node. Its length is the block's row count, and it 
+        selects which rows of the identity and segment STM this defect enforces.
+        For TERMINAL rows this is None, as those are not continuity constraints and
+        their row counts are independently derived.
     kind : _BlockKind
         Method-family / fill-behavior tag; see _BlockKind.
     index : int
@@ -534,9 +539,25 @@ class _RowBlock:
         INTERIOR_DEFECT, 0-based constraint index for TERMINAL.
     """
     row_offset: int
-    row_count: int
+    row_count : int
+    continuity_components: tuple[int, ...] | None
     kind: _BlockKind
     index: int
+
+    def __post_init__(self) -> None:
+        if (self.continuity_components is not None and 
+            self.row_count != len(self.continuity_components)):
+            raise ValueError(
+                f"row_count {self.row_count} disagrees with continuity_components "
+                f"{self.continuity_components} (len {len(self.continuity_components)})."
+    )
+
+    @property
+    def row_slice(self) -> slice:
+        """Half-open row range [row_offset, row_offset + row_count) of this
+        block in F / DF. The single home for the row-span arithmetic, so no
+        call site recomputes row_offset + row_count."""
+        return slice(self.row_offset, self.row_offset + self.row_count)
 
 
 @dataclass(frozen=True)
@@ -544,6 +565,15 @@ class _RowPlan:
     """Ordered row layout of F / DF: interior defects, then terminal blocks."""
     blocks: tuple[_RowBlock, ...]
     n_rows: int
+
+    @property
+    def terminal_blocks(self) -> tuple["_RowBlock", ...]:
+        """The terminal row blocks, in order. Used by the free-time pass,
+        which places into terminal rows but does not walk the full block list.
+        Filtering by kind (not position) stays correct if new block kinds are
+        ever interleaved."""
+        return tuple(b for b in self.blocks
+                     if b.kind is _BlockKind.TERMINAL)
 
 
 @dataclass(frozen=True)
@@ -570,6 +600,13 @@ class _Selector:
         """Number of free columns this IC contributes to X."""
         return len(self.components)
 
+    @property
+    def col_slice(self) -> slice:
+        """Half-open column range [col_start, col_start + width) of this IC's
+        free components in X. The single home for the column-span arithmetic,
+        so no call site recomputes col_start + width."""
+        return slice(self.col_start, self.col_start + self.width)
+
 
 @dataclass(frozen=True)
 class _ColumnPlan:
@@ -585,24 +622,6 @@ class _ColumnPlan:
     n_state_block: int
     n_X: int
     free_time_idx: tuple[int, ...]
-
-    def start_span(self) -> tuple[int, int]:
-        """Half-open column range [lo, hi) of the free start components."""
-        s = self.selectors[0]
-        return (s.col_start, s.col_start + s.width)
-
-    def start_components(self) -> tuple[int, ...]:
-        """Free start-state component indices (the classic free_idx)."""
-        return self.selectors[0].components
-
-    def junction_span(self, j: int) -> tuple[int, int]:
-        """Half-open column range [lo, hi) of junction node j's post-state."""
-        s = self.selectors[j + 1]
-        return (s.col_start, s.col_start + s.width)
-
-    def junction_components(self, j: int) -> tuple[int, ...]:
-        """Free component indices of junction node j's post-state."""
-        return self.selectors[j + 1].components
 
     def free_time_column(self, m: int) -> int:
         """Column of X holding free boundary-time index m.
@@ -624,11 +643,12 @@ def _build_row_plan(n_junction: int, constraints: Sequence) -> _RowPlan:
     for j in range(n_junction):
         # Phase 1: every FreeJunctionNode contributes a full 6-row defect.
         # Phase 2 makes this per-node (3 for position-only continuity).
-        blocks.append(_RowBlock(offset, 6, _BlockKind.INTERIOR_DEFECT, j))
+        blocks.append(_RowBlock(offset, 6, tuple(range(6)), 
+                                _BlockKind.INTERIOR_DEFECT, j))
         offset += 6
     for i, c in enumerate(constraints):
         n = int(c.n_rows)
-        blocks.append(_RowBlock(offset, n, _BlockKind.TERMINAL, i))
+        blocks.append(_RowBlock(offset, n, None, _BlockKind.TERMINAL, i))
         offset += n
     return _RowPlan(tuple(blocks), offset)
 
@@ -979,6 +999,33 @@ class _ShootingContext:
         return tuple(bound)
 
 
+# ========== UTILITY HELPERS ==========
+
+def _select(matrix: np.ndarray, rows: tuple[int, ...],
+           cols: tuple[int, ...]) -> np.ndarray:
+    """Extract the (rows x cols) sub-block of `matrix` by component indices.
+
+    rows and cols are ascending state-component index tuples (e.g. from a
+    row block's continuity_components and a selector's components). Casts to
+    lists and uses np.ix_ so the selection is the outer product (all rows x
+    all cols), not pairwise. Both are required; there is no 'select all'
+    default, because an empty tuple legitimately means 'select none'.
+    """
+    return matrix[np.ix_(list(rows), list(cols))]
+
+def _terminal_jacobians(c, state_tf: np.ndarray, x0: np.ndarray
+                        ) -> tuple[np.ndarray, np.ndarray]:
+    """A terminal constraint's Jacobians, each shaped (n_rows, 6).
+
+    Returns (Jtf, Jx0) = (d residual / d state_tf, d residual / d x0),
+    atleast_2d. Recomputed wherever needed rather than cached
+    across passes: a terminal Jacobian is a cheap analytic or finite-
+    difference call, not a propagation, so the passes stay decoupled.
+    """
+    Jtf = np.atleast_2d(np.asarray(c.jacobian_tf(state_tf, x0), dtype=float))
+    Jx0 = np.atleast_2d(np.asarray(c.jacobian_x0(state_tf, x0), dtype=float))
+    return Jtf, Jx0
+
 # ========== PACK / UNPACK ==========
 
 def _pack(traj: "Trajectory", ctx: _ShootingContext) -> np.ndarray:
@@ -1025,13 +1072,12 @@ def _pack(traj: "Trajectory", ctx: _ShootingContext) -> np.ndarray:
 
     # Start-state free components (selector 0).
     start_state = np.asarray(traj.start_node.post_state, dtype=float)
-    start_free = start_state[list(cp.start_components())]
+    start_free = start_state[list(cp.selectors[0].components)]
 
-    # Each junction post-state contributes only its free components. The
-    # list() cast is required: a tuple index on a 1D array is read as
-    # multidimensional indexing, whereas a list is fancy (component) indexing.
+    # Each junction post-state contributes only its free components. The selectors
+    # start with the Trajectory initial state as 0 (see above), so we need j + 1
     junction_blocks = [
-        np.asarray(node.post_state, dtype=float)[list(cp.junction_components(j))]
+        np.asarray(node.post_state, dtype=float)[list(cp.selectors[j + 1].components)]
         for j, node in enumerate(traj.junction_nodes)
     ]
 
@@ -1092,7 +1138,7 @@ X: np.ndarray,
     ics = []
     for ref, sel in zip(ctx.ics_ref, ctx.column_plan.selectors):
         full = ref.copy()
-        full[list(sel.components)] = X[sel.col_start:sel.col_start + sel.width]
+        full[list(sel.components)] = X[sel.col_slice]
         ics.append(full)
 
     # Free boundary times are the tail of X; fixed times keep their reference.
@@ -1166,11 +1212,20 @@ def _assemble_F(traj: "Trajectory", ctx: _ShootingContext) -> np.ndarray:
 
 def _assemble_DF(traj: "Trajectory", ctx: _ShootingContext) -> np.ndarray:
     """
-    Assemble the constraint Jacobian DF for a propagated iterate.
+    Assemble the defect Jacobian DF = d(F)/dX for the current iterate.
 
     DF = d(F)/d(X), with rows matching _assemble_F (interior defects then
     terminal residuals) and columns matching the X layout (start free
     components, junction post-states, then free times).
+
+    Two passes over the plan. Pass 1 walks the row blocks (interior defects
+    and terminal constraints -- both row-owned, every entry lands in the
+    block's own rows) and dispatches on block kind. Pass 2 handles the
+    free-time columns, which are column-owned: a free boundary time scatters
+    vector-field terms into several blocks' rows at once, cross-cutting the
+    row-block structure, so it gets its own column-wise pass. All row and
+    column placements are read from the plan (row_slice / col_slice /
+    selectors); no offsets are computed inline.
 
     State columns
     -------------
@@ -1184,7 +1239,7 @@ def _assemble_DF(traj: "Trajectory", ctx: _ShootingContext) -> np.ndarray:
     Terminal block. Each constraint contributes
         dr/dX = J_tf @ d(state_tf)/dX + J_x0 @ d(x0)/dX,
     where the final state depends on the last segment's IC through
-    Phi_{N-1}. For single-shooting Periodicity this reduces to Phi - I.
+    Phi_{N-1}. For example, single-shooting Periodicity this reduces to Phi - I.
 
     Free-time columns
     -----------------
@@ -1212,61 +1267,58 @@ def _assemble_DF(traj: "Trajectory", ctx: _ShootingContext) -> np.ndarray:
         Jacobian, shape (m, n_X), m == len(F).
     """
     n_seg = ctx.n_seg
-    n_fs = ctx.n_free_start
     n_state = ctx.n_state_block
-    free_idx = ctx.free_idx
-    m_interior = 6 * ctx.n_junction
+    cp = ctx.column_plan
 
     state_tf = np.asarray(traj.end_node.pre_state, dtype=float)
     x0 = np.asarray(traj.start_node.post_state, dtype=float)
 
-    # Terminal Jacobian pieces (and terminal row count).
-    term_Jtf, term_Jx0 = [], []
-    m_terminal = 0
-    for c in ctx.constraints:
-        Jtf = np.atleast_2d(np.asarray(c.jacobian_tf(state_tf, x0), float))
-        Jx0 = np.atleast_2d(np.asarray(c.jacobian_x0(state_tf, x0), float))
-        term_Jtf.append(Jtf)
-        term_Jx0.append(Jx0)
-        m_terminal += Jtf.shape[0]
+    DF = np.zeros((ctx.row_plan.n_rows, ctx.column_plan.n_X))
+    eye6 = np.eye(6)
 
-    DF = np.zeros((m_interior + m_terminal, ctx.n_X))
-
-    # --- interior block (state columns): F_i = x_{i+1} - phi_i(x_i) ---
-    for i in range(ctx.n_junction):
-        rows = slice(6 * i, 6 * i + 6)
-        cj = n_fs + 6 * i                       # x_{i+1} = junction block i
-        DF[rows, cj:cj + 6] += np.eye(6)
-        Phi_i = np.asarray(traj.segment_terminal_stm(i), dtype=float)
-        if i == 0:
-            DF[rows, 0:n_fs] += -Phi_i[:, free_idx]
-        else:
-            cprev = n_fs + 6 * (i - 1)
-            DF[rows, cprev:cprev + 6] += -Phi_i
-
-    # --- terminal block (state columns) ---
+    # S_tf = d(state_tf)/d(state columns): Phi of the LAST segment, placed at
+    # the last IC's columns, zero elsewhere. Constraint-independent, so built
+    # once here and reused by every terminal block. selectors[-1] is the last
+    # segment's IC -- the last junction post for N > 1, the start state for
+    # N == 1 -- so this one expression covers single and multiple shooting.
+    S_tf = None
     if ctx.constraints:
-        Phi_last = np.asarray(
-            traj.segment_terminal_stm(n_seg - 1), dtype=float
-        )
-        S_tf = np.zeros((6, n_state))           # d(state_tf)/d(state cols)
-        if n_seg == 1:
-            S_tf[:, 0:n_fs] = Phi_last[:, free_idx]
-        else:
-            c_last = n_fs + 6 * (n_seg - 2)
-            S_tf[:, c_last:c_last + 6] = Phi_last
-        row = m_interior
-        for Jtf, Jx0 in zip(term_Jtf, term_Jx0):
-            mc = Jtf.shape[0]
-            rows = slice(row, row + mc)
-            DF[rows, 0:n_state] += Jtf @ S_tf
-            DF[rows, 0:n_fs] += Jx0[:, free_idx]       # direct x0 dependence
-            row += mc
+        Phi_last = np.asarray(traj.segment_terminal_stm(n_seg - 1), dtype=float)
+        last = cp.selectors[-1]
+        S_tf = np.zeros((6, n_state))
+        S_tf[:, last.col_slice] = Phi_last[:, list(last.components)]
 
-    # --- free-time columns ---
+    # ---- PASS 1: row blocks (interior defects + terminal constraints) ----
+    for block in ctx.row_plan.blocks:
+        if block.kind is _BlockKind.INTERIOR_DEFECT:
+            assert block.continuity_components is not None  #true for interior defects
+            i = block.index                      # junction i, between seg i, i+1
+            pre = cp.selectors[i]                # x_i   (pre-side IC)
+            post = cp.selectors[i + 1]           # x_{i+1} (post-side IC)
+
+            # +I : d(F_i)/d(x_{i+1}), continuity rows x free post cols
+            DF[block.row_slice, post.col_slice] += _select(
+                eye6, block.continuity_components, post.components)
+
+            # -Phi_i : d(F_i)/d(x_i), continuity rows x free pre cols
+            Phi_i = np.asarray(traj.segment_terminal_stm(i), dtype=float)
+            DF[block.row_slice, pre.col_slice] += _select(
+                -Phi_i, block.continuity_components, pre.components)
+
+        elif block.kind is _BlockKind.TERMINAL:
+            c = ctx.constraints[block.index]
+            Jtf, Jx0 = _terminal_jacobians(c, state_tf, x0)
+            start = cp.selectors[0]
+
+            # implicit path: chain through the last-segment STM into state cols
+            DF[block.row_slice, :n_state] += Jtf @ S_tf
+            # direct path: residual's own x0 dependence into the start cols
+            DF[block.row_slice, start.col_slice] += Jx0[:, list(start.components)]
+
+    # ---- PASS 2: free-time columns ----
+    # Block lookup is positional -- interior block j is row_plan.blocks[j] --
+    # which holds as long as interior nodes are stored in segment order.
     if ctx.n_free_time > 0:
-        # Endpoint of every segment: e_i = pre of junction i (i < N-1), and
-        # the final state for i = N-1. Evaluate f at all endpoints at once.
         endpoints = np.empty((6, n_seg))
         for i in range(n_seg - 1):
             endpoints[:, i] = traj.junction_nodes[i].pre_state
@@ -1275,25 +1327,31 @@ def _assemble_DF(traj: "Trajectory", ctx: _ShootingContext) -> np.ndarray:
         if f_vals.shape != (6, n_seg):
             f_vals = f_vals.reshape(6, n_seg)
 
-        for p, m in enumerate(ctx.free_time_idx):
-            col = n_state + p
-            # interior: t_m as the end of segment m-1
+        for m in cp.free_time_idx:
+            col = cp.free_time_column(m)
+
+            # t_m as the END time of segment m-1 -> defect block m-1, -f
             if 1 <= m <= n_seg - 1:
-                r0 = 6 * (m - 1)
-                DF[r0:r0 + 6, col] += -f_vals[:, m - 1]
-            # interior: t_m as the start of segment m
+                block = ctx.row_plan.blocks[m - 1]
+                assert block.continuity_components is not None #true for interior defect
+                vals = -f_vals[:, m - 1]
+                DF[block.row_slice, col] += (vals[list(block.continuity_components)])
+
+            # t_m as the START time of segment m -> defect block m, +f
             if 1 <= m <= n_seg - 2:
-                r0 = 6 * m
-                DF[r0:r0 + 6, col] += f_vals[:, m]
-            # terminal: t_m moves the final state (m = N or N - 1)
+                block = ctx.row_plan.blocks[m]
+                assert block.continuity_components is not None #true for interior defect
+                vals = f_vals[:, m]
+                DF[block.row_slice, col] += (vals[list(block.continuity_components)])
+
+            # t_m moves the final state -> terminal rows, +/- Jtf @ f_tf
             if m == n_seg or m == n_seg - 1:
                 sign = 1.0 if m == n_seg else -1.0
                 f_tf = f_vals[:, n_seg - 1]
-                row = m_interior
-                for Jtf in term_Jtf:
-                    mc = Jtf.shape[0]
-                    DF[row:row + mc, col] += sign * (Jtf @ f_tf)
-                    row += mc
+                for tblock in ctx.row_plan.terminal_blocks:
+                    c = ctx.constraints[tblock.index]
+                    Jtf, _ = _terminal_jacobians(c, state_tf, x0)
+                    DF[tblock.row_slice, col] += sign * (Jtf @ f_tf)
 
     return DF
 

@@ -578,11 +578,23 @@ class TestShootingContextFromGuess:
         np.testing.assert_array_equal(ctx.free_idx, [0, 4])
         assert ctx.n_X == 2
 
-    def test_x0_ref_and_times_ref_from_guess(self, make_fake_trajectory):
+    def test_ics_ref_and_times_ref_from_guess(self, make_fake_trajectory):
         kw = _single_segment_kwargs()
         ctx = _ShootingContext.from_guess(make_fake_trajectory(**kw), 'all')
-        np.testing.assert_array_equal(ctx.x0_ref, kw['start_state'])
-        np.testing.assert_array_equal(ctx.times_ref, [0.0, 3.1])
+        # Single segment: one IC (the start state), so ics_ref is (1, 6).
+        assert ctx.ics_ref.shape == (1, 6)
+        np.testing.assert_array_equal(ctx.ics_ref[0], kw['start_state'])
+        np.testing.assert_array_equal(ctx.times_ref, kw['times'])
+
+    def test_ics_ref_stacks_start_and_junction_posts(self, make_fake_trajectory):
+        kw = _three_segment_kwargs()   # whatever the 3-seg fixture helper is
+        traj = make_fake_trajectory(**kw)
+        ctx = _ShootingContext.from_guess(traj, 'all')
+        # ics_ref[0] = start post-state; ics_ref[j+1] = junction j post-state.
+        assert ctx.ics_ref.shape == (ctx.n_junction + 1, 6)
+        np.testing.assert_array_equal(ctx.ics_ref[0], traj.start_node.post_state)
+        for j, node in enumerate(traj.junction_nodes):
+            np.testing.assert_array_equal(ctx.ics_ref[j + 1], node.post_state)
 
     def test_system_stored(self, make_fake_trajectory):
         kw = _single_segment_kwargs()
@@ -629,7 +641,7 @@ def _make_ctx(free_idx: "np.ndarray | None" = None):
         system=cast(System, None),    # never read by these tests
         n_seg=1,
         free_idx=np.array([0, 4]) if free_idx is None else free_idx,
-        x0_ref=np.zeros(6),
+        ics_ref=np.zeros((1, 6)),     # single segment -> one IC (the start)
         times_ref=np.array([0.0, 1.0]),
         free_time_idx=np.array([], dtype=int),
         constraints=(),
@@ -643,7 +655,7 @@ class TestShootingContextImmutability:
         with pytest.raises(FrozenInstanceError):
             _make_ctx().n_seg = 9
 
-    @pytest.mark.parametrize("field", ["free_idx", "x0_ref", "times_ref", "free_time_idx"])
+    @pytest.mark.parametrize("field", ["free_idx", "ics_ref", "times_ref", "free_time_idx"])
     def test_array_fields_are_read_only(self, field):
         arr = getattr(_make_ctx(), field)
         assert not arr.flags.writeable
@@ -847,7 +859,7 @@ class TestUnpack:
         assert ics[0].flags.writeable and ics[1].flags.writeable
         ics[0][0] = 999.0
         ics[1][0] = 999.0
-        np.testing.assert_array_equal(ctx.x0_ref, S0)        # source untouched
+        np.testing.assert_array_equal(ctx.ics_ref[0], S0)        # source untouched
         np.testing.assert_array_equal(X, np.arange(13.0))    # input X untouched
 
     def test_times_is_independent_copy(self, ctx_and_traj):
