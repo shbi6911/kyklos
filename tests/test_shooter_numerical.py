@@ -37,8 +37,9 @@ from kyklos.shooter import (
     TargetState,
     Periodicity,
     DifferentialCorrector,
+    NodeSpec,
 )
-from kyklos import NullJunctionNode
+from kyklos import NullJunctionNode, ImpulsiveJunctionNode
 
 pytestmark = pytest.mark.slow
 
@@ -409,6 +410,160 @@ class TestFreeTimeConvergence:
         np.testing.assert_allclose(end, x0, atol=1e-7)
         stored = np.asarray(gateway_orbit.initial_state.elements, dtype=float)
         np.testing.assert_allclose(x0[[2, 4]], stored[[2, 4]], atol=1e-6)
+
+class TestAssembleImpulsiveRows:
+    """With one junction impulsive, F and DF agree on row count and order:
+    the impulsive block contributes its 3 position-defect rows, not 6. This
+    is the assembler side of the row/column decoupling -- a 6-row F against a
+    3-row DF block would be a silent misalignment."""
+
+    def _ctx(self, make_multiseg_guess, orbit):
+        # junction 0 (boundary key 1) impulsive, junction 1 continuous; no
+        # constraints, so the row plan is 3 + 6 = 9 interior rows only.
+        guess = make_multiseg_guess(orbit, n_seg=3, with_stm=True)
+        ctx = _ShootingContext.from_guess(
+            guess, free_vars='all',
+            node_specs={1: NodeSpec.impulsive()},
+        )
+        return guess, ctx
+
+    def test_F_and_DF_agree_on_row_count(self, make_multiseg_guess,
+                                         lyapunov_orbit):
+        guess, ctx = self._ctx(make_multiseg_guess, lyapunov_orbit)
+        F = _assemble_F(guess, ctx)
+        DF = _assemble_DF(guess, ctx)
+        assert ctx.row_plan.n_rows == 9        # 3 (impulsive) + 6 (continuous)
+        assert F.shape[0] == 9
+        assert DF.shape[0] == 9
+        assert F.shape[0] == DF.shape[0]
+
+    def test_impulsive_block_is_position_defect_in_order(
+            self, make_multiseg_guess, lyapunov_orbit):
+        # F's first block is junction 0's position defect (3 rows), its second
+        # is junction 1's full defect (6 rows) -- same order DF's blocks take.
+        guess, ctx = self._ctx(make_multiseg_guess, lyapunov_orbit)
+        F = _assemble_F(guess, ctx)
+        j0 = guess.junction_nodes[0]           # impulsive (key 1 -> index 0)
+        j1 = guess.junction_nodes[1]           # continuous
+        np.testing.assert_allclose(F[0:3], j0.state_defect[[0, 1, 2]])
+        np.testing.assert_allclose(F[3:9], j1.state_defect)
+
+    def test_all_continuous_control_is_twelve_rows(self, make_multiseg_guess,
+                                                   lyapunov_orbit):
+        # Control: same guess, no node_specs -> 2 full-6 blocks = 12 rows.
+        # Confirms the impulsive case above genuinely dropped 3 rows.
+        guess = make_multiseg_guess(lyapunov_orbit, n_seg=3, with_stm=True)
+        ctx = _ShootingContext.from_guess(guess, free_vars='all')
+        F = _assemble_F(guess, ctx)
+        assert ctx.row_plan.n_rows == 12
+        assert F.shape[0] == 12
+
+"""
+Addition for test_shooter_numerical.py -- impulsive-maneuver convergence.
+Two tests, two determinacy regimes:
+
+  1. Underdetermined (min-norm). The mirror periodic-orbit solve with one
+     junction flipped to impulsive: the impulsive role drops 3 continuity
+     rows, leaving the system underdetermined by 3. The corrector's
+     minimum-norm step (np.linalg.lstsq) still converges, and since the
+     periodic orbit (delta_v = 0) is the nearby solution, the recovered
+     maneuver is ~zero. This exercises the underdetermined pathway end to end
+     plus ImpulsiveJunctionNode finalization.
+
+  2. Square (unique). A two-segment fixed-start targeting problem: 6 unknowns
+     (the junction post-state), 3 position-continuity rows + 3 position-target
+     rows = 6 equations. The truth is built with a known velocity kick, so the
+     unique solution recovers that exact delta_v.
+"""
+
+class TestImpulsiveConvergence:
+    """A junction designated impulsive converges and finalizes to an
+    ImpulsiveJunctionNode carrying the velocity discontinuity."""
+
+    def test_underdetermined_impulsive_solve(
+            self, make_multiseg_guess, cr3bp_system, lyapunov_orbit):
+        # Same setup as the square multiple-shooting mirror solve, but junction
+        # 0 (boundary key 1) is impulsive -> 3 fewer rows -> underdetermined by
+        # 3. Minimum-norm Newton converges; the smallest maneuver consistent
+        # with the periodic orbit is ~zero.
+        guess = make_multiseg_guess(lyapunov_orbit, n_seg=3, n_periods=0.5,
+                                    symmetric=True)
+        assert guess.n_segments == 3
+
+        corrector = DifferentialCorrector(tol=1e-14)
+        result = corrector.solve(
+            guess, free_vars=['x', 'vy'],
+            constraints=[TargetState({'y': 0.0, 'vx': 0.0})],
+            node_specs={1: NodeSpec.impulsive()},
+        )
+
+        # Robust core: converges, and the roles finalize as declared.
+        assert result.converged
+        assert result.final_residual < corrector.tol
+        assert result.trajectory is not None
+        j_imp = result.trajectory.junction_nodes[0]     # impulsive
+        j_cont = result.trajectory.junction_nodes[1]    # continuous
+        assert isinstance(j_imp, ImpulsiveJunctionNode)
+        assert isinstance(j_cont, NullJunctionNode)
+
+        # The impulsive role closed position continuity (its 3 enforced rows)
+        # while leaving velocity free: post position matches pre, velocity does
+        # not. This is the impulsive semantics, directly.
+        np.testing.assert_allclose(j_imp.post_state[:3], j_imp.pre_state[:3],
+                                   atol=1e-8)
+
+        # The recovered burn is a well-defined min-norm value set by the guess
+        # perturbation (O(perturb ~ 5e-3)), NOT zero: min-norm minimizes the
+        # Newton step, not |dv|, so a position-perturbed guess yields a small
+        # genuine maneuver. Loose sanity bound only -- it must not blow up.
+        assert np.linalg.norm(j_imp.delta_v) < 5e-2
+
+        # NOTE: no periodic-orbit recovery assertion here. The system is
+        # underdetermined, so the converged start state is the min-norm
+        # solution near the guess, not necessarily the exact stored orbit.
+
+    def test_square_recovers_known_delta_v(self, cr3bp_system, lyapunov_orbit):
+        # Two-segment fixed-start targeting. Build the truth with a known kick,
+        # then target its endpoint position; the unique solution recovers the
+        # kick as the junction's delta_v.
+        sys = cr3bp_system
+        x0 = np.asarray(lyapunov_orbit.initial_state.elements, dtype=float)
+        T = lyapunov_orbit.period
+        t1, t2 = T / 3.0, 2.0 * T / 3.0
+
+        arc0 = sys.propagate(x0, [0.0, t1])
+        M = np.asarray(arc0.state_at_raw(t1), dtype=float)   # (M_pos, v_minus)
+        dv_true = np.array([0.0, 3e-3, 0.0])                 # small kick, nondim
+        post_true = np.concatenate([M[:3], M[3:6] + dv_true])
+        arc1 = sys.propagate(post_true, [t1, t2])
+        target_pos = np.asarray(arc1.state_at_raw(t2), dtype=float)[:3]
+
+        # Guess: fixed start x0; junction offset in position (-> FreeJunctionNode
+        # so from_guess accepts it) with the no-maneuver velocity v_minus. The
+        # solver drives position continuous and recovers v_plus.
+        offset = np.array([2e-3, 2e-3, 2e-3, 0.0, 0.0, 0.0])
+        post_guess = M + offset
+        guess = sys.propagate([x0, post_guess], [0.0, t1, t2])
+        assert guess.n_segments == 2
+
+        corrector = DifferentialCorrector()
+        result = corrector.solve(
+            guess, free_vars='none',                 # start fixed
+            constraints=[TargetState({'x': target_pos[0],
+                                      'y': target_pos[1],
+                                      'z': target_pos[2]})],
+            node_specs={1: NodeSpec.impulsive()},
+        )
+
+        assert result.converged
+        assert result.final_residual < corrector.tol
+        assert result.trajectory is not None
+        node = result.trajectory.junction_nodes[0]
+        assert isinstance(node, ImpulsiveJunctionNode)
+        # Unique solution -> the recovered maneuver is the known kick.
+        # atol tied to SHOOTER_TOL (1e-10); loosen with the corrector tol if
+        # the split t1/t2 or kick size stresses conditioning.
+        np.testing.assert_allclose(node.delta_v, dv_true, atol=1e-8)
 
 
 if __name__ == "__main__":

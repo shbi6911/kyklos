@@ -6,13 +6,14 @@ from __future__ import annotations
 
 import warnings
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, InitVar
 from enum import Enum, auto
 from typing import Sequence, TYPE_CHECKING
 
 import numpy as np
 
 from .config import config
+from .utils import validation_error
 from .trajectory import (
     FreeJunctionNode,
     ImpulsiveJunctionNode,
@@ -23,6 +24,7 @@ if TYPE_CHECKING:
     from .system import System
     from .trajectory import Trajectory
 
+# ========== CONSTANTS AND ENUMS ==========
 
 # Singular-value cutoff for the least-squares Newton step. Internal: any
 # singular value below _LSTSQ_RCOND * s_max is treated as numerically null
@@ -30,8 +32,8 @@ if TYPE_CHECKING:
 # thresholds, applied to the retained subspace.
 _LSTSQ_RCOND = 1e-13
 
-
 # ========== STATE COMPONENT VOCABULARY ==========
+
 # Canonical base-state ordering for the package: [x, y, z, vx, vy, vz].
 _STATE_NAMES = ('x', 'y', 'z', 'vx', 'vy', 'vz')
 
@@ -55,6 +57,63 @@ _CATEGORY_INDICES = {
     'none':     [],
 }
 
+class _BlockKind(Enum):
+    """Which method-family produces a row block, and how it maps into X.
+
+    The assembler branches on this tag (not on isinstance) to fill a block:
+    an INTERIOR_DEFECT block reads a junction node's state_defect / segment
+    STM and places +I / -Phi directly; a TERMINAL block reads a constraint's
+    residual / jacobian_tf and chains it through S_tf. A block's `index` is
+    read relative to its kind: a junction index (into traj.junction_nodes and
+    the segment STMs) for INTERIOR_DEFECT, a constraint index (into
+    ctx.constraints) for TERMINAL.
+    """
+    INTERIOR_DEFECT = auto()
+    TERMINAL = auto()
+
+class _NodeTarget(Enum):
+    """Converged output node type a junction role resolves to.
+
+    Read by DifferentialCorrector._finalize to decide which JunctionNode
+    subclass a converged FreeJunctionNode is rebuilt as. This is distinct
+    from _BlockKind: _BlockKind drives assembly (how a row block is filled),
+    _NodeTarget drives finalization (what the junction becomes once the solve
+    has converged). A junction is a FreeJunctionNode throughout the solve
+    regardless of this tag; the tag only matters at the very end.
+
+    Members
+    -------
+    NULL
+        Continuous junction -> NullJunctionNode. All six components are driven
+        continuous, so post == pre at convergence.
+    IMPULSIVE
+        Position-continuous velocity jump -> ImpulsiveJunctionNode. Position
+        is driven continuous; velocity is free to differ, and that difference
+        is the maneuver's delta_v.
+    FREE
+        Deliberately unlabeled / unrecognized continuity pattern ->
+        FreeJunctionNode. The converged junction keeps whatever continuity was
+        enforced but is not claimed to be any standard physical maneuver type.
+    """
+    NULL = auto()
+    IMPULSIVE = auto()
+    FREE = auto()
+
+# String spellings accepted at the API boundary (NodeSpec.custom(becomes=...)),
+# mapped to the internal enum. Kept as role-ish words rather than node class
+# names so the spec reads in the vocabulary the rest of the package uses.
+_BECOMES_FROM_STR = {
+    'continuous': _NodeTarget.NULL,
+    'impulsive':  _NodeTarget.IMPULSIVE,
+    'free':       _NodeTarget.FREE,
+}
+
+# Canonical component tuples, named once so the roles and the inference table
+# are not sprinkled with literals.
+_ALL_COMPONENTS = tuple(range(6))
+_POSITION_COMPONENTS = (0, 1, 2)
+
+
 # ========== INITIAL CONSTRAINTS ==========
 
 def _parse_free_vars(free_vars: str | Sequence[str]) -> np.ndarray:
@@ -64,9 +123,9 @@ def _parse_free_vars(free_vars: str | Sequence[str]) -> np.ndarray:
     The differential corrector adjusts a subset of the start-state
     components during iteration; this helper translates a user-facing
     specification into the canonical index array the corrector packs into
-    the free-variable vector X. Junction post-states are handled
-    separately (they are free by virtue of being FreeJunctionNodes), so
-    this function concerns only the start state.
+    the free-variable vector X. Junction post-states are also handled by this
+    function, but that specification is routed through the node_spec input.
+    (See NodeSpec, esp. NodeSpec.custom())
 
     Two input forms are accepted:
 
@@ -487,6 +546,265 @@ class CallableConstraint(TerminalConstraint):
             np.asarray(self._dg_dx0(state_tf, x0), dtype=float)
         )
 
+# ========== PER-JUNCTION ROLE SPEC ==========
+
+@dataclass(frozen=True)
+class NodeSpec:
+    """
+    Per-junction role for multiple shooting.
+
+    A NodeSpec collapses the three quantities a junction's role fixes -- which
+    post-state components are free (the column-axis selector), which components
+    it enforces continuity on (the row-axis selector), and what node type it
+    converges to -- into one immutable object. The differential corrector reads
+    ``free`` and ``continuity`` when building the column and row plans, and
+    ``becomes`` when finalizing a converged trajectory.
+
+    Construct one through a named constructor rather than the raw fields:
+
+    - ``NodeSpec.continuous()`` -- the ordinary patch point. Fully free
+      post-state, full-state continuity, converges to a NullJunctionNode. This
+      is the default applied to every junction with no explicit spec, so it is
+      rarely written by hand.
+    - ``NodeSpec.impulsive()`` -- an impulsive maneuver node. Fully free
+      post-state, position-only continuity (the velocity is free to jump, and
+      that jump is the maneuver), converges to an ImpulsiveJunctionNode.
+    - ``NodeSpec.custom(free_vars, continuity, becomes=None)`` -- the escape
+      hatch for a role that is neither of the above (e.g. a burn restricted to
+      an in-plane subspace). Both component specs accept the same category
+      strings and name lists as the shooter's ``free_vars`` argument.
+
+    Fields
+    ------
+    free : tuple of int
+        Ascending post-state component indices (subset of 0..5) that are free
+        for this junction -- the column-axis selector fed to the column plan.
+    continuity : tuple of int
+        Ascending component indices (subset of 0..5) whose continuity defect is
+        enforced -- the row-axis selector fed to the row plan. Its length is
+        the junction's interior-defect row count.
+    becomes : _NodeTarget
+        The converged output node type. Set explicitly through the named
+        constructors; inferred from ``continuity`` when ``custom`` is called
+        with ``becomes=None``.
+
+    Notes
+    -----
+    The two axes are independent by design: an impulsive node has three
+    enforced continuity rows but six free columns (the post-velocity must be
+    free -- it is the maneuver -- and the post-position must be free so the
+    three position-continuity rows can pin it to the pre-position). The one
+    coupling NodeSpec enforces is well-posedness: a component whose continuity
+    is enforced should be among the free components, so the junction can close
+    that defect by moving its own post-state. This is checked as a heuristic
+    (see below), not a hard invariant, because in a multi-segment chain an
+    enforced component can sometimes be closed by moving upstream ICs through
+    the STM.
+
+    Validation
+    ----------
+    Malformed index tuples (out of range, not ascending-unique) raise
+    unconditionally -- that is an API usage error. The subset and
+    ``becomes``-consistency checks route through ``validation_error`` and so
+    honor ``config.STRICT_VALIDATION`` (raise when strict, warn otherwise),
+    because a genuinely ill-posed global system still surfaces as the solver's
+    rank-deficiency warning.
+
+    Examples
+    --------
+    >>> NodeSpec.continuous()
+    NodeSpec(free=(x,y,z,vx,vy,vz), continuity=(x,y,z,vx,vy,vz), becomes=continuous)
+    >>> NodeSpec.impulsive()
+    NodeSpec(free=(x,y,z,vx,vy,vz), continuity=(x,y,z), becomes=impulsive)
+    >>> NodeSpec.custom(free_vars='all', continuity=['x', 'y', 'z', 'vz'])
+    NodeSpec(free=(x,y,z,vx,vy,vz), continuity=(x,y,z,vz), becomes=free)
+    """
+
+    free: tuple[int, ...]
+    continuity: tuple[int, ...]
+    becomes: _NodeTarget
+
+    # ---- construction guards ----
+
+    def __post_init__(self) -> None:
+        # Structural validity of the index tuples is a hard error: a role built
+        # with an out-of-range or unsorted component tuple is malformed, not
+        # merely ill-posed. The named constructors never trip these (they feed
+        # sorted, in-range tuples); these guard direct/raw construction.
+        self._validate_index_tuple(self.free, 'free')
+        self._validate_index_tuple(self.continuity, 'continuity')
+
+        if not isinstance(self.becomes, _NodeTarget):
+            raise TypeError(
+                f"becomes must be a _NodeTarget, got "
+                f"{type(self.becomes).__name__}. Build NodeSpec through its "
+                f"named constructors (continuous / impulsive / custom)."
+            )
+
+        # Local well-posedness: enforce continuity only on components this node
+        # can move. Heuristic -- sufficient for local closure, not strictly
+        # necessary globally (upstream ICs may close a component through the
+        # STM), so it routes through STRICT_VALIDATION rather than raising flat.
+        extra = tuple(c for c in self.continuity if c not in set(self.free))
+        if extra:
+            validation_error(
+                f"NodeSpec enforces continuity on component(s) "
+                f"{self._names(extra)} that are not free on the post-state "
+                f"(free={self._names(self.free)}). This junction cannot close "
+                f"those defects by adjusting its own post-state; free those "
+                f"components or drop them from continuity."
+            )
+
+        # becomes-vs-continuity consistency: catch an explicit becoming that the
+        # target node type's own constructor would later reject in _finalize,
+        # so the contradiction fails now instead of after a full solve.
+        if (self.becomes is _NodeTarget.NULL
+                and self.continuity != _ALL_COMPONENTS):
+            validation_error(
+                f"NodeSpec becomes a continuous (NULL) junction but enforces "
+                f"continuity only on {self._names(self.continuity)}; a "
+                f"NullJunctionNode requires full-state continuity. Enforce all "
+                f"six components, or use becomes='free'."
+            )
+        if (self.becomes is _NodeTarget.IMPULSIVE
+                and not set(_POSITION_COMPONENTS) <= set(self.continuity)):
+            validation_error(
+                f"NodeSpec becomes an IMPULSIVE junction but does not enforce "
+                f"position continuity (needs {self._names(_POSITION_COMPONENTS)}"
+                f", has {self._names(self.continuity)}); an "
+                f"ImpulsiveJunctionNode requires position continuity."
+            )
+
+    @staticmethod
+    def _validate_index_tuple(idx: tuple[int, ...], label: str) -> None:
+        """Hard-validate a component-index tuple: ascending, unique, in 0..5."""
+        for i in idx:
+            # bool is an int subclass; reject it so True/False are not read as
+            # component 1/0 (same guard style as the free_times parser).
+            if isinstance(i, bool) or not isinstance(i, (int, np.integer)):
+                raise TypeError(
+                    f"{label} entries must be integer component indices, got "
+                    f"{type(i).__name__}: {i!r}."
+                )
+        vals = [int(i) for i in idx]
+        if any(v < 0 or v > 5 for v in vals):
+            raise ValueError(
+                f"{label} component indices must lie in [0, 5], got {tuple(vals)}."
+            )
+        if vals != sorted(set(vals)):
+            raise ValueError(
+                f"{label} must be ascending with no duplicates, got {tuple(vals)}."
+            )
+
+    @staticmethod
+    def _names(idx: tuple[int, ...]) -> str:
+        """Render a component-index tuple as its state names, e.g. (x,y,z)."""
+        return "(" + ",".join(_STATE_NAMES[i] for i in idx) + ")"
+
+    # ---- named constructors (the intended API) ----
+
+    @classmethod
+    def continuous(cls) -> "NodeSpec":
+        """Ordinary patch point: fully free, full continuity, becomes NULL.
+
+        The default role for any junction the user does not name. Post == pre
+        at convergence, and the junction is rebuilt as a NullJunctionNode.
+        """
+        return cls(free=_ALL_COMPONENTS,
+                   continuity=_ALL_COMPONENTS,
+                   becomes=_NodeTarget.NULL)
+
+    @classmethod
+    def impulsive(cls) -> "NodeSpec":
+        """Impulsive maneuver: fully free, position continuity, becomes IMPULSIVE.
+
+        The post-velocity is free (it carries the maneuver) and the post-
+        position is free but pinned continuous to the pre-position by the three
+        position-continuity rows. The converged velocity discontinuity is the
+        delta_v, and the junction is rebuilt as an ImpulsiveJunctionNode.
+        """
+        return cls(free=_ALL_COMPONENTS,
+                   continuity=_POSITION_COMPONENTS,
+                   becomes=_NodeTarget.IMPULSIVE)
+
+    @classmethod
+    def custom(cls,
+               free_vars: str | list[str] | tuple[str, ...],
+               continuity: str | list[str] | tuple[str, ...],
+               becomes: str | None = None) -> "NodeSpec":
+        """Escape hatch: an arbitrary free / continuity / output combination.
+
+        Parameters
+        ----------
+        free_vars : str or sequence of str
+            Free post-state components. Same forms as the shooter's free_vars
+            argument: a category string ('all', 'position', 'velocity',
+            'planar', 'none') or a list of component names.
+        continuity : str or sequence of str
+            Components whose continuity is enforced. Same accepted forms as
+            free_vars.
+        becomes : {'continuous', 'impulsive', 'free'} or None, optional
+            The converged output node type. None (default) infers it from the
+            continuity pattern: full continuity -> continuous, position-only
+            continuity -> impulsive, anything else -> free.
+
+        Notes
+        -----
+        Both component specs are resolved through the same _parse_free_vars the
+        start-state free_vars uses, so a bad category or component name fails
+        here at construction with the identical error message.
+        """
+        free_t = tuple(int(i) for i in _parse_free_vars(free_vars))
+        cont_t = tuple(int(i) for i in _parse_free_vars(continuity))
+        target = cls._resolve_becomes(becomes, cont_t)
+        return cls(free=free_t, continuity=cont_t, becomes=target)
+
+    # ---- becomes resolution ----
+
+    @staticmethod
+    def _resolve_becomes(becomes: str | None,
+                         continuity: tuple[int, ...]) -> _NodeTarget:
+        """Resolve the user-facing becomes argument to a _NodeTarget.
+
+        None -> inferred from the continuity pattern; a string -> looked up in
+        the accepted spellings; anything else -> TypeError.
+        """
+        if becomes is None:
+            return NodeSpec._infer_becomes(continuity)
+        if isinstance(becomes, str):
+            key = becomes.strip().lower()
+            if key not in _BECOMES_FROM_STR:
+                valid = ", ".join(repr(k) for k in _BECOMES_FROM_STR)
+                raise ValueError(
+                    f"Unknown becomes {becomes!r}. Valid values: {valid}, or "
+                    f"None to infer from the continuity pattern."
+                )
+            return _BECOMES_FROM_STR[key]
+        raise TypeError(
+            f"becomes must be a string or None, got {type(becomes).__name__}."
+        )
+
+    @staticmethod
+    def _infer_becomes(continuity: tuple[int, ...]) -> _NodeTarget:
+        """Infer the output node type from the continuity pattern.
+
+        Full continuity is a continuous (NULL) junction; position-only
+        continuity is an IMPULSIVE junction; any other pattern is left as a
+        FREE junction, honestly unlabeled rather than forced into a physical
+        type it does not match.
+        """
+        if continuity == _ALL_COMPONENTS:
+            return _NodeTarget.NULL
+        if continuity == _POSITION_COMPONENTS:
+            return _NodeTarget.IMPULSIVE
+        return _NodeTarget.FREE
+
+    # ---- display ----
+
+    def __repr__(self) -> str:
+        return (f"NodeSpec(free={self._names(self.free)}, "
+                f"continuity={self._names(self.continuity)}, "
+                f"becomes={self.becomes.name.lower()})")
 
 # ========== INTERNAL SOLVE CONTEXT ==========
 
@@ -500,21 +818,6 @@ class CallableConstraint(TerminalConstraint):
 # construction and never changes over a solve. Iterate-dependent quantities
 # (segment STMs, S_tf, the vector field) are NOT here; the assembler builds
 # them fresh each Newton step and reads this plan to know where to place them.
-
-class _BlockKind(Enum):
-    """Which method-family produces a row block, and how it maps into X.
-
-    The assembler branches on this tag (not on isinstance) to fill a block:
-    an INTERIOR_DEFECT block reads a junction node's state_defect / segment
-    STM and places +I / -Phi directly; a TERMINAL block reads a constraint's
-    residual / jacobian_tf and chains it through S_tf. A block's `index` is
-    read relative to its kind: a junction index (into traj.junction_nodes and
-    the segment STMs) for INTERIOR_DEFECT, a constraint index (into
-    ctx.constraints) for TERMINAL.
-    """
-    INTERIOR_DEFECT = auto()
-    TERMINAL = auto()
-
 
 @dataclass(frozen=True)
 class _RowBlock:
@@ -630,22 +933,28 @@ class _ColumnPlan:
         """
         return self.n_state_block + self.free_time_idx.index(m)
 
+# ========== PLAN / SPEC BUILDERS ==========
 
-def _build_row_plan(n_junction: int, constraints: Sequence) -> _RowPlan:
+def _build_row_plan(node_specs: Sequence["NodeSpec"],
+                    constraints: Sequence) -> "_RowPlan":
     """Assemble the row layout: interior defect blocks, then terminal blocks.
 
     Interior defects first (one block per junction, junction order), then
     terminal constraints (one block per constraint, constraint order) -- the
     single source of truth for the row ordering F and DF must share.
+
+    Each junction's defect block enforces continuity on its own
+    ``spec.continuity`` components, so its row count is len(spec.continuity):
+    six for a continuous patch point, three for an impulsive maneuver
+    (position only).
     """
     blocks: list[_RowBlock] = []
     offset = 0
-    for j in range(n_junction):
-        # Phase 1: every FreeJunctionNode contributes a full 6-row defect.
-        # Phase 2 makes this per-node (3 for position-only continuity).
-        blocks.append(_RowBlock(offset, 6, tuple(range(6)), 
-                                _BlockKind.INTERIOR_DEFECT, j))
-        offset += 6
+    for j, spec in enumerate(node_specs):
+        cont = spec.continuity
+        n = len(cont)
+        blocks.append(_RowBlock(offset, n, cont, _BlockKind.INTERIOR_DEFECT, j))
+        offset += n
     for i, c in enumerate(constraints):
         n = int(c.n_rows)
         blocks.append(_RowBlock(offset, n, None, _BlockKind.TERMINAL, i))
@@ -655,25 +964,26 @@ def _build_row_plan(n_junction: int, constraints: Sequence) -> _RowPlan:
 
 def _build_column_plan(
     free_idx: np.ndarray,
-    n_seg: int,
+    node_specs: Sequence["NodeSpec"],
     free_time_idx: np.ndarray,
-) -> _ColumnPlan:
+) -> "_ColumnPlan":
     """Assemble the column layout of X from the free-var / free-time spec.
 
     Column regions in order: free start components ([0, n_fs)), junction
-    post-states (six columns each in Phase 1), then free-time columns.
-    col_start accumulates as a running sum so the layout stays correct if a
-    junction ever contributes fewer than six columns (Phase 2).
+    post-states, then free-time columns. Each junction contributes
+    len(spec.free) columns (six for continuous and impulsive roles; fewer for
+    a subspace-restricted custom role). col_start accumulates as a running sum
+    so the layout stays correct when a junction contributes fewer than six
+    columns.
     """
-    n_junction = n_seg - 1
     n_fs = int(free_idx.size)
 
     selectors: list[_Selector] = [_Selector(tuple(int(i) for i in free_idx), 0)]
     col = n_fs
-    for _ in range(n_junction):
-        # Phase 1: every junction post-state is fully free (all six comps).
-        selectors.append(_Selector(tuple(range(6)), col))
-        col += 6
+    for spec in node_specs:
+        comps = spec.free
+        selectors.append(_Selector(comps, col))
+        col += len(comps)
 
     n_state_block = col
     n_X = n_state_block + int(free_time_idx.size)
@@ -684,6 +994,138 @@ def _build_column_plan(
         n_X=n_X,
         free_time_idx=tuple(int(m) for m in free_time_idx),
     )
+
+
+def _resolve_node_specs(node_specs: dict | None,
+                        n_seg: int) -> tuple[NodeSpec, ...]:
+    """
+    Expand a sparse per-junction node_specs mapping to one NodeSpec per junction.
+
+    The sole home for two pieces of the node_specs convention: the mapping
+    from a user-facing boundary-time key to an internal junction position, and
+    the "unspecified junction defaults to continuous" rule. Both plan builders
+    and _finalize go through here so a junction's role is defined in exactly
+    one place -- if the key arithmetic or the default lived in two functions,
+    from_guess and _finalize could silently disagree about what junction j is.
+
+    Key convention (parallel to free_times)
+    ---------------------------------------
+    Keys are 1-based boundary-time indices, the same indices free_times uses:
+    the interior junction between segments j and j+1 sits at boundary time
+    j + 1. Valid keys are therefore [1, n_seg - 1]. Boundary indices 0 (the
+    start node) and n_seg (the end node) are not interior junctions and are
+    rejected. A key absent from the mapping defaults to NodeSpec.continuous(),
+    so a plain patch point never needs to be written out.
+
+    Parameters
+    ----------
+    node_specs : dict or None
+        Mapping from a 1-based interior-junction boundary index to a NodeSpec.
+        None (or an empty mapping) yields an all-continuous problem.
+    n_seg : int
+        Number of trajectory segments N. The trajectory has N + 1 boundary
+        times and N - 1 interior junctions.
+
+    Returns
+    -------
+    tuple of NodeSpec
+        One NodeSpec per interior junction, length n_seg - 1, 0-indexed in
+        segment order (element j is the junction between segments j and j+1).
+        Empty for a single-segment (single-shooting) problem.
+
+    Raises
+    ------
+    TypeError
+        If node_specs is neither None nor a dict, a key is not an integer, or
+        a value is not a NodeSpec.
+    ValueError
+        If a key is a boundary index (0 or n_seg) or otherwise outside
+        [1, n_seg - 1].
+
+    Notes
+    -----
+    Called at both ends of the solve, this function is relied on to give the
+    same answer each time. That holds because the corrector preserves segment
+    count: the converged trajectory _finalize resolves against has the same
+    n_seg as the guess from_guess resolved against, so both calls see the same
+    (node_specs, n_seg). If a future variant ever changed segment count during
+    a solve (e.g. adaptive mesh refinement), _finalize would resolve against
+    the new count and mismatch loudly here rather than silently remapping.
+    """
+    n_junction = n_seg - 1
+
+    # Default every junction to a continuous patch point; override from the
+    # mapping below. This is the "missing key = continuous" rule, in one place.
+    resolved: list[NodeSpec] = [NodeSpec.continuous()
+                                for _ in range(n_junction)]
+
+    if node_specs is None:
+        return tuple(resolved)
+    if not isinstance(node_specs, dict):
+        raise TypeError(
+            f"node_specs must be None or a dict mapping interior-junction "
+            f"indices to NodeSpec instances, got {type(node_specs).__name__}."
+        )
+
+    for key, spec in node_specs.items():
+        # --- key: integer, mirroring the free_times bool/int guard ---
+        # bool is an int subclass; reject it so True/False are not read as
+        # boundary indices 1/0 (and so True would not collide with key 1).
+        if isinstance(key, bool) or not isinstance(key, (int, np.integer)):
+            raise TypeError(
+                f"node_specs keys must be integer boundary-time indices, got "
+                f"{type(key).__name__}: {key!r}."
+            )
+        k = int(key)
+
+        # --- key: boundary nodes are not interior junctions ---
+        # FUTURE (terminal/initial maneuvers): keys 0 and n_seg are exactly
+        # the hook points for a start/end ImpulsiveBoundaryNode configured via
+        # NodeSpec. When that feature lands, these two raises become the
+        # dispatch into _finalize's boundary-node construction instead of hard
+        # errors, and the messages below will need revisiting (a terminal
+        # maneuver is a boundary node, not a constraint). Until then they are
+        # unambiguously out of scope for node_specs, so they raise.
+        if k == 0:
+            raise ValueError(
+                f"node_specs index 0 refers to the start time t0 (the "
+                f"trajectory's start node), not an interior junction. "
+                f"node_specs configures interior junctions only."
+            )
+        if k == n_seg:
+            raise ValueError(
+                f"node_specs index {k} refers to the final boundary time (the "
+                f"trajectory's end node), not an interior junction. node_specs "
+                f"configures interior junctions only; terminal state targeting "
+                f"is done through constraints."
+            )
+
+        # --- key: otherwise in range [1, n_seg - 1] ---
+        if not 1 <= k <= n_junction:
+            if n_junction < 1:
+                raise ValueError(
+                    f"node_specs index {k} is out of range: a single-segment "
+                    f"trajectory has no interior junctions."
+                )
+            raise ValueError(
+                f"node_specs index {k} out of range [1, {n_junction}] "
+                f"(interior junction indices; index {n_seg} is the final "
+                f"boundary)."
+            )
+
+        # --- value: a NodeSpec, built through its named constructors ---
+        if not isinstance(spec, NodeSpec):
+            raise TypeError(
+                f"node_specs values must be NodeSpec instances, got "
+                f"{type(spec).__name__} for index {k}. Build one via "
+                f"NodeSpec.continuous(), NodeSpec.impulsive(), or "
+                f"NodeSpec.custom(...)."
+            )
+
+        # Boundary index k -> 0-based junction position k - 1.
+        resolved[k - 1] = spec
+
+    return tuple(resolved)
 
 @dataclass(frozen=True)
 class _ShootingContext:
@@ -701,7 +1143,7 @@ class _ShootingContext:
     Free-variable vector layout:
 
         X = [ start free comps | junction post-states | free times ]
-              len n_free_start    len 6 * n_junction     len n_free_time
+              len n_free_start    len per node_specs     len n_free_time
 
     Attributes
     ----------
@@ -731,17 +1173,13 @@ class _ShootingContext:
     row_plan : _RowPlan
         A custom object laying out the row structure of the defect Jacobian (DF).
         the ordering encoded here is used by _assemble_F() and _assemble_DF() to
-        coordinate the residual vector X and Jacobian DF rows.
+        coordinate the residual vector F and Jacobian DF rows.
     column_plan : _ColumnPlan
         A custom object detailing the column ordering of the defect Jacobian (DF).
         Contains the ordering of all free variables in the shooting problem,
         consisting of initial free variables, interior nodes, and free times.
-
-    Notes
-    -----
-    Phase 1 scope: all interior junctions must be FreeJunctionNodes.
-    ImpulsiveJunctionNode support (Parameterization A: free post-state with
-    a 3-row position-continuity defect) is deferred to a later phase.
+        Used by _pack, _unpack and _assemble_DF() to coordinate the free variable 
+        vector X and the columns of Jacobian DF. 
     """
 
     system: "System"
@@ -751,10 +1189,11 @@ class _ShootingContext:
     times_ref: np.ndarray
     free_time_idx: np.ndarray
     constraints: tuple
+    node_specs: InitVar[tuple[NodeSpec, ...]]
     row_plan: _RowPlan = field(init=False, repr=False)
     column_plan: _ColumnPlan = field(init=False, repr=False)
 
-    def __post_init__(self) -> None:
+    def __post_init__(self, node_specs: tuple["NodeSpec", ...]) -> None:
         # Take ownership of the array fields: store private, read-only
         # copies so the shared context is fully immutable and constructing
         # it never mutates caller-held arrays.
@@ -762,16 +1201,21 @@ class _ShootingContext:
             arr = np.array(getattr(self, name), copy=True)
             arr.flags.writeable = False
             object.__setattr__(self, name, arr)
+
         object.__setattr__(
             self, 'row_plan',
-            _build_row_plan(self.n_seg - 1, self.constraints),
+            _build_row_plan(node_specs, self.constraints),
         )
         object.__setattr__(
             self, 'column_plan',
-            _build_column_plan(self.free_idx, self.n_seg, self.free_time_idx),
+            _build_column_plan(self.free_idx, node_specs, self.free_time_idx),
         )
 
-        # Consistency check for column plan and number of IC reference states
+        # Consistency check for column plan and number of IC reference states.
+        # This also catches a node_specs / n_seg length disagreement: the
+        # column plan has 1 + len(node_specs) selectors, so if the resolver
+        # ever produced the wrong count it would surface here rather than as a
+        # silent misalignment downstream.
         n_ics = 1 + self.n_junction
         if self.ics_ref.shape != (n_ics, 6):
             raise ValueError(
@@ -832,66 +1276,79 @@ class _ShootingContext:
         free_vars: str | Sequence[str],
         constraints: Sequence | None = None,
         free_times: Sequence[int | np.integer] | None = None,
+        node_specs: dict | None = None,
     ) -> "_ShootingContext":
         """
         Build a context from an initial-guess Trajectory and problem spec.
-
+    
         Performs all structural validation up front (node types, time-index
-        ranges, constraint normalization/binding) so the iteration loop can
-        assume a well-formed problem.
-
+        ranges, constraint normalization/binding, node-spec resolution) so the
+        iteration loop can assume a well-formed problem.
+    
         Parameters
         ----------
         traj : Trajectory
-            The initial-guess trajectory. Defines segment count, the
-            reference start state, and the reference boundary times.
+            The initial-guess trajectory. Defines segment count, the reference
+            start state, and the reference boundary times. Every interior junction
+            must be a FreeJunctionNode: a shooting guess is discontinuous, and a
+            junction's converged role is set through node_specs, not by its guess
+            type.
         free_vars : str or sequence of str
             Free start-state specification; see _parse_free_vars.
         constraints : sequence, optional
-            Terminal constraints -- TerminalConstraint instances or 
-            CallableConstraints. None or empty yields no terminal
-            constraints.
+            Terminal constraints -- TerminalConstraint instances or
+            CallableConstraints. None or empty yields no terminal constraints.
         free_times : sequence of int, or None
-            Boundary-time indices that are free, drawn from [1, n_seg].
-            Index n_seg is the final time. None (default) fixes all times.
-
+            Boundary-time indices that are free, drawn from [1, n_seg]. Index
+            n_seg is the final time. None (default) fixes all times.
+        node_specs : dict, or None
+            Mapping from a 1-based interior-junction boundary index (the same
+            index convention as free_times) to a NodeSpec, designating that
+            junction's role. Junctions absent from the mapping default to
+            continuous patch points. None (default) makes every junction a
+            continuous patch point. See _resolve_node_specs.
+    
         Returns
         -------
         _ShootingContext
-
+    
         Raises
         ------
-        NotImplementedError
-            If any interior junction is not a FreeJunctionNode (Phase 1
-            scope).
         ValueError
-            If a free-time index is out of range [1, n_seg], duplicated, or
-            references t0 (index 0, always fixed).
+            If any interior junction is not a FreeJunctionNode; if a free-time
+            index is out of range [1, n_seg], duplicated, or references t0; or if
+            a node_specs key is a boundary index or otherwise out of range.
         TypeError
-            If free_times is neither None nor a list/tuple of ints, or a
-            constraint is neither a TerminalConstraint nor callable.
+            If free_times, node_specs, or a constraint has the wrong type.
         """
         free_idx = _parse_free_vars(free_vars)
         n_seg = traj.n_segments
 
-        # Phase 1: only free junctions are supported.
+        # Interior junctions are carried as FreeJunctionNodes in a guess. A raw
+        # shooting guess is discontinuous, so an ImpulsiveJunctionNode (which
+        # enforces position continuity at construction) or a NullJunctionNode
+        # cannot even represent it; the *role* a junction converges to is declared
+        # through node_specs, not by its type in the guess.
         for k, node in enumerate(traj.junction_nodes, start=1):
             if isinstance(node, FreeJunctionNode):
                 continue
             if isinstance(node, ImpulsiveJunctionNode):
-                raise NotImplementedError(
-                    f"Interior junction {k} is an ImpulsiveJunctionNode. "
-                    f"Impulsive maneuver support (Parameterization A) is "
-                    f"deferred to a later phase; Phase 1 handles "
-                    f"FreeJunctionNode patch points only."
+                raise ValueError(
+                    f"Interior junction {k} is an ImpulsiveJunctionNode. Shooting "
+                    f"guesses carry all junctions as FreeJunctionNode; designate a "
+                    f"junction as an impulsive maneuver through "
+                    f"node_specs={{{k}: NodeSpec.impulsive()}}, not by placing an "
+                    f"ImpulsiveJunctionNode in the guess."
                 )
-            raise NotImplementedError(
-                f"Interior junction {k} is a {type(node).__name__}. Phase 1 "
-                f"supports FreeJunctionNode patch points only."
+            raise ValueError(
+                f"Interior junction {k} is a {type(node).__name__}. Shooting "
+                f"guesses carry all interior junctions as FreeJunctionNode; set a "
+                f"junction's role through node_specs."
             )
 
         free_time_idx = cls._parse_free_times(free_times, n_seg)
         bound_constraints = cls._validate_constraints(constraints, traj.system)
+        resolved_specs = _resolve_node_specs(node_specs, n_seg)
 
         # No defensive copies here: __post_init__ takes ownership by copying
         # and freezing every array field, so passing fresh-or-not arrays is
@@ -911,6 +1368,7 @@ class _ShootingContext:
             times_ref=times_ref,
             free_time_idx=free_time_idx,
             constraints=bound_constraints,
+            node_specs=resolved_specs,
         )
 
     @staticmethod
@@ -998,7 +1456,6 @@ class _ShootingContext:
             bound.append(constraint.bind(system))
         return tuple(bound)
 
-
 # ========== UTILITY HELPERS ==========
 
 def _select(matrix: np.ndarray, rows: tuple[int, ...],
@@ -1040,10 +1497,8 @@ def _pack(traj: "Trajectory", ctx: _ShootingContext) -> np.ndarray:
 
     Which components of each IC are free is read from the column plan's
     per-IC selectors, not assumed to be all six: an IC contributes only its
-    free components to X. In Phase 1 every junction post-state is fully free,
-    so this reduces to taking the whole post-state; the selector form is what
-    lets a partially-free junction (Phase 2) pack only its free components
-    without changing this function.
+    free components to X. Which variables are free was input to solve() via
+    node_specs and then incorporated into ctx.
 
     Parameters
     ----------
@@ -1104,8 +1559,8 @@ X: np.ndarray,
     reference row (ics_ref), then overwrite its free components with the
     corresponding slice of X. Which components are free, and where their
     columns sit in X, come from the column plan's per-IC selectors -- so a
-    partially-free IC (Phase 2) scatters only its free components with no
-    change here, and fixed components keep their reference value.
+    partially-free IC scatters only its free components with no change here, 
+    and fixed components keep their reference value.
 
     Parameters
     ----------
@@ -1157,9 +1612,9 @@ def _assemble_F(traj: "Trajectory", ctx: _ShootingContext) -> np.ndarray:
     F stacks two blocks:
 
     1. Interior defects -- the state discontinuity at each junction, taken
-       as node.state_defect (post - pre). In Phase 1 every junction is a
-       FreeJunctionNode contributing all 6 components, so this block has
-       6 * (n_seg - 1) rows, ordered by junction.
+       as node.state_defect (post - pre), then indexed by free variables stored
+       in ctx.column_plan.  All nodes should have six free variables except for
+       a custom NodeSpec.
     2. Terminal residuals -- each constraint's residual(state_tf, x0),
        concatenated in constraint order. state_tf is the final propagated
        state (end_node.pre_state); x0 is the current start state.
@@ -1178,29 +1633,29 @@ def _assemble_F(traj: "Trajectory", ctx: _ShootingContext) -> np.ndarray:
     -------
     np.ndarray
         Constraint vector, shape (m,), where
-        m = 6 * (n_seg - 1) + sum of constraint residual lengths. Shape
+        sum of node free vars + sum of constraint residual lengths. Shape
         (0,) only if there are neither junctions nor constraints.
     """
     blocks: list[np.ndarray] = []
 
-    # Interior defects: post - pre at each junction.
-    for k, node in enumerate(traj.junction_nodes, start=1):
-        defect = node.state_defect
-        if defect is None:
-            raise RuntimeError(
-                f"Junction {k} has an undefined state defect; expected a "
-                f"propagated FreeJunctionNode with both states present."
-            )
-        blocks.append(np.asarray(defect, dtype=float))
-
-    # Terminal residuals: actual - target at the final state.
     if ctx.constraints:
         state_tf = np.asarray(traj.end_node.pre_state, dtype=float)
         x0 = np.asarray(traj.start_node.post_state, dtype=float)
-        for c in ctx.constraints:
+
+    for block in ctx.row_plan.blocks:
+        k = block.index                 # 0 based index for nodes and constraints
+        if block.kind is _BlockKind.INTERIOR_DEFECT:
+            assert block.continuity_components is not None  # true for interior defect
+
+            defect = traj.junction_nodes[k].state_defect
+            blocks.append(np.asarray(defect, dtype=float)
+                            [list(block.continuity_components)
+                        ])
+        elif block.kind is _BlockKind.TERMINAL:
+            c = ctx.constraints[k]
             r = np.atleast_1d(
-                np.asarray(c.residual(state_tf, x0), dtype=float)
-            )
+                    np.asarray(c.residual(state_tf, x0), dtype=float)
+                )
             blocks.append(r)
 
     if not blocks:
@@ -1373,8 +1828,8 @@ class ShooterResult:
     ----------
     trajectory : Trajectory or None
         The converged trajectory on success (interior junctions converted to
-        NullJunctionNodes at the solver tolerance), or the last iterate on
-        non-convergence. None only if the very first propagation failed.
+        appropriate nodes per node_specs, at the solver tolerance), or the last 
+        iterate on non-convergence. None only if the very first propagation failed.
     converged : bool
         Whether ||F|| fell below the solver tolerance.
     iterations : int
@@ -1391,7 +1846,7 @@ class ShooterResult:
     iterates : list of Trajectory or None
         The trajectory at each evaluated iterate. Populated only when
         solve(iterates=True). These are the raw propagated iterates, with
-        FreeJunctionNodes intact (the Null conversion applies to the final
+        FreeJunctionNodes intact (the conversion applies to the final
         `.trajectory` only).
     """
 
@@ -1418,8 +1873,8 @@ class DifferentialCorrector:
     A single object handles both single and multiple shooting -- the
     distinction is just how many segments the initial-guess Trajectory has.
     It operates on a Trajectory initial guess plus a problem specification
-    (free start-state components, terminal constraints, free times) and
-    iterates a minimum-norm Newton scheme until the constraint vector F is
+    (free start-state components, terminal constraints, free times, node_specs) 
+    and iterates a minimum-norm Newton scheme until the constraint vector F is
     driven below tol or a step/condition budget is hit.
 
     Solver configuration is set once at construction and reused across
@@ -1457,6 +1912,7 @@ class DifferentialCorrector:
               free_vars: str | Sequence[str],
               constraints: Sequence | None = None,
               free_times: Sequence[int | np.integer] | None = None,
+              node_specs: dict | None = None,
               diagnostics: bool = False,
               iterates: bool = False) -> ShooterResult:
         """
@@ -1465,7 +1921,7 @@ class DifferentialCorrector:
         Builds the internal solve context from the guess and the problem
         specification, runs the minimum-norm Newton iteration, and on success
         converts the converged interior FreeJunctionNodes into
-        NullJunctionNodes at this corrector's tolerance.
+        appropriate nodes per node_specs at this corrector's tolerance.
 
         Parameters
         ----------
@@ -1483,6 +1939,15 @@ class DifferentialCorrector:
         free_times : sequence of int, optional
             Boundary-time indices that are free, in [1, n_seg] (index n_seg
             is the final time). Default: all times fixed.
+        node_specs : dict of NodeSpecs, int keys, optional
+            NodeSpec objects specify free and constrained variables at an interior
+            node, as well as the intended output node type.  Use premade constructors
+            for NodeSpec (NodeSpec.continuous(), NodeSpec.impulsive()). Use
+            NodeSpec.custom(...) with great caution.  Index by integer indices,
+            using a 1-indexed format matching free_times (i.e. consider Node 0 to 
+            be the StartNode, and begin junction node indexing at Node 1.)
+            Defaults to None, which causes full state continuity and all six free
+            variables at all junction nodes.
         diagnostics : bool, default False
             If True, populate result.diagnostics.
         iterates : bool, default False
@@ -1493,14 +1958,14 @@ class DifferentialCorrector:
         ShooterResult
         """
         ctx = _ShootingContext.from_guess(traj, free_vars, constraints,
-                                          free_times)
+                                          free_times, node_specs)
         raw = self._run(ctx, traj,
                         store_diagnostics=diagnostics,
                         store_iterates=iterates)
 
         out_traj = raw['trajectory']
         if raw['converged'] and out_traj is not None:
-            out_traj = self._finalize(out_traj)
+            out_traj = self._finalize(out_traj, node_specs)
 
         return ShooterResult(
             trajectory=out_traj,
@@ -1512,23 +1977,31 @@ class DifferentialCorrector:
             iterates=raw['iterates'],
         )
 
-    def _finalize(self, traj: "Trajectory") -> "Trajectory":
+    def _finalize(self, traj: "Trajectory", node_specs: dict | None) -> "Trajectory":
         """
-        Convert converged interior FreeJunctionNodes to NullJunctionNodes at
-        this corrector's tolerance, reusing the converged outputs.
+        Convert converged interior FreeJunctionNodes to appropriate node types at
+        this corrector's tolerance, reusing the converged outputs.  The output
+        node type is read from node_specs via _resolve_node_specs.
 
-        A converged junction has |defect| < tol, so the NullJunctionNode
-        (constructed with tol=self.tol) validates successfully and records the
-        standard it was closed to. Non-Free junctions are passed through
-        unchanged.
+        A converged junction has |defect| < tol, so the converged nodes
+        (constructed with tol=self.tol) validate successfully and record the
+        standard they were closed to. Free junctions resulting from custom 
+        NodeSpecs are passed through unchanged.
         """
         new_nodes = []
-        for node in traj.junction_nodes:
-            if isinstance(node, FreeJunctionNode):
+        resolved = _resolve_node_specs(node_specs, traj.n_segments)
+
+        for k, node in enumerate(traj.junction_nodes):
+            target = resolved[k].becomes
+            if target is _NodeTarget.NULL:
                 new_nodes.append(NullJunctionNode(
+                    node.time, node.pre_state, node.post_state, tol=self.tol))
+            elif target is _NodeTarget.IMPULSIVE:
+                new_nodes.append(ImpulsiveJunctionNode(
                     node.time, node.pre_state, node.post_state, tol=self.tol))
             else:
                 new_nodes.append(node)
+                
         return traj.with_junction_nodes(new_nodes)
 
     def _run(self, ctx: "_ShootingContext", guess: "Trajectory",

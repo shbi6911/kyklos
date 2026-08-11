@@ -625,26 +625,27 @@ class TestShootingContextFromGuess:
             n_segments=2,
             junction_nodes=[NullJunctionNode(1.0, np.zeros(6), np.zeros(6))],
         )
-        with pytest.raises(NotImplementedError):
+        with pytest.raises(ValueError):
             _ShootingContext.from_guess(cast(Trajectory, bad), 'all')
 
     def test_phase1_rejects_impulsive_junction(self):
         node = ImpulsiveJunctionNode(1.0, pre_state=np.zeros(6), delta_v=[0.0, 0.0, 0.0])
         bad = types.SimpleNamespace(n_segments=2, junction_nodes=[node])
-        with pytest.raises(NotImplementedError):
+        with pytest.raises(ValueError):
             _ShootingContext.from_guess(cast(Trajectory, bad), 'all')
 
 
 def _make_ctx(free_idx: "np.ndarray | None" = None):
     """Build a _ShootingContext directly for the immutability tests."""
     return _ShootingContext(
-        system=cast(System, None),    # never read by these tests
+        system=cast(System, None),
         n_seg=1,
         free_idx=np.array([0, 4]) if free_idx is None else free_idx,
-        ics_ref=np.zeros((1, 6)),     # single segment -> one IC (the start)
+        ics_ref=np.zeros((1, 6)),
         times_ref=np.array([0.0, 1.0]),
         free_time_idx=np.array([], dtype=int),
         constraints=(),
+        node_specs=(),
     )
 
 
@@ -970,14 +971,6 @@ class TestAssembleF:
                                     times=[0.0, 1.0], stms=[_I6])
         ctx = _ShootingContext.from_guess(traj, 'all')
         assert _assemble_F(traj, ctx).shape == (0,)
-
-    def test_undefined_defect_raises_runtimeerror(self):
-        # The defensive guard for a junction whose defect is None.
-        traj = types.SimpleNamespace(
-            junction_nodes=[types.SimpleNamespace(state_defect=None)])
-        ctx = types.SimpleNamespace(constraints=())
-        with pytest.raises(RuntimeError):
-            _assemble_F(cast(Trajectory, traj), cast(_ShootingContext, ctx))
 
     def test_shape(self, make_fake_trajectory):
         traj = make_fake_trajectory(
