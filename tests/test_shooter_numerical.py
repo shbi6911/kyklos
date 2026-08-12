@@ -65,14 +65,14 @@ def _residual_at(X: np.ndarray, ctx: _ShootingContext) -> np.ndarray:
     """
     ics, times = _unpack(X, ctx)
     traj = ctx.system.propagate(ics, times, with_stm=False)
-    return _assemble_F(traj, ctx)
+    return _assemble_F(traj, ctx, X)
 
 
 def _analytic_DF(X: np.ndarray, ctx: _ShootingContext) -> np.ndarray:
     """Production DF(X): unpack -> propagate (with STM) -> assemble_DF."""
     ics, times = _unpack(X, ctx)
     traj = ctx.system.propagate(ics, times, with_stm=True)
-    return _assemble_DF(traj, ctx)
+    return _assemble_DF(traj, ctx, X)
 
 
 def _fd_DF(X: np.ndarray, ctx: _ShootingContext,
@@ -430,8 +430,8 @@ class TestAssembleImpulsiveRows:
     def test_F_and_DF_agree_on_row_count(self, make_multiseg_guess,
                                          lyapunov_orbit):
         guess, ctx = self._ctx(make_multiseg_guess, lyapunov_orbit)
-        F = _assemble_F(guess, ctx)
-        DF = _assemble_DF(guess, ctx)
+        F = _assemble_F(guess, ctx, _pack(guess, ctx))
+        DF = _assemble_DF(guess, ctx, _pack(guess, ctx))
         assert ctx.row_plan.n_rows == 9        # 3 (impulsive) + 6 (continuous)
         assert F.shape[0] == 9
         assert DF.shape[0] == 9
@@ -442,7 +442,7 @@ class TestAssembleImpulsiveRows:
         # F's first block is junction 0's position defect (3 rows), its second
         # is junction 1's full defect (6 rows) -- same order DF's blocks take.
         guess, ctx = self._ctx(make_multiseg_guess, lyapunov_orbit)
-        F = _assemble_F(guess, ctx)
+        F = _assemble_F(guess, ctx, _pack(guess, ctx))
         j0 = guess.junction_nodes[0]           # impulsive (key 1 -> index 0)
         j1 = guess.junction_nodes[1]           # continuous
         np.testing.assert_allclose(F[0:3], j0.state_defect[[0, 1, 2]])
@@ -454,7 +454,7 @@ class TestAssembleImpulsiveRows:
         # Confirms the impulsive case above genuinely dropped 3 rows.
         guess = make_multiseg_guess(lyapunov_orbit, n_seg=3, with_stm=True)
         ctx = _ShootingContext.from_guess(guess, free_vars='all')
-        F = _assemble_F(guess, ctx)
+        F = _assemble_F(guess, ctx, _pack(guess, ctx))
         assert ctx.row_plan.n_rows == 12
         assert F.shape[0] == 12
 

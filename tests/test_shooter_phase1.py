@@ -924,7 +924,7 @@ class TestAssembleF:
             start_state=S0, end_state=_ZERO6, junction_pre=[_P0],
             junction_post=[_P1], times=[0.0, 1.0, 2.0], stms=[_I6, _I6])
         ctx = _ShootingContext.from_guess(traj, 'all')
-        np.testing.assert_allclose(_assemble_F(traj, ctx), _P1 - _P0)
+        np.testing.assert_allclose(_assemble_F(traj, ctx, _pack(traj, ctx)), _P1 - _P0)
 
     def test_interior_defects_three_segment(self, make_fake_trajectory):
         traj = make_fake_trajectory(
@@ -932,7 +932,7 @@ class TestAssembleF:
             junction_post=[_P1, _P0], times=[0.0, 1.0, 2.0, 3.0], stms=[_I6] * 3)
         ctx = _ShootingContext.from_guess(traj, 'all')
         np.testing.assert_allclose(
-            _assemble_F(traj, ctx), np.concatenate([_P1 - _P0, _P0 - _P1]))
+            _assemble_F(traj, ctx, _pack(traj, ctx)), np.concatenate([_P1 - _P0, _P0 - _P1]))
 
     def test_terminal_only_periodicity(self, make_fake_trajectory):
         # No junctions: F is just the periodicity residual state_tf - x0,
@@ -940,7 +940,7 @@ class TestAssembleF:
         traj = make_fake_trajectory(start_state=S0, end_state=_TF,
                                     times=[0.0, 1.0], stms=[_I6])
         ctx = _ShootingContext.from_guess(traj, 'all', constraints=[Periodicity()])
-        np.testing.assert_allclose(_assemble_F(traj, ctx), _TF - S0)
+        np.testing.assert_allclose(_assemble_F(traj, ctx, _pack(traj, ctx)), _TF - S0)
 
     def test_terminal_only_targetstate(self, make_fake_trajectory):
         # residual = actual - target, reading the targeted components of state_tf.
@@ -948,7 +948,7 @@ class TestAssembleF:
                                     times=[0.0, 1.0], stms=[_I6])
         ctx = _ShootingContext.from_guess(
             traj, 'all', constraints=[TargetState({'y': 0.0, 'vx': 0.0, 'vz': 0.0})])
-        np.testing.assert_allclose(_assemble_F(traj, ctx), [_TF[1], _TF[3], _TF[5]])
+        np.testing.assert_allclose(_assemble_F(traj, ctx, _pack(traj, ctx)), [_TF[1], _TF[3], _TF[5]])
 
     def test_both_blocks_in_order(self, make_fake_trajectory):
         # Interior defects come first, then terminal residuals.
@@ -957,27 +957,27 @@ class TestAssembleF:
             junction_post=[_P1], times=[0.0, 1.0, 2.0], stms=[_I6, _I6])
         ctx = _ShootingContext.from_guess(traj, 'all', constraints=[Periodicity()])
         np.testing.assert_allclose(
-            _assemble_F(traj, ctx), np.concatenate([_P1 - _P0, _TF - S0]))
+            _assemble_F(traj, ctx, _pack(traj, ctx)), np.concatenate([_P1 - _P0, _TF - S0]))
 
     def test_multiple_constraints_in_order(self, make_fake_trajectory):
         traj = make_fake_trajectory(start_state=S0, end_state=_TF,
                                     times=[0.0, 1.0], stms=[_I6])
         ctx = _ShootingContext.from_guess(
             traj, 'all', constraints=[TargetState({'x': 0.0}), Periodicity(['y'])])
-        np.testing.assert_allclose(_assemble_F(traj, ctx), [_TF[0], _TF[1] - S0[1]])
+        np.testing.assert_allclose(_assemble_F(traj, ctx, _pack(traj, ctx)), [_TF[0], _TF[1] - S0[1]])
 
     def test_empty_when_no_junctions_or_constraints(self, make_fake_trajectory):
         traj = make_fake_trajectory(start_state=S0, end_state=_TF,
                                     times=[0.0, 1.0], stms=[_I6])
         ctx = _ShootingContext.from_guess(traj, 'all')
-        assert _assemble_F(traj, ctx).shape == (0,)
+        assert _assemble_F(traj, ctx, _pack(traj, ctx)).shape == (0,)
 
     def test_shape(self, make_fake_trajectory):
         traj = make_fake_trajectory(
             start_state=S0, end_state=_TF, junction_pre=[_P0],
             junction_post=[_P1], times=[0.0, 1.0, 2.0], stms=[_I6, _I6])
         ctx = _ShootingContext.from_guess(traj, 'all', constraints=[Periodicity()])
-        assert _assemble_F(traj, ctx).shape == (12,)   # 6 defect + 6 periodicity
+        assert _assemble_F(traj, ctx, _pack(traj, ctx)).shape == (12,)   # 6 defect + 6 periodicity
 
 
 class TestAssembleDFStateColumns:
@@ -989,7 +989,7 @@ class TestAssembleDFStateColumns:
             start_state=S0, end_state=_ZERO6, junction_pre=[_P0],
             junction_post=[_P1], times=[0.0, 1.0, 2.0], stms=[phi0, _phi(9)])
         ctx = _ShootingContext.from_guess(traj, 'all')
-        DF = _assemble_DF(traj, ctx)
+        DF = _assemble_DF(traj, ctx, _pack(traj, ctx))
         assert DF.shape == (6, 12)
         np.testing.assert_allclose(DF[:, 0:6], -phi0)   # -Phi_0 in start cols
         np.testing.assert_allclose(DF[:, 6:12], _I6)    # +I in junction post
@@ -1000,7 +1000,7 @@ class TestAssembleDFStateColumns:
             start_state=S0, end_state=_ZERO6, junction_pre=[_P0],
             junction_post=[_P1], times=[0.0, 1.0, 2.0], stms=[phi0, _I6])
         ctx = _ShootingContext.from_guess(traj, ['x', 'vy'])
-        DF = _assemble_DF(traj, ctx)
+        DF = _assemble_DF(traj, ctx, _pack(traj, ctx))
         assert DF.shape == (6, 8)
         np.testing.assert_allclose(DF[:, 0:2], -phi0[:, [0, 4]])  # only free cols
         np.testing.assert_allclose(DF[:, 2:8], _I6)
@@ -1014,7 +1014,7 @@ class TestAssembleDFStateColumns:
             junction_post=[_P1, _P0], times=[0.0, 1.0, 2.0, 3.0],
             stms=[phi0, phi1, _phi(2)])
         ctx = _ShootingContext.from_guess(traj, 'all')
-        DF = _assemble_DF(traj, ctx)
+        DF = _assemble_DF(traj, ctx, _pack(traj, ctx))
         assert DF.shape == (12, 18)
         np.testing.assert_allclose(DF[0:6, 0:6], -phi0)
         np.testing.assert_allclose(DF[0:6, 6:12], _I6)
@@ -1028,7 +1028,7 @@ class TestAssembleDFStateColumns:
         traj = make_fake_trajectory(start_state=S0, end_state=_TF,
                                     times=[0.0, 1.0], stms=[phi0])
         ctx = _ShootingContext.from_guess(traj, 'all', constraints=[Periodicity()])
-        DF = _assemble_DF(traj, ctx)
+        DF = _assemble_DF(traj, ctx, _pack(traj, ctx))
         assert DF.shape == (6, 6)
         np.testing.assert_allclose(DF, phi0 - _I6)
 
@@ -1038,7 +1038,7 @@ class TestAssembleDFStateColumns:
                                     times=[0.0, 1.0], stms=[phi0])
         ctx = _ShootingContext.from_guess(
             traj, 'all', constraints=[TargetState({'y': 0.0, 'vx': 0.0, 'vz': 0.0})])
-        DF = _assemble_DF(traj, ctx)
+        DF = _assemble_DF(traj, ctx, _pack(traj, ctx))
         assert DF.shape == (3, 6)
         np.testing.assert_allclose(DF, phi0[[1, 3, 5], :])
 
@@ -1050,7 +1050,7 @@ class TestAssembleDFStateColumns:
             start_state=S0, end_state=_TF, junction_pre=[_P0],
             junction_post=[_P1], times=[0.0, 1.0, 2.0], stms=[phi0, phi1])
         ctx = _ShootingContext.from_guess(traj, 'all', constraints=[Periodicity()])
-        DF = _assemble_DF(traj, ctx)
+        DF = _assemble_DF(traj, ctx, _pack(traj, ctx))
         assert DF.shape == (12, 12)
         np.testing.assert_allclose(DF[0:6, 0:6], -phi0)
         np.testing.assert_allclose(DF[0:6, 6:12], _I6)
@@ -1068,7 +1068,7 @@ class TestAssembleDFFreeTimeColumns:
             start_state=S0, end_state=_TF, junction_pre=[_P0], junction_post=[_ZERO6],
             times=[0.0, 1.0, 2.0], stms=[_I6, _I6], system=make_fake_system(_I6))
         ctx = _ShootingContext.from_guess(traj, 'all', free_times=[1])
-        DF = _assemble_DF(traj, ctx)
+        DF = _assemble_DF(traj, ctx, _pack(traj, ctx))
         assert DF.shape == (6, 13)
         np.testing.assert_allclose(DF[:, 12], -_P0)
 
@@ -1080,7 +1080,7 @@ class TestAssembleDFFreeTimeColumns:
             junction_post=[_ZERO6, _ZERO6], times=[0.0, 1.0, 2.0, 3.0],
             stms=[_I6] * 3, system=make_fake_system(_I6))
         ctx = _ShootingContext.from_guess(traj, 'all', free_times=[1])
-        DF = _assemble_DF(traj, ctx)
+        DF = _assemble_DF(traj, ctx, _pack(traj, ctx))
         assert DF.shape == (12, 19)
         np.testing.assert_allclose(DF[0:6, 18], -_P0)
         np.testing.assert_allclose(DF[6:12, 18], _P1)
@@ -1092,7 +1092,7 @@ class TestAssembleDFFreeTimeColumns:
             system=make_fake_system(_I6))
         ctx = _ShootingContext.from_guess(
             traj, 'all', constraints=[Periodicity()], free_times=[1])
-        DF = _assemble_DF(traj, ctx)
+        DF = _assemble_DF(traj, ctx, _pack(traj, ctx))
         assert DF.shape == (6, 7)
         np.testing.assert_allclose(DF[:, 6], _TF)   # +I @ state_tf
 
@@ -1104,7 +1104,7 @@ class TestAssembleDFFreeTimeColumns:
             times=[0.0, 1.0, 2.0], stms=[_I6, _I6], system=make_fake_system(_I6))
         ctx = _ShootingContext.from_guess(
             traj, 'all', constraints=[Periodicity()], free_times=[1])
-        DF = _assemble_DF(traj, ctx)
+        DF = _assemble_DF(traj, ctx, _pack(traj, ctx))
         assert DF.shape == (12, 13)
         np.testing.assert_allclose(DF[0:6, 12], -_P0)   # interior, end of seg 0
         np.testing.assert_allclose(DF[6:12, 12], -_TF)  # terminal, negative sign

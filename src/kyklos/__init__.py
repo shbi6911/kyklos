@@ -51,7 +51,9 @@ from .trajectory import (Trajectory, Trajectory as Traj, Node,
 # Differential Corrector Classes
 from .shooter import (
     DifferentialCorrector, ShooterResult,
-    TerminalConstraint, TargetState, Periodicity, CallableConstraint,
+    Constraint, TerminalConstraint, FreeVarConstraint,
+    TargetState, Periodicity, CallableConstraint,
+    NodeSpec,
 )
 
 # Classes and functions for CR3BP Toolkit
@@ -119,10 +121,13 @@ __all__ = [
     # Shooter Classes
     "DifferentialCorrector",
     "ShooterResult",
+    "Constraint",
     "TerminalConstraint",
+    "FreeVarConstraint",
     "TargetState",
     "Periodicity",
     "CallableConstraint",
+    "NodeSpec",
     # Module-level Functions
     "available_recipes",
     "available_layouts",

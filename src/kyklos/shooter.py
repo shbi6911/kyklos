@@ -63,13 +63,22 @@ class _BlockKind(Enum):
     The assembler branches on this tag (not on isinstance) to fill a block:
     an INTERIOR_DEFECT block reads a junction node's state_defect / segment
     STM and places +I / -Phi directly; a TERMINAL block reads a constraint's
-    residual / jacobian_tf and chains it through S_tf. A block's `index` is
-    read relative to its kind: a junction index (into traj.junction_nodes and
-    the segment STMs) for INTERIOR_DEFECT, a constraint index (into
-    ctx.constraints) for TERMINAL.
+    residual / jacobian_tf and chains it through S_tf; an X_SPACE block reads
+    a constraint's residual / jacobian_X, which are already functions of the
+    free-variable vector X, and places the (n_rows, n_X) Jacobian directly
+    across all columns with no chaining. A block's `index` is read relative to
+    its kind: a junction index (into traj.junction_nodes and the segment STMs)
+    for INTERIOR_DEFECT, a constraint index (into ctx.constraints) for both
+    TERMINAL and X_SPACE.
+
+    TERMINAL and X_SPACE correspond one-to-one with ConstraintSpace.TERMINAL
+    and ConstraintSpace.FREEVAR: the row-plan builder reads each constraint's
+    `space` once and records the matching block kind, so the assembler never
+    re-inspects the constraint's type per iterate.
     """
     INTERIOR_DEFECT = auto()
     TERMINAL = auto()
+    X_SPACE = auto()
 
 class _NodeTarget(Enum):
     """Converged output node type a junction role resolves to.
@@ -98,6 +107,32 @@ class _NodeTarget(Enum):
     NULL = auto()
     IMPULSIVE = auto()
     FREE = auto()
+
+class ConstraintSpace(Enum):
+    """Which variables a constraint's residual and Jacobian are functions of.
+
+    This is the constraint author's declaration of what the residual depends
+    on, and it selects how the assembler places the constraint's Jacobian into
+    DF. It is fixed per family, not per instance:
+
+    TERMINAL
+        residual(state_tf, x0): a function of the final propagated state (and,
+        rarely, the start state). Its state-space Jacobian is chained through
+        the accumulated final-state sensitivity S_tf, and it also participates
+        in the free-time pass via the vector field at the final state.
+    FREEVAR
+        residual(X): a function of the free-variable vector X directly. Its
+        Jacobian is already (n_rows, n_X) in the full X column ordering and is
+        placed straight into DF with no chaining; it does not participate in
+        the free-time pass, because any free-time-column entries are already
+        part of that (n_rows, n_X) block.
+
+    The row-plan builder reads `space` once at context construction and records
+    the matching _BlockKind (TERMINAL or X_SPACE); the per-iterate assembler
+    dispatches on the block kind and never re-inspects the constraint.
+    """
+    TERMINAL = auto()
+    FREEVAR = auto()
 
 # String spellings accepted at the API boundary (NodeSpec.custom(becomes=...)),
 # mapped to the internal enum. Kept as role-ish words rather than node class
@@ -226,7 +261,7 @@ def _parse_free_vars(free_vars: str | Sequence[str]) -> np.ndarray:
     )
 
 
-# ========== TERMINAL CONSTRAINTS ==========
+# ========== NON-INTERIOR DEFECT CONSTRAINTS ==========
 
 def _component_index(name: str) -> int:
     """Resolve a single state-component name to its index in [0, 6)."""
@@ -294,13 +329,73 @@ def _finite_diff(func, x: np.ndarray, eps_rel: float) -> np.ndarray:
     return J
 
 
-class TerminalConstraint(ABC):
+class Constraint(ABC):
+    """Root of the constraint hierarchy: the family-agnostic contract.
+
+    Everything universal to a constraint lives here -- how many residual rows
+    it contributes, how it binds to a System, and which variable space its
+    residual is a function of. Everything that depends on that space -- the
+    residual and its Jacobian, whose *arguments* differ by space -- lives on
+    the family bases TerminalConstraint and FreeVarConstraint, because their
+    signatures cannot be stated identically at this level.
+
+    Subclasses do not inherit from Constraint directly; they inherit from one
+    of the two family bases, each of which fixes `space` and declares the
+    space-specific residual and Jacobian methods.
+
+    Attributes
+    ----------
+    space : ConstraintSpace
+        Set by each family base (not here). The bare annotation below documents
+        the requirement without creating an attribute: a concrete constraint
+        that somehow lacks a space fails the row-plan builder's `space` read,
+        which is the failure we want.
+
+    Lifecycle
+    ---------
+    Before iteration the corrector calls bind(system) once, at a single bind
+    point, for every constraint regardless of family. The default is a no-op
+    returning self. Constraints needing dynamical parameters (e.g. a Jacobi-
+    constant target needing mu) override bind to capture them, returning a new
+    bound instance rather than mutating self -- this keeps the original a
+    reusable, system-agnostic template.
+    """
+
+    space: ConstraintSpace
+
+    @property
+    @abstractmethod
+    def n_rows(self) -> int:
+        """
+        Number of residual rows this constraint contributes.
+
+        Declared up front, from the constraint's spec alone, so the corrector
+        can size the constraint vector F and the Jacobian DF -- and check
+        problem determinacy -- before the first propagation, rather than
+        backing the count out of a propagated Jacobian's shape. The contract:
+        residual(...) returns an array of exactly this length, and the family's
+        Jacobian method has this many rows.
+        """
+        ...
+
+    def bind(self, system) -> "Constraint":
+        """
+        Capture any System-dependent parameters; return the bound constraint.
+
+        Called once by the corrector before iteration. The default needs
+        nothing from the system and returns self unchanged.
+        """
+        return self
+
+
+
+class TerminalConstraint(Constraint):
     """
     Base class for boundary conditions enforced at the final state.
 
-    A terminal constraint declares how many residual rows it contributes
-    (n_rows) and supplies those rows and their Jacobians through three
-    methods:
+    A terminal constraint's residual is a function of the final propagated
+    state (and, for the rare case of Periodicity, the start state). It supplies
+    its rows and their Jacobians through three methods:
 
     residual(state_tf, x0)
         The residual, following the package convention
@@ -316,43 +411,21 @@ class TerminalConstraint(ABC):
         notable exception.
 
     Subclasses must implement residual; they may override either Jacobian
-    method to supply analytic derivatives.
+    method to supply analytic derivatives. n_rows and bind are inherited from
+    Constraint.
 
-    Lifecycle
-    ---------
-    Before iteration the corrector calls bind(system) once. The default is
-    a no-op returning self. Constraints needing dynamical parameters (e.g.
-    a Jacobi-constant target needing mu) override bind to capture them,
-    returning a new bound instance rather than mutating self -- this keeps
-    the original a reusable, system-agnostic template.
+    The Jacobian is split into jacobian_tf and jacobian_x0 because a terminal
+    constraint has two distinct upstream dependencies that the assembler places
+    differently: the state_tf dependence is chained through S_tf, while the x0
+    dependence is scattered directly into the start columns. FreeVarConstraint,
+    by contrast, has a single dependence (on X) placed one way, so it exposes a
+    single Jacobian method.
     """
+
+    space = ConstraintSpace.TERMINAL
 
     # Relative step for the finite-difference Jacobian fallback.
     _fd_eps_rel: float = 1e-7
-
-    @property
-    @abstractmethod
-    def n_rows(self) -> int:
-        """
-        Number of residual rows this constraint contributes.
-
-        Declared up front, from the constraint's spec alone, so the corrector
-        can size the constraint vector F and the Jacobian DF -- and check
-        problem determinacy -- before the first propagation, rather than
-        backing the count out of a propagated Jacobian's shape. The contract:
-        residual(...) returns an array of exactly this length, and
-        jacobian_tf / jacobian_x0 each have this many rows.
-        """
-        ...
-
-    def bind(self, system) -> "TerminalConstraint":
-        """
-        Capture any System-dependent parameters; return the bound constraint.
-
-        Called once by the corrector before iteration. The default needs
-        nothing from the system and returns self unchanged.
-        """
-        return self
 
     @abstractmethod
     def residual(self, state_tf: np.ndarray, x0: np.ndarray) -> np.ndarray:
@@ -370,6 +443,47 @@ class TerminalConstraint(ABC):
                     x0: np.ndarray) -> np.ndarray:
         """d(residual)/d(x0), shape (n_rows, 6). Default: zeros."""
         return np.zeros((self.n_rows, 6))
+
+
+class FreeVarConstraint(Constraint):
+    """
+    Base class for constraints whose residual is a function of X directly.
+
+    Where a terminal constraint sees the propagated final state, a free-
+    variable constraint sees the free-variable vector X = [start free comps,
+    junction free comps, free times] and constrains it directly. The pseudo-
+    arclength continuation condition is the motivating case: its residual is
+    (X - X_prev) . t_hat - ds, a pure function of X.
+
+    Subclasses implement two methods:
+
+    residual(X)
+        The residual, following ``residual = actual - target``. Shape (m_c,).
+    jacobian_X(X)
+        d(residual)/d(X), shape (m_c, n_X), given in the full X column ordering.
+        The assembler places this block directly into DF's rows across all
+        columns, with no chaining -- so the constraint owns the complete column
+        layout of its own rows, including any free-time columns.
+
+    There is no finite-difference default and no jacobian split: a free-
+    variable residual has a single dependence (on X), so a single analytic
+    Jacobian method is both necessary and sufficient. n_rows and bind are
+    inherited from Constraint. A free-variable constraint is sized by the
+    reference data handed to its constructor (e.g. X_prev / t_hat / ds), so it
+    never needs to be told n_X separately -- n_X is implicit in that data.
+    """
+
+    space = ConstraintSpace.FREEVAR
+
+    @abstractmethod
+    def residual(self, X: np.ndarray) -> np.ndarray:
+        """Constraint residual (actual - target), shape (m_c,)."""
+        ...
+
+    @abstractmethod
+    def jacobian_X(self, X: np.ndarray) -> np.ndarray:
+        """d(residual)/d(X), shape (m_c, n_X), in the full X column ordering."""
+        ...
 
 
 class TargetState(TerminalConstraint):
@@ -545,6 +659,184 @@ class CallableConstraint(TerminalConstraint):
         return np.atleast_2d(
             np.asarray(self._dg_dx0(state_tf, x0), dtype=float)
         )
+
+
+class PseudoArclength(FreeVarConstraint):
+    """
+    Pseudo-arclength continuation closing condition on the free variables.
+
+    Adds the single scalar row that squares an otherwise underdetermined-by-one
+    corrector system along a solution family, and does so fold-safely. The
+    residual is the affine condition
+
+        g(X) = t_hat . (X - X_prev) - ds
+
+    which asks the next member to sit a distance ``ds`` from the previous
+    converged member ``X_prev`` along the family tangent ``t_hat``. Because the
+    constraint plane is normal to the tangent (not to a coordinate axis, as in
+    natural-parameter continuation), it stays transverse to the family through
+    folds, where a coordinate pin would go singular.
+
+    This is a free-variable constraint: its residual and Jacobian are functions
+    of the packed unknown vector X directly, never of the propagated state, so
+    the assembler places its row straight into the X columns with no STM
+    chaining. The Jacobian is constant over a solve -- g is affine in X, so
+    ``dg/dX = t_hat`` regardless of the iterate -- which is why it carries no
+    finite-difference fallback.
+
+    The reference data is baked in at construction: the continuation engine
+    builds a fresh instance each step with that step's previous member,
+    tangent, and step size. The tangent must be a unit vector (the fold-safety
+    of the bordered system relies on ``t_hat . t_hat == 1``); a non-unit
+    tangent is a caller error and is rejected.
+
+    Parameters
+    ----------
+    X_prev : array_like
+        The previous converged member, shape (n_X,). The point the step is
+        measured from.
+    t_hat : array_like
+        The family tangent at X_prev, shape (n_X,), unit norm. Its direction
+        sets the sense of travel; ``ds`` is the unsigned distance along it.
+    ds : float
+        The arclength step, ds > 0.
+
+    Notes
+    -----
+    The residual is a raw Euclidean arclength in X, which assumes X's
+    components are commensurately scaled -- true in nondimensional CR3BP
+    coordinates, where states and times are O(1). A weighted inner product
+    would be the remedy if X ever mixed badly-scaled variables.
+    """
+
+    def __init__(self, X_prev, t_hat, ds):
+        # np.array (not asarray) forces an owned copy, never a view onto the
+        # engine's buffers -- the constraint must not alias caller state.
+        X_prev = np.array(X_prev, dtype=float)
+        t_hat = np.array(t_hat, dtype=float)
+        if X_prev.ndim != 1:
+            raise ValueError(
+                f"X_prev must be a 1-D vector, got shape {X_prev.shape}."
+            )
+        if t_hat.shape != X_prev.shape:
+            raise ValueError(
+                f"t_hat must match X_prev in shape; got t_hat {t_hat.shape} "
+                f"vs X_prev {X_prev.shape}."
+            )
+        if not (np.all(np.isfinite(X_prev)) and np.all(np.isfinite(t_hat))):
+            raise ValueError("X_prev and t_hat must be finite.")
+        norm = float(np.linalg.norm(t_hat))
+        if not np.isclose(norm, 1.0, rtol=config.EQUALITY_RTOL,
+                          atol=config.EQUALITY_ATOL):
+            raise ValueError(
+                f"t_hat must be a unit vector; got norm {norm:.6e}. The engine "
+                f"is responsible for normalizing the tangent before handing it "
+                f"to the closing constraint."
+            )
+        ds = float(ds)
+        if not np.isfinite(ds) or ds <= 0.0:
+            raise ValueError(f"ds must be a positive finite step, got {ds}.")
+        X_prev.flags.writeable = False
+        t_hat.flags.writeable = False
+        self._X_prev = X_prev
+        self._t_hat = t_hat
+        self._ds = ds
+
+    @property
+    def n_rows(self) -> int:
+        """A single scalar closing row."""
+        return 1
+
+    def residual(self, X):
+        X = np.asarray(X, dtype=float)
+        g = float(self._t_hat @ (X - self._X_prev) - self._ds)
+        return np.array([g], dtype=float)
+
+    def jacobian_X(self, X):
+        # dg/dX = t_hat, constant in X: a full-width, generally dense row.
+        # Return a fresh writable copy, never a view onto stored t_hat.
+        return self._t_hat.reshape(1, -1).copy()
+
+
+class FreeVarPin(FreeVarConstraint):
+    """
+    Pin a single free variable to a target value (natural-parameter closing).
+
+    The natural-parameter counterpart to PseudoArclength: instead of stepping
+    along the family tangent, it holds one component of the free-variable
+    vector X fixed at a target, letting the continuation march that component
+    directly. The residual is the affine condition
+
+        g(X) = X[col] - target
+
+    and the Jacobian is a one-hot row -- a single 1 in column ``col`` -- so,
+    like all free-variable constraints, it is placed straight into the X
+    columns with no STM chaining and is constant over a solve.
+
+    This pins a column of X, i.e. a free variable, whichever kind it is: a free
+    boundary-time column (period sampling) and a free start-component column
+    (state-amplitude sampling) are the same operation here, differing only in
+    which column index is passed. The caller (the continuation engine) owns the
+    column plan and resolves the semantic target -- "the period", "the start x"
+    -- into the concrete column index; this class is deliberately indifferent
+    to what the column means.
+
+    Parameters
+    ----------
+    col : int
+        The X column to pin, 0 <= col < n_X. Resolved by the engine from the
+        column plan.
+    target : float
+        The value to hold X[col] at.
+    n_X : int
+        The width of the free-variable vector, needed to size the one-hot
+        Jacobian row. Unlike PseudoArclength (whose width is implicit in its
+        tangent), a one-hot pin's data does not carry n_X, so it is passed
+        explicitly.
+    """
+
+    def __init__(self, col, target, n_X):
+        # bool is a subclass of int; reject it so True/False are not silently
+        # taken as 1/0 (same guard style as CallableConstraint's n_rows).
+        if isinstance(col, bool) or not isinstance(col, (int, np.integer)):
+            raise TypeError(
+                f"col must be an integer column index, got "
+                f"{type(col).__name__}."
+            )
+        if isinstance(n_X, bool) or not isinstance(n_X, (int, np.integer)):
+            raise TypeError(
+                f"n_X must be an integer width, got {type(n_X).__name__}."
+            )
+        col = int(col)
+        n_X = int(n_X)
+        if n_X < 1:
+            raise ValueError(f"n_X must be a positive integer, got {n_X}.")
+        if not (0 <= col < n_X):
+            raise ValueError(
+                f"col must satisfy 0 <= col < n_X = {n_X}, got {col}."
+            )
+        target = float(target)
+        if not np.isfinite(target):
+            raise ValueError(f"target must be finite, got {target}.")
+        self._col = col
+        self._target = target
+        self._n_X = n_X
+
+    @property
+    def n_rows(self) -> int:
+        """A single scalar pin row."""
+        return 1
+
+    def residual(self, X):
+        X = np.asarray(X, dtype=float)
+        return np.array([X[self._col] - self._target], dtype=float)
+
+    def jacobian_X(self, X):
+        # dg/dX = e_col, a one-hot row, constant in X. Fresh each call.
+        J = np.zeros((1, self._n_X))
+        J[0, self._col] = 1.0
+        return J
+
 
 # ========== PER-JUNCTION ROLE SPEC ==========
 
@@ -937,11 +1229,16 @@ class _ColumnPlan:
 
 def _build_row_plan(node_specs: Sequence["NodeSpec"],
                     constraints: Sequence) -> "_RowPlan":
-    """Assemble the row layout: interior defect blocks, then terminal blocks.
+    """Assemble the row layout: interior defect blocks, then constraint blocks.
 
     Interior defects first (one block per junction, junction order), then
-    terminal constraints (one block per constraint, constraint order) -- the
-    single source of truth for the row ordering F and DF must share.
+    constraints (one block per constraint, constraint order) -- the single
+    source of truth for the row ordering F and DF must share. Each constraint's
+    block kind is read from its `space`: TERMINAL constraints become TERMINAL
+    blocks, FREEVAR constraints become X_SPACE blocks. Constraint order is
+    preserved as passed; a mixed solve (terminal boundary conditions plus a
+    free-variable closing constraint) keeps the caller's ordering, so a
+    continuation engine that appends its closing constraint last gets it last.
 
     Each junction's defect block enforces continuity on its own
     ``spec.continuity`` components, so its row count is len(spec.continuity):
@@ -957,7 +1254,9 @@ def _build_row_plan(node_specs: Sequence["NodeSpec"],
         offset += n
     for i, c in enumerate(constraints):
         n = int(c.n_rows)
-        blocks.append(_RowBlock(offset, n, None, _BlockKind.TERMINAL, i))
+        kind = (_BlockKind.TERMINAL if c.space is ConstraintSpace.TERMINAL
+                else _BlockKind.X_SPACE)
+        blocks.append(_RowBlock(offset, n, None, kind, i))
         offset += n
     return _RowPlan(tuple(blocks), offset)
 
@@ -1438,7 +1737,7 @@ class _ShootingContext:
             )
         bound = []
         for c in constraints:
-            if isinstance(c, TerminalConstraint):
+            if isinstance(c, Constraint):
                 constraint = c
             elif callable(c):
                 raise TypeError(
@@ -1450,8 +1749,8 @@ class _ShootingContext:
                 )
             else:
                 raise TypeError(
-                    f"Each constraint must be a TerminalConstraint, got "
-                    f"{type(c).__name__}."
+                    f"Each constraint must be a Constraint (a TerminalConstraint "
+                    f"or FreeVarConstraint), got {type(c).__name__}."
                 )
             bound.append(constraint.bind(system))
         return tuple(bound)
@@ -1605,22 +1904,25 @@ X: np.ndarray,
 
 # ========== CONSTRAINT VECTOR ==========
 
-def _assemble_F(traj: "Trajectory", ctx: _ShootingContext) -> np.ndarray:
+def _assemble_F(traj: "Trajectory", ctx: _ShootingContext,
+                X: np.ndarray) -> np.ndarray:
     """
     Assemble the constraint vector F for a propagated iterate.
 
-    F stacks two blocks:
+    F stacks up to three block families:
 
     1. Interior defects -- the state discontinuity at each junction, taken
        as node.state_defect (post - pre), then indexed by free variables stored
        in ctx.column_plan.  All nodes should have six free variables except for
        a custom NodeSpec.
-    2. Terminal residuals -- each constraint's residual(state_tf, x0),
+    2. Terminal residuals -- each terminal constraint's residual(state_tf, x0),
        concatenated in constraint order. state_tf is the final propagated
        state (end_node.pre_state); x0 is the current start state.
+    3. Free-variable residuals -- each free-variable constraint's residual(X),
+       a function of the free-variable vector directly (no propagated state).
 
-    Both blocks follow the convention residual = actual - target, so the
-    problem is solved when F is (near) zero.
+    Both constraint families follow the convention residual = actual - target,
+    so the problem is solved when F is (near) zero.
 
     Parameters
     ----------
@@ -1628,6 +1930,11 @@ def _assemble_F(traj: "Trajectory", ctx: _ShootingContext) -> np.ndarray:
         A propagated iterate, built from this context via unpack +
         propagate.
     ctx : _ShootingContext
+    X : np.ndarray
+        The free-variable vector for this iterate, shape (ctx.n_X,). It is the
+        exact vector this traj was propagated from (traj == propagate(unpack(X)))
+        so the two are a matched pair. Free-variable constraints evaluate their
+        residual against it directly; terminal and defect blocks ignore it.
 
     Returns
     -------
@@ -1657,6 +1964,10 @@ def _assemble_F(traj: "Trajectory", ctx: _ShootingContext) -> np.ndarray:
                     np.asarray(c.residual(state_tf, x0), dtype=float)
                 )
             blocks.append(r)
+        elif block.kind is _BlockKind.X_SPACE:
+            c = ctx.constraints[k]
+            r = np.atleast_1d(np.asarray(c.residual(X), dtype=float))
+            blocks.append(r)
 
     if not blocks:
         return np.array([], dtype=float)
@@ -1665,22 +1976,35 @@ def _assemble_F(traj: "Trajectory", ctx: _ShootingContext) -> np.ndarray:
 
 # ========== CONSTRAINT JACOBIAN ==========
 
-def _assemble_DF(traj: "Trajectory", ctx: _ShootingContext) -> np.ndarray:
+def _assemble_DF(traj: "Trajectory", ctx: _ShootingContext,
+                 X: np.ndarray) -> np.ndarray:
     """
     Assemble the defect Jacobian DF = d(F)/dX for the current iterate.
 
-    DF = d(F)/d(X), with rows matching _assemble_F (interior defects then
-    terminal residuals) and columns matching the X layout (start free
-    components, junction post-states, then free times).
+    DF = d(F)/d(X), with rows matching _assemble_F (interior defects, then
+    terminal residuals, then free-variable residuals) and columns matching the
+    X layout (start free components, junction post-states, then free times).
 
-    Two passes over the plan. Pass 1 walks the row blocks (interior defects
-    and terminal constraints -- both row-owned, every entry lands in the
-    block's own rows) and dispatches on block kind. Pass 2 handles the
-    free-time columns, which are column-owned: a free boundary time scatters
-    vector-field terms into several blocks' rows at once, cross-cutting the
-    row-block structure, so it gets its own column-wise pass. All row and
+    Two passes over the plan. Pass 1 walks the row blocks (interior defects,
+    terminal constraints, and free-variable constraints -- all row-owned, every
+    entry lands in the block's own rows) and dispatches on block kind. Pass 2
+    handles the free-time columns, which are column-owned: a free boundary time
+    scatters vector-field terms into several blocks' rows at once, cross-cutting
+    the row-block structure, so it gets its own column-wise pass. All row and
     column placements are read from the plan (row_slice / col_slice /
     selectors); no offsets are computed inline.
+
+    Free-variable (X_SPACE) blocks place their full (n_rows, n_X) Jacobian
+    directly across all columns in Pass 1 and take no part in Pass 2: any
+    dependence on a free boundary time is already a column of that block, so
+    there is nothing to chain through the vector field. Pass 2 iterates
+    row_plan.terminal_blocks, which filters by kind, so X_SPACE blocks are
+    excluded automatically.
+
+    X : np.ndarray
+        The free-variable vector for this iterate, shape (ctx.n_X,); the exact
+        matched partner of traj. Free-variable constraints differentiate their
+        residual against it; terminal and defect blocks ignore it.
 
     State columns
     -------------
@@ -1769,6 +2093,15 @@ def _assemble_DF(traj: "Trajectory", ctx: _ShootingContext) -> np.ndarray:
             DF[block.row_slice, :n_state] += Jtf @ S_tf
             # direct path: residual's own x0 dependence into the start cols
             DF[block.row_slice, start.col_slice] += Jx0[:, list(start.components)]
+
+        elif block.kind is _BlockKind.X_SPACE:
+            c = ctx.constraints[block.index]
+            # jacobian_X is already (n_rows, n_X) in the full X column ordering:
+            # placed directly, no chaining. The constraint owns its column
+            # layout, so free-time columns (if any) are already inside JX and
+            # this block is skipped by Pass 2.
+            JX = np.atleast_2d(np.asarray(c.jacobian_X(X), dtype=float))
+            DF[block.row_slice, :] += JX
 
     # ---- PASS 2: free-time columns ----
     # Block lookup is positional -- interior block j is row_plan.blocks[j] --
@@ -2046,7 +2379,7 @@ class DifferentialCorrector:
                                 f"{iterations}: {exc}")
                 break
 
-            F = _assemble_F(traj, ctx)
+            F = _assemble_F(traj, ctx, X)
             if not np.all(np.isfinite(F)):
                 abort_reason = (f"non-finite constraint vector at iteration "
                                 f"{iterations}")
@@ -2064,7 +2397,7 @@ class DifferentialCorrector:
             if iterations >= self.max_iter:
                 break
 
-            DF = _assemble_DF(traj, ctx)
+            DF = _assemble_DF(traj, ctx, X)
             m, n = DF.shape
             if iterations == 0 and m > n:
                 warnings.warn(
