@@ -2143,8 +2143,34 @@ def _assemble_DF(traj: "Trajectory", ctx: _ShootingContext,
 
     return DF
 
+# ========== SHOOTING OUTPUTS ==========
 
-# ========== SHOOTER RESULT ==========
+@dataclass(frozen=True, eq=False)
+class ContinuationState:
+    """
+    Continuation payload attached to a ShooterResult on request.
+
+    The extra per-solve state a continuation engine needs beyond the
+    trajectory, packaged as an opt-in field (solve(continuation=True)),
+    parallel to diagnostics and iterates. It currently carries the final
+    free-variable vector and is the growth point for any further per-step
+    data a scheme needs (e.g. an unclosed corrector Jacobian for an analytic
+    family tangent), addable as fields without touching the opt-in wiring.
+
+    Invariant: when a ShooterResult carries a ContinuationState, its X is the
+    free-variable vector that produced that result's .trajectory -- the two
+    are a matched pair (see the population guard in solve).
+
+    Attributes
+    ----------
+    X : np.ndarray
+        Read-only (n_X,) free-variable vector at the final evaluated iterate,
+        in the corrector's pack ordering [free start components, junction
+        post-states, free boundary times]. eq is disabled because array fields
+        defeat the generated __eq__.
+    """
+    X: np.ndarray
+
 
 @dataclass(repr=False)
 class ShooterResult:
@@ -2181,6 +2207,10 @@ class ShooterResult:
         solve(iterates=True). These are the raw propagated iterates, with
         FreeJunctionNodes intact (the conversion applies to the final
         `.trajectory` only).
+    continuation : ContinuationState or None
+        Free-variable vector (and future per-step continuation data) at the
+        final iterate. Populated only when solve(continuation=True) and the
+        solve exited cleanly (no abort), so its X matches `.trajectory`.
     """
 
     trajectory: "Trajectory | None"
@@ -2190,6 +2220,7 @@ class ShooterResult:
     abort_reason: str | None = None
     diagnostics: dict | None = None
     iterates: list | None = None
+    continuation: "ContinuationState | None" = None
 
     def __repr__(self) -> str:
         status = "converged" if self.converged else "NOT converged"
@@ -2247,7 +2278,8 @@ class DifferentialCorrector:
               free_times: Sequence[int | np.integer] | None = None,
               node_specs: dict | None = None,
               diagnostics: bool = False,
-              iterates: bool = False) -> ShooterResult:
+              iterates: bool = False,
+              continuation: bool = False) -> ShooterResult:
         """
         Correct an initial-guess trajectory to satisfy the constraints.
 
@@ -2285,6 +2317,9 @@ class DifferentialCorrector:
             If True, populate result.diagnostics.
         iterates : bool, default False
             If True, populate result.iterates.
+        continuation : bool, default False
+            If True and the solve exits cleanly, populate
+            result.continuation with the final free-variable vector.
 
         Returns
         -------
@@ -2300,6 +2335,15 @@ class DifferentialCorrector:
         if raw['converged'] and out_traj is not None:
             out_traj = self._finalize(out_traj, node_specs)
 
+        # Continuation payload: populate only on a clean exit, where the final
+        # X and out_traj are a matched pair (on an abort, traj can be stale
+        # relative to X). Producer makes the read-only copy.
+        cont = None
+        if continuation and raw['abort_reason'] is None:
+            X_final = np.array(raw['X'], dtype=float)
+            X_final.flags.writeable = False
+            cont = ContinuationState(X=X_final)
+
         return ShooterResult(
             trajectory=out_traj,
             converged=raw['converged'],
@@ -2308,6 +2352,7 @@ class DifferentialCorrector:
             abort_reason=raw['abort_reason'],
             diagnostics=raw['diagnostics'],
             iterates=raw['iterates'],
+            continuation=cont,
         )
 
     def _finalize(self, traj: "Trajectory", node_specs: dict | None) -> "Trajectory":
@@ -2453,4 +2498,5 @@ class DifferentialCorrector:
             'abort_reason': abort_reason,
             'diagnostics': diagnostics,
             'iterates': iterates,
+            'X': X,
         }

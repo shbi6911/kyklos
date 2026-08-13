@@ -30,7 +30,7 @@ import numpy as np
 from typing import NamedTuple
 
 from .registry import _RECIPES, _RecipeEntry, available_recipes
-from .shooter import DifferentialCorrector, TargetState
+from .shooter import DifferentialCorrector, TargetState, ShooterResult
 from .periodic_orbit import PeriodicOrbit
 from .system import System, SysType
 from .exceptions import ConvergenceError
@@ -445,6 +445,102 @@ def available_layouts() -> list[str]:
 
 
 # ===========================================================================
+# Correction core (ShooterResult-returning atomic operator)
+# ===========================================================================
+def solve_recipe(
+    guess,
+    corrector: DifferentialCorrector | None = None,
+    *,
+    continuation: bool = False,
+) -> ShooterResult:
+    """
+    Run a recipe correction and return the raw ShooterResult.
+
+    The atomic operator underneath both correct_as and the continuation
+    engine: recipe lookup -> base layout -> layout transform -> [scheme SEAM]
+    -> propagate the guess -> solve. It returns the ShooterResult unwrapped
+    and without raising on non-convergence, so a caller can inspect
+    .converged and adapt (a continuation loop shrinks ds and retries) instead
+    of catching an exception. correct_as is the thin PeriodicOrbit-producing
+    wrapper over this; the engine calls it directly for the raw result plus
+    (with continuation=True) the free-variable payload.
+
+    Package-internal (middle tier): cooperating modules -- the wrapper and the
+    continuation engine -- call it, but it is not part of the top-level API.
+
+    Parameters
+    ----------
+    guess : CorrectorGuess
+        Validated correction input: state, period estimate, recipe label,
+        layout label, and System.
+    corrector : DifferentialCorrector, optional
+        Prebuilt corrector to reuse across many solves. If None, a default is
+        constructed.
+    continuation : bool, default False
+        Forwarded to solve: when True (and the solve exits cleanly), the
+        returned ShooterResult carries a ContinuationState with the final
+        free-variable vector, for the predictor and tangent of the next step.
+
+    Returns
+    -------
+    ShooterResult
+        The raw solve outcome (converged or not); never raises on
+        non-convergence.
+
+    Raises
+    ------
+    NotImplementedError
+        If the recipe uses a phase-pinning scheme other than 'symmetry'. This
+        is a precondition (the recipe cannot be attempted), distinct from a
+        convergence outcome, so it is raised here rather than in the wrapper.
+    """
+    recipe = _RECIPES.get(guess.recipe)
+
+    # Only the symmetric (perpendicular-crossing) families are handled. Fail
+    # before doing any propagation, not after.
+    if recipe.phase_pinning != "symmetry":
+        raise NotImplementedError(
+            f"solve_recipe currently supports only symmetric recipes; recipe "
+            f"{guess.recipe!r} uses phase_pinning={recipe.phase_pinning!r}."
+        )
+
+    layout = _base_layout(recipe)
+
+    # transform the _SolveLayout according to the 'layout' modifier
+    transform = _get_layout(guess.layout)
+    layout = transform(layout)
+
+    # --- SEAM: continuation scheme transform applies here ---------------------
+    # A scheme would edit `layout` (pin a var, free a node time, append an
+    # X-aware closing constraint) before assembly. This may coincide with the
+    # above transform in some cases.
+    # -------------------------------------------------------------------------
+
+    corrector = corrector if corrector is not None else DifferentialCorrector()
+
+    # Propagate the guess for the appropriate (half) period with STM: the
+    # corrector's Jacobian needs the state-transition matrix along the arc.
+    guess_arc = guess.system.propagate(
+        guess.state, [0.0, guess.half_period()], with_stm=True
+    )
+
+    # Build corrector constraints from the (copied) spec at solve time; the
+    # registry holds inert specs, not constructed constraint objects.
+    constraints = [TargetState(layout.constraint_spec)]
+
+    solve_kwargs = {
+        "free_vars": list(layout.free_vars),
+        "constraints": constraints,
+    }
+    # Pass free_times only when non-empty, matching the corrector's
+    # all-fixed-by-default convention.
+    if layout.free_times:
+        solve_kwargs["free_times"] = list(layout.free_times)
+
+    return corrector.solve(guess_arc, continuation=continuation, **solve_kwargs)
+
+
+# ===========================================================================
 # Public wrapper
 # ===========================================================================
 def correct_as(
@@ -480,56 +576,12 @@ def correct_as(
     NotImplementedError
         If the recipe uses a phase-pinning scheme other than 'symmetry'.
     """
-    recipe = _RECIPES.get(guess.recipe)
+    result = solve_recipe(guess, corrector)
 
-    # Standalone correction handles only the symmetric (perpendicular-crossing)
-    # families. Fail before doing any propagation, not after.
-    if recipe.phase_pinning != "symmetry":
-        raise NotImplementedError(
-            f"correct_as currently supports only symmetric recipes; recipe "
-            f"{guess.recipe!r} uses phase_pinning={recipe.phase_pinning!r}."
-        )
-
-    layout = _base_layout(recipe)
-
-    # transform the _SolverLayout according to the 'layout' modifier
-    transform = _get_layout(guess.layout)
-    layout = transform(layout)
-
-    # --- SEAM: continuation scheme transform applies here ---------------------
-    # A scheme would edit `layout` (pin a var, free a node time, append an
-    # X-aware closing constraint) before assembly. This may coincide with the
-    # above transform in some cases.
-    # -------------------------------------------------------------------------
-
-    corrector = corrector if corrector is not None else DifferentialCorrector()
-
-    # Propagate the guess for appropriate period with STM: the corrector's Jacobian
-    # needs the state-transition matrix along the arc.
-
-    guess_arc = guess.system.propagate(
-        guess.state, [0.0, guess.half_period()], with_stm=True
-    )
-
-    # Build corrector constraints from the (copied) spec at solve time; the
-    # registry holds inert specs, not constructed constraint objects.
-    constraints = [TargetState(layout.constraint_spec)]
-
-    solve_kwargs = {
-        "free_vars": list(layout.free_vars),
-        "constraints": constraints,
-    }
-    # Pass free_times only when non-empty, matching the corrector's
-    # all-fixed-by-default convention.
-    if layout.free_times:
-        solve_kwargs["free_times"] = list(layout.free_times)
-
-    corrected_arc = corrector.solve(guess_arc, **solve_kwargs)
-
-    if corrected_arc.trajectory is None:
+    if result.trajectory is None:
         raise ConvergenceError(
             f"Corrector failed to converge for a {guess.recipe!r} guess; "
             f"the initial guess may be too far from a periodic orbit."
         )
 
-    return PeriodicOrbit(corrected_arc.trajectory)
+    return PeriodicOrbit(result.trajectory)
