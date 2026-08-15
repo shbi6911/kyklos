@@ -2153,23 +2153,30 @@ class ContinuationState:
     The extra per-solve state a continuation engine needs beyond the
     trajectory, packaged as an opt-in field (solve(continuation=True)),
     parallel to diagnostics and iterates. It currently carries the final
-    free-variable vector and is the growth point for any further per-step
-    data a scheme needs (e.g. an unclosed corrector Jacobian for an analytic
-    family tangent), addable as fields without touching the opt-in wiring.
+    free-variable vector and the co-rank 1 Jacobian DH (NOT the full
+    defect Jacobian DF).
 
-    Invariant: when a ShooterResult carries a ContinuationState, its X is the
-    free-variable vector that produced that result's .trajectory -- the two
-    are a matched pair (see the population guard in solve).
+    Populated only for a converged solve, so its X and DH both correspond to
+    the converged member -- X is the vector that produced that result's
+    .trajectory, and DH is the corrector Jacobian evaluated there.
 
     Attributes
     ----------
     X : np.ndarray
-        Read-only (n_X,) free-variable vector at the final evaluated iterate,
-        in the corrector's pack ordering [free start components, junction
-        post-states, free boundary times]. eq is disabled because array fields
-        defeat the generated __eq__.
+        Read-only (n_X,) free-variable vector at the converged member, in the
+        corrector's pack ordering [free start components, junction post-states,
+        free boundary times]. eq is disabled because array fields defeat the
+        generated __eq__.
+    DH : np.ndarray
+        Read-only corrector Jacobian at the converged member with any closer
+        (X_SPACE) rows stripped, so it is the *unclosed* Jacobian whose null
+        space is the family tangent. Shape (n_rows_without_closers, n_X): for a
+        corank-1 continuation solve that is (n_X - 1, n_X) with a 1-D null
+        space. Assembled fresh at the converged point (the Newton loop skips
+        the Jacobian on the converging iterate).
     """
     X: np.ndarray
+    DH: np.ndarray
 
 
 @dataclass(repr=False)
@@ -2208,9 +2215,9 @@ class ShooterResult:
         FreeJunctionNodes intact (the conversion applies to the final
         `.trajectory` only).
     continuation : ContinuationState or None
-        Free-variable vector (and future per-step continuation data) at the
-        final iterate. Populated only when solve(continuation=True) and the
-        solve exited cleanly (no abort), so its X matches `.trajectory`.
+        Free-variable vector and unclosed corrector Jacobian at the converged
+        member, for an analytic family tangent. Populated only when
+        solve(continuation=True) and the solve converged.
     """
 
     trajectory: "Trajectory | None"
@@ -2318,8 +2325,10 @@ class DifferentialCorrector:
         iterates : bool, default False
             If True, populate result.iterates.
         continuation : bool, default False
-            If True and the solve exits cleanly, populate
-            result.continuation with the final free-variable vector.
+            If True and the solve converges, populate result.continuation with
+            the converged member's free-variable vector and unclosed corrector
+            Jacobian (DH), for an analytic family tangent. Costs one extra
+            Jacobian assembly at the converged point.
 
         Returns
         -------
@@ -2329,20 +2338,22 @@ class DifferentialCorrector:
                                           free_times, node_specs)
         raw = self._run(ctx, traj,
                         store_diagnostics=diagnostics,
-                        store_iterates=iterates)
+                        store_iterates=iterates,
+                        store_continuation=continuation)
 
         out_traj = raw['trajectory']
         if raw['converged'] and out_traj is not None:
             out_traj = self._finalize(out_traj, node_specs)
 
-        # Continuation payload: populate only on a clean exit, where the final
-        # X and out_traj are a matched pair (on an abort, traj can be stale
-        # relative to X). Producer makes the read-only copy.
+        # Continuation payload: only on convergence, so X and DH both belong
+        # to the converged member. Producer makes the read-only copies.
         cont = None
-        if continuation and raw['abort_reason'] is None:
+        if continuation and raw['converged']:
             X_final = np.array(raw['X'], dtype=float)
             X_final.flags.writeable = False
-            cont = ContinuationState(X=X_final)
+            DH_final = np.array(raw['DH'], dtype=float)
+            DH_final.flags.writeable = False
+            cont = ContinuationState(X=X_final, DH=DH_final)
 
         return ShooterResult(
             trajectory=out_traj,
@@ -2384,7 +2395,8 @@ class DifferentialCorrector:
 
     def _run(self, ctx: "_ShootingContext", guess: "Trajectory",
              store_diagnostics: bool = False,
-             store_iterates: bool = False) -> dict:
+             store_iterates: bool = False,
+             store_continuation: bool = False) -> dict:
         """
         Run the minimum-norm Newton iteration.
 
@@ -2396,9 +2408,9 @@ class DifferentialCorrector:
         The loop evaluates the residual at the top of each pass, so every X
         it produces is propagated and checked before being reported, and the
         Jacobian is never assembled on the iterate where convergence is
-        detected. Propagation failures, non-finite residuals, and a
-        condition number above cond_fail each abort the iteration gracefully
-        with a recorded reason rather than raising.
+        detected. When store_continuation is set, one extra Jacobian is
+        assembled at the converged point (a re-assembly, not a re-propagation)
+        to supply the unclosed DH for an analytic family tangent.
         """
         X = _pack(guess, ctx)
         converged = False
@@ -2490,6 +2502,25 @@ class DifferentialCorrector:
                 'abort_reason': abort_reason,
             }
 
+        # Analytic-tangent payload: the corrector Jacobian at the converged
+        # member with any closer (X_SPACE) rows stripped, so its null space is
+        # the family tangent. The loop breaks before assembling DF on the
+        # converging iterate, so assemble one fresh here at the matched
+        # (traj, X); traj already carries STMs (propagated with_stm=True), so
+        # this is a re-assembly, not a re-propagation. The row plan knows which
+        # rows are closers, so the strip needs no closer knowledge in callers.
+        DH = None
+        if store_continuation and converged and traj is not None:
+            DF_full = _assemble_DF(traj, ctx, X)
+            xspace_rows = [
+                r
+                for block in ctx.row_plan.blocks
+                if block.kind is _BlockKind.X_SPACE
+                for r in range(block.row_offset,
+                               block.row_offset + block.row_count)
+            ]
+            DH = np.delete(DF_full, xspace_rows, axis=0)
+
         return {
             'trajectory': traj,
             'converged': converged,
@@ -2499,4 +2530,5 @@ class DifferentialCorrector:
             'diagnostics': diagnostics,
             'iterates': iterates,
             'X': X,
+            'DH': DH,
         }
