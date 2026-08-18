@@ -5,6 +5,7 @@ created with the assistance of Claude Opus by Anthropic'''
 from __future__ import annotations
 
 import warnings
+import copy
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field, InitVar
 from enum import Enum, auto
@@ -19,6 +20,7 @@ from .trajectory import (
     ImpulsiveJunctionNode,
     NullJunctionNode,
 )
+from .orbital_elements import OrbitalElements, OEType
 
 if TYPE_CHECKING:
     from .system import System
@@ -531,10 +533,12 @@ class TargetState(TerminalConstraint):
         return int(self._idx.size)
 
     def residual(self, state_tf, x0):
+        """Residual is a simple final state - target"""
         state_tf = np.asarray(state_tf, dtype=float)
         return state_tf[self._idx] - self._target
 
     def jacobian_tf(self, state_tf, x0):
+        """Jacobian is a selection matrix of constrained variables"""
         J = np.zeros((self._idx.size, 6))
         J[np.arange(self._idx.size), self._idx] = 1.0
         return J
@@ -571,18 +575,161 @@ class Periodicity(TerminalConstraint):
         return int(self._idx.size)
 
     def residual(self, state_tf, x0):
+        """Residual is final state - initial state"""
         state_tf = np.asarray(state_tf, dtype=float)
         x0 = np.asarray(x0, dtype=float)
         return state_tf[self._idx] - x0[self._idx]
 
     def jacobian_tf(self, state_tf, x0):
+        """Jacobian wrt final state is a selection of constrained variables.
+        Chaining with the STM happens within the shooting algorithm.
+        """
         J = np.zeros((self._idx.size, 6))
         J[np.arange(self._idx.size), self._idx] = 1.0
         return J
 
     def jacobian_x0(self, state_tf, x0):
+        """Jacobian wrt initial state is a negative identity, selected by
+        constrained variables.
+        """
         J = np.zeros((self._idx.size, 6))
         J[np.arange(self._idx.size), self._idx] = -1.0
+        return J
+
+
+class JacobiConstraint(TerminalConstraint):
+    """
+    Target a Jacobi constant value at the final state (CR3BP only).
+
+    A single scalar boundary condition on the CR3BP integral of motion
+
+        C = (x^2 + y^2) + 2*(1 - mu)/r1 + 2*mu/r2 - (vx^2 + vy^2 + vz^2)
+
+    where r1, r2 are the distances to the primary and secondary and mu is
+    the system mass ratio. Used, e.g., to hold a family member at a fixed
+    energy level while other terminal constraints (or a continuation
+    closing condition) shape the rest of the solve.
+
+    The mass ratio is not known at construction; it is captured from the
+    bound System's mass_ratio, so a JacobiConstraint must be bound before
+    its residual or Jacobian can be evaluated (see bind()).
+
+    Parameters
+    ----------
+    target : float
+        Desired Jacobi constant value.
+
+    Notes
+    -----
+    residual() delegates to OrbitalElements.jacobi_const() rather than
+    re-deriving the formula locally, so there is a single source of truth
+    for it. jacobian_tf() is hand-derived here instead: routing it through
+    OrbitalElements would require a compiled Heyoka cfunc on CR3BPSystem
+    for the Jacobi constant's gradient, which is a lot of machinery to
+    stand behind a closed-form, textbook 1x6 analytic gradient that is not
+    expected to change.
+    """
+
+    def __init__(self, target: float):
+        """
+        Parameters
+        ----------
+        target : float
+            Desired Jacobi constant value. Converted to float; not
+            otherwise validated -- an unreachable target simply will not
+            let the corrector converge, which is the shooter's own
+            mechanism for surfacing that, not something to gate here.
+        """
+        self._target = float(target)
+
+    @property
+    def n_rows(self) -> int:
+        """Jacobi constant is a scalar output contributing one row to DF."""
+        return 1
+
+    def bind(self, system) -> "JacobiConstraint":
+        """
+        Capture the mass ratio from a CR3BP System.
+
+        Returns a new bound instance rather than mutating self, per the
+        Constraint.bind contract: the original JacobiConstraint stays a
+        reusable, system-agnostic template that can be bound against more
+        than one System without the two bindings clobbering each other.
+
+        Parameters
+        ----------
+        system : System
+            Must be a CR3BP system (system.base_type is SysType.CR3BP).
+            Checked via base_type rather than isinstance(system,
+            CR3BPSystem) so a lightweight duck-typed System stand-in (e.g.
+            a test fixture that never compiles a real Heyoka integrator)
+            can satisfy bind() without needing to be an actual
+            CR3BPSystem instance.
+
+        Returns
+        -------
+        JacobiConstraint
+            A new instance with _mass_ratio captured from system. self is
+            left unmodified.
+
+        Raises
+        ------
+        ValueError
+            If system is not a CR3BP system.
+        """
+
+        from .system import SysType
+
+        if system.base_type is not SysType.CR3BP:
+            raise ValueError(
+                f"Jacobi constant is only defined for CR3BP Systems, "
+                f"got {system.base_type.value}"
+            )
+        bound = copy.copy(self)
+        bound._mass_ratio = system.mass_ratio
+        return bound
+
+    def residual(self, state_tf, x0):
+        """
+        Jacobi constant residual, actual minus target.
+
+        Delegates to OrbitalElements.jacobi_const() as the single source
+        of truth for the Jacobi constant formula (see class Notes).
+
+        """
+        state_tf = np.asarray(state_tf, dtype=float)
+        oe = OrbitalElements(state_tf, OEType.CR3BP, validate=False,
+                             mu=self._mass_ratio)
+        return np.array([oe.jacobi_const() - self._target], dtype=float)
+
+    def jacobian_tf(self, state_tf, x0):
+        """
+        Analytic d(residual)/d(state_tf), shape (1, 6).
+
+        Derived from C = (x^2+y^2) + 2*(1-mu)/r1 + 2*mu/r2 - v^2:
+
+            dC/dx = 2x - (1-mu)*2*(x+mu)/r1^3 - mu*2*(x-1+mu)/r2^3
+            dC/dy = 2y - (1-mu)*2*y/r1^3      - mu*2*y/r2^3
+            dC/dz =    - (1-mu)*2*z/r1^3      - mu*2*z/r2^3
+            dC/dv = -2*v
+
+        Kept as a hand-derived analytic expression rather than routed
+        through OrbitalElements or a Heyoka cfunc (see class Notes).
+        """
+        x, y, z, vx, vy, vz = np.asarray(state_tf, dtype=float)
+        r1 = np.sqrt((x + self._mass_ratio)**2 + y**2 + z**2)
+        r2 = np.sqrt((x - 1 + self._mass_ratio)**2 + y**2 + z**2)
+        J = np.zeros((self.n_rows, 6))
+
+        jacobi_term1 = (2 * (1 - self._mass_ratio)) / r1**3
+        jacobi_term2 = (2 * self._mass_ratio) / r2**3
+
+        J[0] = (2*x - (x + self._mass_ratio)*jacobi_term1
+                    - (x - 1 + self._mass_ratio)*jacobi_term2)
+        J[1] = 2*y - y*jacobi_term1 - y*jacobi_term2
+        J[2] = -z*jacobi_term1 - z*jacobi_term2
+        J[3:6] = np.array([-2*vx, -2*vy, -2*vz])
+
         return J
 
 
@@ -590,8 +737,8 @@ class CallableConstraint(TerminalConstraint):
     """
     Wrap user-supplied callables as a terminal constraint.
 
-    The escape hatch for conditions the structured constraints cannot
-    express (e.g. targeting a Jacobi constant or an angle).
+    The escape hatch for conditions the structured constraints cannot yet
+    express (e.g. targeting an angle).
 
     Parameters
     ----------

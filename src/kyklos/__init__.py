@@ -52,7 +52,7 @@ from .trajectory import (Trajectory, Trajectory as Traj, Node,
 from .shooter import (
     DifferentialCorrector, ShooterResult,
     Constraint, TerminalConstraint, FreeVarConstraint,
-    TargetState, Periodicity, CallableConstraint,
+    TargetState, Periodicity, CallableConstraint, JacobiConstraint,
     NodeSpec,
 )
 
@@ -126,6 +126,7 @@ __all__ = [
     "FreeVarConstraint",
     "TargetState",
     "Periodicity",
+    "JacobiConstraint",
     "CallableConstraint",
     "NodeSpec",
     # Module-level Functions
