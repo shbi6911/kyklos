@@ -27,13 +27,18 @@ CorrectorGuess.from_seeder_result() method.  If a period_locked correction
 from a seed is desired, the CorrectorGuess can be constructed standalone.
 """
 import numpy as np
-from typing import NamedTuple
+from typing import NamedTuple, Callable, TYPE_CHECKING
+from dataclasses import dataclass
 
 from .registry import _RECIPES, _RecipeEntry, available_recipes
-from .shooter import DifferentialCorrector, TargetState, ShooterResult
+from .shooter import (DifferentialCorrector, TargetState, ShooterResult,
+                      Constraint, ConstraintSpace, FreeVarConstraint)
 from .periodic_orbit import PeriodicOrbit
 from .system import System, SysType
 from .exceptions import ConvergenceError
+
+if TYPE_CHECKING:
+    from .trajectory import Trajectory
 
 # ===========================================================================
 # Corrector guess
@@ -445,99 +450,298 @@ def available_layouts() -> list[str]:
 
 
 # ===========================================================================
-# Correction core (ShooterResult-returning atomic operator)
+# Shooter spec input for the continuation atomic operator
 # ===========================================================================
-def solve_recipe(
-    guess,
-    corrector: DifferentialCorrector | None = None,
-    *,
-    continuation: bool = False,
-) -> ShooterResult:
+@dataclass(frozen=True, eq=False)
+class SolveSpec:
     """
-    Run a recipe correction and return the raw ShooterResult.
+    Finalized, built determinacy spec passed into solve_recipe.
 
-    The atomic operator underneath both correct_as and the continuation
-    engine: recipe lookup -> base layout -> layout transform -> [scheme SEAM]
-    -> propagate the guess -> solve. It returns the ShooterResult unwrapped
-    and without raising on non-convergence, so a caller can inspect
-    .converged and adapt (a continuation loop shrinks ds and retries) instead
-    of catching an exception. correct_as is the thin PeriodicOrbit-producing
-    wrapper over this; the engine calls it directly for the raw result plus
-    (with continuation=True) the free-variable payload.
+    The realized form of a _SolveLayout: where _SolveLayout is the inert,
+    transformed-in-a-pipeline description (a NamedTuple of free_vars /
+    free_times / constraint_spec), a SolveSpec is what you get after *building*
+    it -- the terminal constraints are constructed objects, ready to hand to
+    the shooter. It is loop-invariant across a continuation march: constructed
+    once above the loop, then passed unchanged into every step. solve_recipe
+    appends the per-step continuation closer to a *fresh* list built from these
+    constraints; it never mutates the spec.
 
-    Package-internal (middle tier): cooperating modules -- the wrapper and the
-    continuation engine -- call it, but it is not part of the top-level API.
+    The constraints here are the TERMINAL boundary conditions only (e.g. the
+    TargetState from the recipe). The continuation closer (PseudoArclength /
+    FreeVarPin) is NOT in the spec -- solve_recipe appends it per step from the
+    ContinuationRef. corank() counts the spec as written (closer excluded), so
+    a corank-1 spec is the expected input to a closed continuation solve, and a
+    corank-0 (square) spec is the isolated / bootstrap case.
+
+    What is NOT here, and why: no System, no seed state, no propagation span --
+    all of those ride on the guess Trajectory passed alongside the spec into
+    solve_recipe (the shooter reads system/states/times off the trajectory via
+    _pack). The spec is purely the finalized set of solve() determinacy
+    arguments minus the guess and minus the run flags.
+
+    Attributes
+    ----------
+    free_vars : tuple of str
+        Free start-state component names (e.g. ("x", "vy")). Count of free
+        start columns.
+    free_times : tuple of int
+        Node indices whose boundary times are free. Their *values* live on the
+        guess trajectory (via _pack); the spec carries only which are free.
+    constraints : tuple of Constraint
+        Built terminal constraints. Stored as a tuple so the loop-invariant set
+        cannot be appended to in place. eq is disabled because these objects
+        (and their arrays) defeat a generated __eq__.
+    node_specs : dict or None
+        Per-junction role specs for multiple shooting. None for single
+        shooting (the only supported mode for now); present as the MS
+        extension point so MS adds values, not fields.
+    """
+
+    free_vars: tuple[str, ...]
+    free_times: tuple[int, ...]
+    constraints: tuple[Constraint, ...]
+    node_specs: dict | None = None
+
+    def __post_init__(self) -> None:
+        # Freeze the collection fields to tuples (the layout hands free_times
+        # in as a list; constraints must be un-appendable to protect the
+        # loop-invariant). Frozen dataclass, so assign through object.
+        object.__setattr__(self, "free_vars", tuple(self.free_vars))
+        object.__setattr__(self, "free_times", tuple(self.free_times))
+        object.__setattr__(self, "constraints", tuple(self.constraints))
+
+        if self.node_specs is not None and not isinstance(self.node_specs, dict):
+            raise TypeError(
+                f"node_specs must be a dict or None, got "
+                f"{type(self.node_specs).__name__}."
+            )
+        # The closer is appended by solve_recipe, not baked in; a free-variable
+        # constraint here would make corank() miscount (its row would be
+        # counted as terminal). Enforce terminal-only so corank() stays honest.
+        for c in self.constraints:
+            if c.space is not ConstraintSpace.TERMINAL:
+                raise ValueError(
+                    f"SolveSpec.constraints must be terminal constraints; got "
+                    f"a {type(c).__name__} with space={c.space}. The "
+                    f"continuation closer is appended by solve_recipe, not "
+                    f"placed in the spec."
+                )
+        
+    @property
+    def n_X(self) -> int:
+        """
+        Length of the free variable vector, computed from spec
+        """
+        return len(self.free_vars) + len(self.free_times)
+
+    @property
+    def n_rows(self) -> int:
+        """Number of Jacobian rows computed from spec"""
+        return sum(c.n_rows for c in self.constraints)
+    
+    @property
+    def corank(self) -> int:
+        """
+        Determinacy of the unclosed solve: n_unknowns - n_equations.
+
+        0 -> square (isolated / bootstrap solve); 1 -> corank-1, underdetermined
+        by exactly one, ready for a single continuation closer to square it.
+        The closer is excluded here (solve_recipe appends it), so this is the
+        corank *before* closing.
+
+        Single shooting: n_X is the free start components plus the free boundary
+        times, and n_rows is the terminal constraint rows. Multiple shooting
+        would add junction post-state columns to n_X and interior-defect rows to
+        n_rows (both driven by node_specs); until that is implemented, a non-None
+        node_specs is rejected rather than silently counted wrong. The `== 1`
+        determinacy invariant the loop checks is unchanged under MS -- only the
+        counts grow.
+        """
+        if self.node_specs is not None:
+            raise NotImplementedError(
+                "corank() does not yet account for multiple-shooting node_specs "
+                "(junction columns and interior-defect rows); MS corank is not "
+                "implemented."
+            )
+        return self.n_X - self.n_rows
+
+
+# ===========================================================================
+# Input class for atomic operator containing previous solve-data
+# ===========================================================================
+@dataclass(frozen=True, eq=False)
+class ContinuationRef:
+    """
+    Per-step reference state the engine hands to a continuation scheme's closer.
+
+    The continuation engine's marching state for one step, passed into
+    solve_recipe alongside the scheme selector. It plays two roles that share
+    the same data: the engine *predicts* the next member with it
+    (X_pred = X_prev + ds * t_hat), and the scheme's closer *references* it
+    (PseudoArclength closes on t_hat . (X - X_prev) - ds). It is built fresh
+    each step from the previous member and its analytic tangent, and it is the
+    input counterpart to the ShooterResult.ContinuationState a solve produces:
+    the engine reads a ContinuationState off step k and builds a
+    ContinuationRef for step k+1.
+
+    It is deliberately closer-agnostic. The fields are the resolved per-step
+    predictor state any closer factory can read -- an arclength closer consumes
+    all three directly; a pin closer would derive its (col, target) from them
+    plus the layout. So validation here is limited to what is true of *any*
+    predictor state (shapes, finiteness, positive step); closer-specific
+    preconditions (e.g. PseudoArclength's unit-tangent requirement) are left to
+    the closer, so this record never bakes in one closer's needs.
+
+    Direction is already resolved upstream: t_hat arrives with its sign fixed
+    (period-component seed at member one, tangent-continuity thereafter), so
+    this record carries a finished tangent and never sees a sign question.
 
     Parameters
     ----------
-    guess : CorrectorGuess
-        Validated correction input: state, period estimate, recipe label,
-        layout label, and System.
+    X_prev : array_like
+        The previous converged member, shape (n_X,). Copied to an owned
+        read-only array (the engine builds this from its live working vectors,
+        so the record must not alias them).
+    t_hat : array_like
+        The family tangent at X_prev, shape (n_X,), direction already resolved.
+        Copied read-only. Unit-norm is *not* checked here (that is the
+        arclength closer's precondition).
+    ds : float
+        The arclength step, ds > 0. Direction lives in t_hat, so ds is the
+        unsigned distance stepped along it.
+    """
+
+    X_prev: np.ndarray
+    t_hat: np.ndarray
+    ds: float
+
+    def __post_init__(self) -> None:
+        # Owned copies (np.array, not asarray) so the record never aliases the
+        # engine's live arrays; frozen, so set through object.__setattr__.
+        X_prev = np.array(self.X_prev, dtype=float)
+        t_hat = np.array(self.t_hat, dtype=float)
+
+        if X_prev.ndim != 1:
+            raise ValueError(
+                f"X_prev must be a 1-D vector, got shape {X_prev.shape}."
+            )
+        if t_hat.shape != X_prev.shape:
+            raise ValueError(
+                f"t_hat must match X_prev in shape; got t_hat {t_hat.shape} "
+                f"vs X_prev {X_prev.shape}."
+            )
+        if not (np.all(np.isfinite(X_prev)) and np.all(np.isfinite(t_hat))):
+            raise ValueError("X_prev and t_hat must be finite.")
+
+        ds = float(self.ds)
+        if not np.isfinite(ds) or ds <= 0.0:
+            raise ValueError(f"ds must be a positive finite step, got {ds}.")
+
+        X_prev.flags.writeable = False
+        t_hat.flags.writeable = False
+        object.__setattr__(self, "X_prev", X_prev)
+        object.__setattr__(self, "t_hat", t_hat)
+        object.__setattr__(self, "ds", ds)
+
+
+# ===========================================================================
+# Correction core (ShooterResult-returning atomic operator)
+# ===========================================================================
+def solve_recipe(
+    spec: SolveSpec,
+    guess_traj: "Trajectory",
+    corrector: DifferentialCorrector | None = None,
+    *,
+    closer_factory: Callable[[ContinuationRef, int], FreeVarConstraint] | None = None,
+    ref: ContinuationRef | None = None,
+    continuation: bool = False,
+) -> ShooterResult:
+    """
+    Atomic correction operator: solve a built spec, return the raw result.
+
+    The single step both correct_as and the continuation loop call. It takes a
+    finalized SolveSpec (determinacy config with terminal constraints already
+    built) and an already-propagated guess trajectory, optionally appends one
+    continuation closer, runs the shooter, and returns the ShooterResult
+    unwrapped -- no raise on non-convergence, no PeriodicOrbit wrap. Those are
+    the wrapper's (correct_as's) concerns; keeping them out lets a continuation
+    loop inspect .converged and adapt instead of catching exceptions.
+
+    Spec construction (recipe lookup, base layout, layout/scheme transforms) and
+    guess propagation both happen *above* this function now -- it receives the
+    finished spec and the propagated trajectory. The trajectory carries the
+    System, seed state, and times (the shooter reads them via _pack), so none of
+    those live on the spec.
+
+    The closer is appended iff BOTH closer_factory and ref are supplied -- the
+    factory to build it, the ref to build it from. Supplying exactly one is a
+    caller error. Supplying neither runs an unclosed solve, which is both the
+    single-shot (correct_as) path and the continuation bootstrap (member one,
+    where the unclosed corank-1 Jacobian's null space seeds the first tangent).
+
+    ref and continuation are independent switches: ref toggles the *closer*,
+    continuation toggles the *payload* (ShooterResult.continuation with X and
+    DH). Member one needs ref=None but continuation=True -- unclosed, yet its DH
+    is wanted -- so they must not be conflated.
+
+    Determinacy (corank) is trusted, not checked here: the caller (correct_as,
+    or the continuation setup above the loop) owns asserting the spec is the
+    right corank for what it is doing. This function just appends and solves.
+
+    Parameters
+    ----------
+    spec : SolveSpec
+        Finalized, built determinacy spec (terminal constraints only; the
+        closer is appended here, not in the spec).
+    guess_traj : Trajectory
+        Already-propagated initial guess. Carries the System and the seed
+        state/times.
     corrector : DifferentialCorrector, optional
-        Prebuilt corrector to reuse across many solves. If None, a default is
-        constructed.
+        Reused across a march when provided; a default is built otherwise.
+    closer_factory : callable, optional
+        (ref, n_X) -> FreeVarConstraint. The scheme's Task-2 half, resolved
+        above the loop (with any static bits like a pin column bound in).
+    ref : ContinuationRef, optional
+        Per-step reference state (X_prev, t_hat, ds) the factory consumes.
     continuation : bool, default False
-        Forwarded to solve: when True (and the solve exits cleanly), the
-        returned ShooterResult carries a ContinuationState with the final
-        free-variable vector, for the predictor and tangent of the next step.
+        If True and the solve converges, ShooterResult.continuation carries the
+        member's X and unclosed DH (for the next analytic tangent).
 
     Returns
     -------
     ShooterResult
-        The raw solve outcome (converged or not); never raises on
-        non-convergence.
-
-    Raises
-    ------
-    NotImplementedError
-        If the recipe uses a phase-pinning scheme other than 'symmetry'. This
-        is a precondition (the recipe cannot be attempted), distinct from a
-        convergence outcome, so it is raised here rather than in the wrapper.
+        Raw outcome; never raises on non-convergence.
     """
-    recipe = _RECIPES.get(guess.recipe)
-
-    # Only the symmetric (perpendicular-crossing) families are handled. Fail
-    # before doing any propagation, not after.
-    if recipe.phase_pinning != "symmetry":
-        raise NotImplementedError(
-            f"solve_recipe currently supports only symmetric recipes; recipe "
-            f"{guess.recipe!r} uses phase_pinning={recipe.phase_pinning!r}."
-        )
-
-    layout = _base_layout(recipe)
-
-    # transform the _SolveLayout according to the 'layout' modifier
-    transform = _get_layout(guess.layout)
-    layout = transform(layout)
-
-    # --- SEAM: continuation scheme transform applies here ---------------------
-    # A scheme would edit `layout` (pin a var, free a node time, append an
-    # X-aware closing constraint) before assembly. This may coincide with the
-    # above transform in some cases.
-    # -------------------------------------------------------------------------
-
     corrector = corrector if corrector is not None else DifferentialCorrector()
 
-    # Propagate the guess for the appropriate (half) period with STM: the
-    # corrector's Jacobian needs the state-transition matrix along the arc.
-    guess_arc = guess.system.propagate(
-        guess.state, [0.0, guess.half_period()], with_stm=True
-    )
+    # Terminal constraints are loop-invariant; build a fresh list and append the
+    # per-step closer to it, never mutating spec.constraints.
+    constraints = list(spec.constraints)
 
-    # Build corrector constraints from the (copied) spec at solve time; the
-    # registry holds inert specs, not constructed constraint objects.
-    constraints = [TargetState(layout.constraint_spec)]
+    # add continuation constraint if present
+    if ref is not None and closer_factory is not None:
+        constraints.append(closer_factory(ref, spec.n_X))
+    else:
+        raise ValueError(
+            "closer_factory and ref must be supplied together (a closer needs "
+            "both a factory and reference data) or both omitted for an unclosed "
+            "solve; got exactly one."
+        )
 
     solve_kwargs = {
-        "free_vars": list(layout.free_vars),
+        "free_vars": list(spec.free_vars),
         "constraints": constraints,
     }
     # Pass free_times only when non-empty, matching the corrector's
     # all-fixed-by-default convention.
-    if layout.free_times:
-        solve_kwargs["free_times"] = list(layout.free_times)
+    if spec.free_times:
+        solve_kwargs["free_times"] = list(spec.free_times)
 
-    return corrector.solve(guess_arc, continuation=continuation, **solve_kwargs)
+    if spec.node_specs is not None:
+        raise NotImplementedError(f"Continuation does not yet support multiple "
+                                    f"shooting, do not provide node_specs.")
+
+    return corrector.solve(guess_traj, continuation=continuation, **solve_kwargs)
 
 
 # ===========================================================================
