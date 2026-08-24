@@ -983,6 +983,277 @@ class FreeVarPin(FreeVarConstraint):
         J = np.zeros((1, self._n_X))
         J[0, self._col] = 1.0
         return J
+ 
+ 
+class PhaseConstraint(FreeVarConstraint):
+    """
+    Fix the orbital phase of a periodic-orbit solve that has no symmetry.
+ 
+    Newton's method on a periodicity residual with a free start state is
+    structurally rank-deficient for an autonomous system, independent of any
+    symmetry. For an orbit with no symmetry, the phase must be pinned for a
+    well-conditioned solve.
+ 
+    The perpendicular-crossing (mirror-theorem) recipes never need this class:
+    demanding y = vx = vz = 0 at t = 0 already names a specific instant on the
+    orbit, so the symmetry pins the phase as a side effect. Once the full
+    start state is freed and the symmetry is dropped, the gauge must be fixed
+    explicitly, which is what this constraint does.
+ 
+    The condition is the shooting-method specialization of the variational
+    phase condition used by collocation continuation codes. Minimizing the
+    phase mismatch
+ 
+        J(tau) = integral_0^T |x(t) - x_ref(t - tau)|^2 dt
+ 
+    over a trial shift tau and setting dJ/dtau = 0 at tau = 0 gives the
+    integral form, integral_0^T <x(t) - x_ref(t), xdot_ref(t)> dt = 0. A
+    shooting formulation carries only x0 and T as unknowns, not x(t), so the
+    same variational statement is applied at the single point the solve
+    controls:
+ 
+        g(x0) = <x0 - x0_ref, f(x0_ref)> = 0
+ 
+    Appending the row restores rank. The Jacobian row becomes:
+    dg(x0)/dX = [ f(x0_ref)^T     0    ]
+ 
+    Multiple shooting
+    -----------------
+    Only the start state is anchored, and that is sufficient. The trivial
+    direction under multiple shooting slides *every* node along its own local
+    flow at once -- v = (f(x_0), f(x_1), ..., f(x_{N-1}), 0) -- because
+    Phi_i f(x_i) = f(x_{i+1}) makes each interior defect first-order invariant
+    under that shift. A row supported only on segment 0's columns still
+    detects v: their inner product is <f(x0_ref), f(x0)>, nonzero at the
+    reference. The row and the null direction need only overlap somewhere, and
+    the start block is the natural place, so the junction and free-time columns
+    of this row are identically zero.
+ 
+    Parameters
+    ----------
+    x0_ref : array_like
+        The full (6,) reference start state, normally the guess trajectory's
+        start state. The full state is required, not just its free components:
+        the vector field is a function of all six, so bind() must evaluate
+        f at the complete point. Downselection happens after that evaluation.
+    free_vars : str or sequence of str
+        The free start-state components, in the same spellings the shooter's
+        own free_vars argument accepts ('all', 'planar', ['x', 'z', 'vy'],
+        ...). Must name exactly the same set passed to solve(); see Notes.
+    n_X : int
+        Width of the free-variable vector. A partial-width row cannot infer
+        its own n_X (unlike PseudoArclength, whose tangent is already (n_X,)),
+        so it is passed explicitly, as with FreeVarPin.
+ 
+    Notes
+    -----
+    The reference point is frozen for the whole solve rather than re-anchored
+    to each iterate. Re-anchoring would express a marginally more local
+    section, but it would also make the residual nonlinear in X: jacobian_X
+    would then have to differentiate the vector field itself (df/dx, i.e. the
+    field Jacobian) rather than merely report its value. Holding the reference
+    fixed keeps the row exact, constant, and free of any propagated-state
+    dependence -- which is the property that makes this an X_SPACE constraint
+    at all.
+ 
+    free_vars is passed rather than derived because bind() receives only a
+    System; the column plan is not visible from inside a constraint. Passing
+    the same specification the solve uses keeps the row aligned with the start
+    block. A disagreement is not detectable here -- the constraint would build
+    a row of the wrong width or, worse, the right width against the wrong
+    components -- so the caller (a recipe, layout, or the correction wrapper)
+    should source both from one place. The width check in residual() catches
+    the wrong-width case; the wrong-components case is a caller invariant.
+ 
+    A System carrying runtime parameters (drag, SRP) would need those passed
+    to vector_field. bind() does not, matching _assemble_DF's free-time pass,
+    which calls system.vector_field(endpoints) with no pars either. That is a
+    package-wide gap, not one specific to this constraint, and should be
+    closed in one place when a parameterized System first reaches the shooter.
+    """
+ 
+    # Set by bind(); None marks an unbound template. Kept as a class attribute
+    # so an unbound instance answers the guard rather than raising
+    # AttributeError from a missing slot.
+    _f_free = None
+ 
+    def __init__(self, x0_ref, free_vars, n_X):
+        # np.array (not asarray) forces an owned copy, never a view onto a
+        # caller buffer -- same ownership rule as PseudoArclength.
+        x0_ref = np.array(x0_ref, dtype=float)
+        if x0_ref.shape != (6,):
+            raise ValueError(
+                f"x0_ref must be the full (6,) reference start state, got "
+                f"shape {x0_ref.shape}. The vector field is a function of all "
+                f"six components; downselection happens after evaluation."
+            )
+        if not np.all(np.isfinite(x0_ref)):
+            raise ValueError("x0_ref must be finite.")
+ 
+        # Same parser the shooter uses, so a bad category or component name
+        # fails here with the identical message.
+        free_idx = _parse_free_vars(free_vars)
+        n_fs = int(free_idx.size)
+        if n_fs == 0:
+            raise ValueError(
+                "PhaseConstraint requires at least one free start-state "
+                "component; with none free the phase row is identically zero "
+                "and constrains nothing. A solve whose start state is fully "
+                "pinned needs no phase condition -- the pin already fixes it."
+            )
+ 
+        # bool is a subclass of int; reject it so True/False are not silently
+        # taken as 1/0 (same guard style as FreeVarPin).
+        if isinstance(n_X, bool) or not isinstance(n_X, (int, np.integer)):
+            raise TypeError(
+                f"n_X must be an integer width, got {type(n_X).__name__}."
+            )
+        n_X = int(n_X)
+        if n_X < n_fs:
+            raise ValueError(
+                f"n_X = {n_X} is narrower than the {n_fs} free start "
+                f"component(s) the phase row occupies."
+            )
+ 
+        x0_ref.flags.writeable = False
+        free_idx.flags.writeable = False
+        self._x0_ref = x0_ref
+        self._free_idx = free_idx
+        self._n_X = n_X
+ 
+    # ---- column placement ----
+ 
+    @property
+    def _cols(self) -> slice:
+        """
+        Columns of X this row is supported on: the start-state block.
+ 
+        Load-bearing layout invariant, stated once here rather than spelled
+        inline in residual() and jacobian_X(). _build_column_plan always emits
+        selectors[0] -- the start state -- with col_start = 0, so the free
+        start components are exactly X[0:n_fs] and every other column of this
+        row is zero. If the column plan ever placed the start block elsewhere,
+        this property is the single line that would change (and the class
+        would then need a col_start argument).
+        """
+        return slice(0, int(self._free_idx.size))
+ 
+    @property
+    def n_rows(self) -> int:
+        """A single scalar phase row."""
+        return 1
+ 
+    # ---- lifecycle ----
+ 
+    def bind(self, system) -> "PhaseConstraint":
+        """
+        Capture the flow direction f(x0_ref) from the System.
+ 
+        The one thing this constraint needs from the dynamics, evaluated once
+        at the single bind point and reduced immediately to an array. The
+        System itself is deliberately not retained: per the Constraint.bind
+        contract a bound constraint is an inert data snapshot, and holding a
+        live System (or a bound method closing over one) would let a rebind
+        see another System's state and would keep that System alive for the
+        constraint's lifetime after the only value needed is already in hand.
+ 
+        System.vector_field caches its compiled cfunc on the System instance
+        (_compile_func_evaluator early-returns on _cached_func), so the JIT
+        cost is paid once per System no matter how many constraints bind to
+        it, and never again during the Newton loop -- which never calls this.
+ 
+        Returns a new bound instance rather than mutating self, so the
+        original stays a reusable, system-agnostic template.
+ 
+        Parameters
+        ----------
+        system : System
+            Any System exposing vector_field; the constraint is dynamics-
+            agnostic beyond that, unlike JacobiConstraint's CR3BP requirement.
+ 
+        Returns
+        -------
+        PhaseConstraint
+            A new instance carrying f(x0_ref) restricted to the free start
+            components. self is left unmodified.
+        """
+        f_ref = np.asarray(system.vector_field(self._x0_ref), dtype=float)
+        if f_ref.shape != (6,):
+            raise ValueError(
+                f"system.vector_field(x0_ref) returned shape {f_ref.shape}, "
+                f"expected (6,)."
+            )
+ 
+        f_free = np.array(f_ref[self._free_idx], dtype=float)
+ 
+        # Transversality. The row is useful only if the flow direction has a
+        # component along some freed coordinate; if it does not, the row is
+        # numerically zero and the trivial null direction survives. Routed
+        # through validation_error rather than raised flat, matching NodeSpec's
+        # well-posedness heuristic: a genuinely degenerate global system still
+        # surfaces as the solver's own rank-deficiency warning.
+        if not np.any(f_free):
+            names = ", ".join(_STATE_NAMES[i] for i in self._free_idx)
+            validation_error(
+                f"PhaseConstraint is degenerate at the reference state: the "
+                f"vector field has no component along any free start "
+                f"component ({names}), so the phase row is zero and fixes "
+                f"nothing. Free a component the flow actually moves, or "
+                f"re-anchor to a different point on the orbit."
+            )
+ 
+        f_free.flags.writeable = False
+        bound = copy.copy(self)
+        bound._f_free = f_free
+        return bound
+ 
+    def _require_bound(self) -> None:
+        """Fail loudly on an unbound evaluation, rather than AttributeError."""
+        if self._f_free is None:
+            raise RuntimeError(
+                "PhaseConstraint was evaluated before bind(). The flow "
+                "direction f(x0_ref) is captured from the System at the "
+                "corrector's single bind point; an unbound instance is a "
+                "template, not an evaluable constraint."
+            )
+ 
+    # ---- residual and Jacobian ----
+ 
+    def residual(self, X):
+        """
+        Phase residual g(X) = <x0(X) - x0_ref, f(x0_ref)>, restricted to the
+        free start components.
+ 
+        x0(X) is the reconstructed iterate start state, which _unpack builds
+        by overwriting x0_ref's free components with X[0:n_fs]; the fixed
+        components cancel identically in the difference, so the residual is
+        computed straight off X with no reconstruction.
+        """
+        self._require_bound()
+        X = np.asarray(X, dtype=float)
+        # Explicit width check, unlike PseudoArclength/FreeVarPin. Their rows
+        # span the full X, so a mis-sized X trips numpy on its own; this row
+        # reads only a leading slice, and a too-long or too-short X would
+        # otherwise slice cleanly and return a silently wrong residual.
+        if X.shape != (self._n_X,):
+            raise ValueError(
+                f"X must have shape ({self._n_X},), got {X.shape}."
+            )
+        dx = X[self._cols] - self._x0_ref[self._free_idx]
+        return np.array([float(self._f_free @ dx)], dtype=float)
+ 
+    def jacobian_X(self, X):
+        """
+        dg/dX: f(x0_ref) in the free start-state columns, zero elsewhere.
+ 
+        Constant in X -- g is affine, and the reference point is frozen at
+        bind -- so this ignores its argument entirely. Fresh array each call;
+        never a view onto the stored direction.
+        """
+        self._require_bound()
+        J = np.zeros((1, self._n_X))
+        J[0, self._cols] = self._f_free
+        return J
 
 
 # ========== PER-JUNCTION ROLE SPEC ==========
