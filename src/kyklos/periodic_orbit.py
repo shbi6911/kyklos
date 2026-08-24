@@ -48,13 +48,9 @@ if TYPE_CHECKING:
 
 # ========== MODULE CONSTANTS ==========
 
-# Default absolute tolerance for closure and perpendicular-crossing tests.
-# A well-converged CR3BP shooter typically closes to ~1e-10 to 1e-12, while a
-# non-periodic trajectory has a closure residual of order 0.1 or larger, so a
-# default of 1e-9 (nondimensional units) separates the two cleanly with margin.
-# config.EQUALITY_ATOL (1e-14) is intentionally not reused here: it is too tight
-# for a freshly repropagated full-period arc.
-_DEFAULT_PERIODICITY_TOL = 1e-9
+# The default closure / perpendicular-crossing tolerance lives in
+# config.PERIODICITY_TOL; see its docstring entry for why 1e-9 and why
+# EQUALITY_ATOL is not reused.
 
 # Enum .value sentinels, compared by string to avoid runtime imports of
 # SysType / OEType / CR3BPSystem (which would reintroduce the import cycle).
@@ -95,7 +91,7 @@ class PeriodicOrbit:
         Human-readable identifier (e.g. 'L1 Lyapunov'). Default: "".
     tol : float or None, optional
         Absolute tolerance for the closure and perpendicular-crossing tests.
-        If None, defaults to 1e-9 (nondimensional). Resolved at construction
+        If None, defaults to config.PERIODICITY_TOL. Resolved at construction
         and exposed via the tol property.
 
     Attributes
@@ -141,7 +137,7 @@ class PeriodicOrbit:
             name: str = "",
             tol: Optional[float] = None,
     ):
-        tol = _DEFAULT_PERIODICITY_TOL if tol is None else float(tol)
+        tol = float(config.PERIODICITY_TOL) if tol is None else float(tol)
         if tol < 0.0:
             raise ValueError(f"tol must be non-negative, got {tol}")
         self._tol = tol

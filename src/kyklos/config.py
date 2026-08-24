@@ -76,6 +76,40 @@ class KyklosConfig:
     INSTANCE_WARNING_THRESHOLD:
         Default number of System instances in memory before a warning is issued
         Default: 10
+    SHOOTER_TOL:
+        Default tolerance which DifferentialCorrector converges to, resolved at
+        instance construction.  Can be overwritten by an input parameter.
+        Default: 1e-10
+    SHOOTER_MAX_ITER:
+        Default maximum number of iterations take by a DifferentialCorrector, 
+        resolved at instance construction.  Can be overwritten by an input parameter.
+        Default: 50
+    SHOOTER_COND_WARN:
+        Default Jacobian matrix condition number at which a warning is issued within a
+        DifferentialCorrector instance, resolved at instance construction.  This
+        is separate from the rank check, which is made by np.linalg.lstsq() using the
+        _LSTSQ_RCOND=1e-13 constant, which is not user-adjustable.  Thus, a Jacobian
+        singular value less than this constant will trigger rank-deficiency and be
+        excluded from the solve.  A singular value above this trigger may still
+        trigger SHOOTER_COND_WARN, depending on the other singular values.
+        SHOOTER_COND_WARN can be overwritten by an input parameter.
+        Default: 1e8
+    SHOOTER_COND_FAIL:
+        Default Jacobian matrix condition number at which a solve raises within a
+        DifferentialCorrector instance, resolved at instance construction.  See 
+        docstring above for SHOOTER_COND_WARN to understand how this interacts with
+        a rank-deficient Jacobian.  A trigger of SHOOTER_COND_FAIL will result in
+        a non-converged solve.  Can be overwritten by an input parameter. 
+        Default: 1e12
+    PERIODICITY_TOL : float
+        Absolute tolerance for periodic-orbit closure and perpendicular-
+        crossing tests [nondimensional]. A well-converged CR3BP shooter
+        typically closes to ~1e-10 to 1e-12, while a non-periodic trajectory
+        has a closure residual of order 0.1 or larger, so the default
+        separates the two cleanly with margin. EQUALITY_ATOL (1e-14) is
+        intentionally not reused: it is too tight for a freshly repropagated
+        full-period arc.
+        Default: 1e-9
     DEFAULT_PLOT_POINTS : int
         Default number of points for trajectory plotting.
         Default: 1000
@@ -95,8 +129,6 @@ class KyklosConfig:
     RENDERER : str
         default renderer used by Plotly when displaying plots
         Default: 'browser'
-    NODE_COLORS : dict
-        default color-coding used when plotting Nodes
     """
     
     # Numerical tolerance for equality comparisons
@@ -120,6 +152,8 @@ class KyklosConfig:
     SHOOTER_MAX_ITER = 50      # maximum Newton steps
     SHOOTER_COND_WARN = 1e8    # warn above this Jacobian condition number
     SHOOTER_COND_FAIL = 1e12   # abort above this condition number
+    # used by PeriodicOrbit and OrbitFamily, not the shooter, but analogous to those
+    PERIODICITY_TOL: float = 1e-9   
     
     # Plotting defaults
     DEFAULT_PLOT_POINTS: int = 1000
@@ -192,6 +226,8 @@ class KyklosConfig:
         lines.append(f"    SHOOTER_MAX_ITER = {self.SHOOTER_MAX_ITER}")
         lines.append(f"    SHOOTER_COND_WARN = {self.SHOOTER_COND_WARN}")
         lines.append(f"    SHOOTER_COND_FAIL = {self.SHOOTER_COND_FAIL}")
+        lines.append("  Periodic Orbit Behavior:")
+        lines.append(f"    PERIODICITY_TOL = {self.PERIODICITY_TOL}")
         lines.append("  Plotting:")
         lines.append(f"    DEFAULT_PLOT_POINTS = {self.DEFAULT_PLOT_POINTS}")
         lines.append(f"    DEFAULT_BODY_COLOR = '{self.DEFAULT_BODY_COLOR}'")
