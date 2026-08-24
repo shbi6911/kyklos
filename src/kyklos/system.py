@@ -271,6 +271,32 @@ class _BodyParamsWithND:
         """Nondimensional radius [L_star units]."""
         return self._body_params.radius / self._L_star
 
+    def unwrap(self) -> BodyParams:
+        """
+        Return the underlying BodyParams dataclass instance.
+
+        The wrapper delegates attribute access, so most consumers never need
+        this. It exists for the cases where delegation is not enough and a
+        genuine dataclass instance is required -- notably
+        dataclasses.asdict(), which resolves __dataclass_fields__ on
+        type(obj) and so cannot see through __getattr__, and any
+        isinstance(x, BodyParams) validation at a module boundary.
+
+        Nested wrappers are collapsed. Passing an already-wrapped body back
+        into the System factory yields a wrapper around a wrapper, so this
+        loops until it reaches the dataclass rather than returning another
+        wrapper and breaking its own contract.
+
+        Returns
+        -------
+        BodyParams
+            The wrapped dataclass instance, never a wrapper.
+        """
+        inner = self._body_params
+        while isinstance(inner, _BodyParamsWithND):
+            inner = inner._body_params
+        return inner
+
     def __getattr__(self, name):
         return getattr(self._body_params, name)
 
