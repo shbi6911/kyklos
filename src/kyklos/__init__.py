@@ -53,11 +53,12 @@ from .shooter import (
     DifferentialCorrector, ShooterResult,
     Constraint, TerminalConstraint, FreeVarConstraint,
     TargetState, Periodicity, CallableConstraint, JacobiConstraint,
-    NodeSpec,
+    PseudoArclength, FreeVarPin, PhaseConstraint, NodeSpec,
 )
 
 # Classes and functions for CR3BP Toolkit
 from .periodic_orbit import PeriodicOrbit
+from .orbit_family import OrbitFamily
 from .registry import available_recipes
 from .correction import CorrectorGuess, available_layouts, correct_as
 
@@ -104,6 +105,7 @@ __all__ = [
     "AtmoParams",
     "SeederResult",
     "PeriodicOrbit",
+    "OrbitFamily",
     "CorrectorGuess",
     "OEType",
     "SysType",
@@ -128,6 +130,9 @@ __all__ = [
     "Periodicity",
     "JacobiConstraint",
     "CallableConstraint",
+    "PseudoArclength",
+    "FreeVarPin",
+    "PhaseConstraint",
     "NodeSpec",
     # Module-level Functions
     "available_recipes",
