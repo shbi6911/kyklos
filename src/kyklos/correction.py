@@ -32,7 +32,8 @@ from dataclasses import dataclass
 
 from .registry import _RECIPES, _RecipeEntry, available_recipes
 from .shooter import (DifferentialCorrector, TargetState, ShooterResult,
-                      Constraint, ConstraintSpace, FreeVarConstraint)
+                      Constraint, ConstraintSpace, FreeVarConstraint,
+                      PseudoArclength)
 from .periodic_orbit import PeriodicOrbit
 from .system import System, SysType
 from .exceptions import ConvergenceError
@@ -389,7 +390,7 @@ def _x_amplitude_locked(layout: _SolveLayout) -> _SolveLayout:
             f"this recipe."
         )
     free_vars = tuple(v for v in layout.free_vars if v != "x")
-    return layout._replace(free_vars=free_vars, free_times=[1])
+    return layout._replace(free_vars=free_vars, free_times=(1,))
 
 
 # ===========================================================================
@@ -644,6 +645,198 @@ class ContinuationRef:
         object.__setattr__(self, "ds", ds)
 
 
+
+# ===========================================================================
+# Continuation schemes
+# ===========================================================================
+class _SchemeEntry(NamedTuple):
+    """
+    The two halves of a continuation scheme, bound together.
+
+    A scheme is what turns a square, standalone correction problem into a
+    marching one. It does that in two moves that must agree, so they are
+    stored as one entry rather than in parallel registries:
+
+      1. a corank-*opening* layout transform, which releases one freedom so
+         the unclosed system is underdetermined by exactly one, and
+      2. a closer factory, which builds the single constraint that closes it
+         back up from that step's reference data.
+
+    Open without closing and the solve is underdetermined; close without
+    opening and it is overdetermined. Pairing them here means a caller
+    selects one label and cannot mismatch the halves.
+
+    This is the contrast with _LAYOUTS, and the reason for a separate
+    registry: a layout transform is corank-*preserving* (it trades one
+    freedom for another, keeping the system square for an isolated solve),
+    while a scheme transform is corank-*opening*. Same _SolveLayout
+    vocabulary, opposite contract, so the distinction is kept legible at the
+    registry boundary rather than routed through one dict.
+
+    A NamedTuple rather than a bare 2-tuple so consumers read
+    ``entry.transform`` / ``entry.closer_factory`` by name; positional
+    unpacking of a pair is exactly what silently swaps when a third field is
+    added later.
+
+    Fields
+    ------
+    transform : callable
+        (_SolveLayout) -> _SolveLayout. Corank-opening; returns a new layout
+        via _replace rather than mutating.
+    closer_factory : callable
+        (ContinuationRef, int) -> FreeVarConstraint. Called fresh each step
+        with that step's reference data and the width of X.
+    """
+
+    transform: Callable[[_SolveLayout], _SolveLayout]
+    closer_factory: Callable[[ContinuationRef, int], FreeVarConstraint]
+
+
+def _free_period(layout: _SolveLayout) -> _SolveLayout:
+    """
+    Open corank 1 by freeing the end-node time.
+
+    The corank-opening half of the pseudo-arclength scheme. It frees the
+    half-period node time *without* compensating -- which is precisely how it
+    differs from _x_amplitude_locked, whose freeing of the same time is paid
+    for by dropping x from free_vars to stay square. Here the extra freedom is
+    the point: it is what the arclength row is appended to close.
+
+    Freeing the period is safe for a march even though it is unsafe for a
+    fresh planar seed. The seed's linearized period is a *bad* period, and
+    freeing it collapses the orbit toward the equilibrium point (the reason
+    x_amplitude_locked exists). A continuation step starts from an
+    already-converged member with a good period, so there is nothing to
+    collapse toward. That makes the seed's fragility a bootstrap concern
+    living upstream, not a scheme concern.
+
+    Parameters
+    ----------
+    layout : _SolveLayout
+        The recipe's base (square, fixed-time) layout.
+
+    Returns
+    -------
+    _SolveLayout
+        The same layout with the end-node time freed, corank 1.
+
+    Raises
+    ------
+    ValueError
+        If the layout already frees a node time. Stacking two openings would
+        produce corank 2, which one closer cannot square.
+
+    Notes
+    -----
+    The freed node time is the end node, assumed to be index 1: this expects a
+    single-arc (two-node) guess trajectory -- a start node and an end node --
+    which is what the planar seeder produces. A multi-arc guess would need the
+    actual end-node index rather than a hard-coded 1.
+    """
+    if layout.free_times:
+        raise ValueError(
+            f"A corank-opening scheme transform requires a square base layout "
+            f"with all node times fixed, but this layout already frees "
+            f"free_times={layout.free_times}. _free_period frees the end-node "
+            f"time to open corank 1; stacking it on a layout that has already "
+            f"freed a time would open corank 2, which a single closing "
+            f"constraint cannot square. Use a fixed-time (period_locked) base "
+            f"layout."
+        )
+    return layout._replace(free_times=(1,))
+
+
+def _arclength_closer(ref: ContinuationRef, n_X: int) -> FreeVarConstraint:
+    """
+    Build the pseudo-arclength closing constraint for one step.
+
+    The closer half of the pseudo-arclength scheme. Called fresh each step by
+    solve_recipe, so the step's reference data is baked into a new immutable
+    constraint rather than mutated onto a persistent one.
+
+    Parameters
+    ----------
+    ref : ContinuationRef
+        This step's reference state. All three fields are consumed directly:
+        the previous converged member, the signed unit tangent, and the step.
+    n_X : int
+        Width of the free-variable vector. Deliberately unused here --
+        PseudoArclength sizes itself from t_hat, which is already (n_X,). It
+        is in the factory signature because a one-hot pin closer cannot infer
+        its width from its data (a column index and a target scalar carry no
+        length) and must be told. Keeping one factory signature across schemes
+        is worth one ignored argument.
+
+    Returns
+    -------
+    PseudoArclength
+        The single closing row t_hat . (X - X_prev) - ds.
+    """
+    return PseudoArclength(ref.X_prev, ref.t_hat, ref.ds)
+
+
+# Single source of truth for the continuation scheme vocabulary. Labels name
+# the continuation *method* the user selects, not the freedom the transform
+# happens to open -- which freedom gets opened is determined by the recipe's
+# determinacy arithmetic, not by user choice, and is an internal detail of the
+# transform. A future natural-parameter scheme would register here as its own
+# method label (e.g. opening the period and pinning x, a stepped
+# x_amplitude_locked), not as a variant spelling of this one.
+_SCHEMES = {
+    "pseudo_arclength": _SchemeEntry(
+        transform=_free_period,
+        closer_factory=_arclength_closer,
+    ),
+}
+
+
+def _get_scheme(label: str) -> _SchemeEntry:
+    """
+    Return the scheme entry for a continuation scheme label.
+
+    Parameters
+    ----------
+    label : str
+        Scheme label, e.g. 'pseudo_arclength'.
+
+    Returns
+    -------
+    _SchemeEntry
+        The paired corank-opening transform and closer factory.
+
+    Raises
+    ------
+    ValueError
+        If the label is not a registered scheme. The message enumerates the
+        known schemes.
+    """
+    try:
+        return _SCHEMES[label]
+    except KeyError:
+        raise ValueError(
+            f"Unknown scheme label {label!r}; "
+            f"known schemes are {available_schemes()}."
+        )
+
+
+def available_schemes() -> list[str]:
+    """
+    Return the sorted list of continuation scheme labels.
+
+    Discovery for the scheme vocabulary, parallel to available_recipes() and
+    available_layouts(). Not re-exported from the package yet: the only
+    consumer is the continuation engine, and the vocabulary should not be
+    advertised ahead of it.
+
+    Returns
+    -------
+    list[str]
+        Recognized scheme labels, e.g. ['pseudo_arclength'].
+    """
+    return sorted(_SCHEMES)
+
+
+
 # ===========================================================================
 # Correction core (ShooterResult-returning atomic operator)
 # ===========================================================================
@@ -712,6 +905,13 @@ def solve_recipe(
     ShooterResult
         Raw outcome; never raises on non-convergence.
     """
+
+    # temporary guard until MS support is established
+    if spec.node_specs is not None:
+            raise NotImplementedError(f"Continuation does not yet support multiple "
+                                        f"shooting, do not provide node_specs.")
+
+    # set corrector as default or input
     corrector = corrector if corrector is not None else DifferentialCorrector()
 
     # Terminal constraints are loop-invariant; build a fresh list and append the
@@ -721,12 +921,14 @@ def solve_recipe(
     # add continuation constraint if present
     if ref is not None and closer_factory is not None:
         constraints.append(closer_factory(ref, spec.n_X))
-    else:
+
+    elif ref is not None or closer_factory is not None:
         raise ValueError(
             "closer_factory and ref must be supplied together (a closer needs "
             "both a factory and reference data) or both omitted for an unclosed "
             "solve; got exactly one."
         )
+    # neither: unclosed solve, constraints stay as the input set
 
     solve_kwargs = {
         "free_vars": list(spec.free_vars),
@@ -736,10 +938,6 @@ def solve_recipe(
     # all-fixed-by-default convention.
     if spec.free_times:
         solve_kwargs["free_times"] = list(spec.free_times)
-
-    if spec.node_specs is not None:
-        raise NotImplementedError(f"Continuation does not yet support multiple "
-                                    f"shooting, do not provide node_specs.")
 
     return corrector.solve(guess_traj, continuation=continuation, **solve_kwargs)
 
