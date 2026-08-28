@@ -22,8 +22,8 @@ layout are orthogonal: the recipe says which family, the layout says which
 member-selection coordinate.
 
 Currently supported layouts are period_locked (the default) and x_amplitude_locked.
-x_amplitude_locked is used by default when correcting from a planar seed via the 
-CorrectorGuess.from_seeder_result() method.  If a period_locked correction 
+x_amplitude_locked is used by default when correcting from a planar seed via the
+CorrectorGuess.from_seeder_result() method.  If a period_locked correction
 from a seed is desired, the CorrectorGuess can be constructed standalone.
 """
 import numpy as np
@@ -107,7 +107,7 @@ class CorrectorGuess:
         ``period_is_half`` for the half- vs full-period convention.
     system : System
         System to propagate the guess in and feed to the shooter for the solve.
-        Currently restricted to CR3BP systems only.  Matching the system to the 
+        Currently restricted to CR3BP systems only.  Matching the system to the
         guessed state is the responsibility of the caller.
     recipe : str
         Family label naming the recipe to correct against, e.g. 'lyapunov' or
@@ -164,7 +164,7 @@ class CorrectorGuess:
         or the System is not CR3BP.
     """
 
-    __slots__ = ("_state", "_period", "_system", 
+    __slots__ = ("_state", "_period", "_system",
                  "_recipe", "_layout", "_scheme", "_period_is_half"
     )
 
@@ -188,7 +188,7 @@ class CorrectorGuess:
             raise ValueError(
                 f"Period guess must be a positive, finite number, got {period}."
             )
-        
+
         # System: must be a CR3BP system
         if system.base_type is not SysType.CR3BP:
             raise ValueError(
@@ -203,7 +203,7 @@ class CorrectorGuess:
                 f"Unknown recipe label {recipe!r}; "
                 f"known recipes are {available_recipes()}."
             )
-        
+
         # Layout label: must be registered. See _LAYOUTS in this file.
         if layout not in _LAYOUTS:
             raise ValueError(
@@ -238,7 +238,7 @@ class CorrectorGuess:
     def period(self) -> float:
         """Period guess as supplied (see period_is_half for convention)."""
         return self._period
-    
+
     @property
     def system(self) -> System:
         """System as supplied (validated as CR3BP)."""
@@ -248,7 +248,7 @@ class CorrectorGuess:
     def recipe(self) -> str:
         """Validated recipe label."""
         return self._recipe
-    
+
     @property
     def layout(self) -> str:
         """Validated layout label."""
@@ -281,6 +281,102 @@ class CorrectorGuess:
         """
         return self._period if self._period_is_half else 0.5 * self._period
 
+    def replace(self, **changes) -> "CorrectorGuess":
+        """
+        Return a new CorrectorGuess with the given fields overridden.
+
+        Mirrors dataclasses.replace() for the fields CorrectorGuess actually
+        carries: state, period, system, recipe, layout, scheme, and
+        period_is_half. CorrectorGuess is not itself a dataclass (it hand-rolls
+        __slots__ and read-only properties instead), so dataclasses.replace()
+        does not apply to it directly; this method reproduces the same
+        functional-update pattern by hand.
+
+        Implementation note: this funnels every call back through __init__
+        rather than copying fields itself, so replace() can never drift out of
+        sync with __init__'s validation rules -- any check added to __init__
+        later is automatically enforced here too.
+
+        Parameters
+        ----------
+        **changes
+            Field names (state, period, system, recipe, layout, scheme,
+            period_is_half) mapped to their replacement values. Fields not
+            named here are carried over unchanged from self. Unrecognized
+            field names raise TypeError rather than being silently ignored or
+            forwarded to a confusing __init__ error.
+
+        Returns
+        -------
+        CorrectorGuess
+            A new, independently validated instance. self is untouched.
+
+        Raises
+        ------
+        TypeError
+            If a keyword in **changes does not name a CorrectorGuess field.
+        ValueError
+            If the resulting field combination fails __init__ validation (see
+            CorrectorGuess.__init__).
+
+        Notes
+        -----
+        replace() re-runs exactly the validation __init__ runs, which checks
+        each field independently (state is finite (6,), period is positive,
+        system is CR3BP, recipe/layout/scheme are each registered). It does
+        NOT check the cross-field consistency that __init__ never checked
+        either:
+
+        - ``period`` and ``period_is_half`` are a coupled pair -- the numeric
+          value's meaning depends on the flag. ``replace(period=new_period)``
+          leaves ``period_is_half`` as it was on self, which is usually right,
+          but if the new period comes from a source with the other convention
+          (e.g. pulling a half-period estimate onto a guess that was built with
+          a full period), pass both together: ``replace(period=...,
+          period_is_half=...)``.
+        - ``state`` is not re-validated against ``system`` (nor ``layout``
+          against ``recipe``'s free_vars, which is checked later, at
+          correct_as time). Replacing only one of a coupled set (e.g. state
+          without system, or recipe without layout) can produce a guess that
+          is individually valid but physically or combinatorially wrong. This
+          is the same responsibility direct construction already places on the
+          caller (see the state/system note in the class docstring); replace()
+          does not add a new gap, but changing one field at a time makes it
+          easier to forget the field that should have moved with it.
+
+        Examples
+        --------
+        Retry a failed correction with a larger period guess, same everything
+        else::
+
+            try:
+                orbit = correct_as(guess)
+            except ConvergenceError:
+                guess = guess.replace(period=1.05 * guess.period)
+                orbit = correct_as(guess)
+
+        Try the same seed state against a different family::
+
+            halo_guess = guess.replace(recipe="halo", layout="period_locked")
+        """
+        current = {
+            "state": self._state,
+            "period": self._period,
+            "system": self._system,
+            "recipe": self._recipe,
+            "layout": self._layout,
+            "scheme": self._scheme,
+            "period_is_half": self._period_is_half,
+        }
+        unknown = set(changes) - set(current)
+        if unknown:
+            raise TypeError(
+                f"CorrectorGuess.replace() got unexpected field(s) "
+                f"{sorted(unknown)}; valid fields are {sorted(current)}."
+            )
+        current.update(changes)
+        return type(self)(**current)
+
     @classmethod
     def from_seeder_result(cls, result, system, recipe: str) -> "CorrectorGuess":
         """
@@ -298,7 +394,7 @@ class CorrectorGuess:
         recipe.
 
         This defaults to the x_amplitude_locked layout, which means it should converge
-        an orbit a distance away from the equilibrium point corresponding to the 
+        an orbit a distance away from the equilibrium point corresponding to the
         amplitude requested from planar_seeder().  If a period-locked orbit is desired,
         a CorrectorGuess can be directly constructed from SeederResult data, bypassing
         this convenience method.
@@ -330,7 +426,7 @@ class CorrectorGuess:
             f"period={self._period!r}, period_is_half={self._period_is_half!r} "
             f"state={self._state!r}), system.mass ratio={self._system.mass_ratio}"
         )
-    
+
 # ===========================================================================
 # Solve layout
 # ===========================================================================
@@ -341,7 +437,7 @@ class _SolveLayout(NamedTuple):
     Carries the full determinacy triple even though standalone correction only
     populates two of the three fields: a continuation scheme edits this layout
     (pinning a variable, freeing a node time) to keep the shooting system
-    square, and needs all three handles available.  Immutable; a scheme transform 
+    square, and needs all three handles available.  Immutable; a scheme transform
     returns a new layout via _replace rather than mutating.
 
     Fields
@@ -558,7 +654,7 @@ class SolveSpec:
                     f"continuation closer is appended by solve_recipe, not "
                     f"placed in the spec."
                 )
-        
+
     @property
     def n_X(self) -> int:
         """
@@ -570,7 +666,7 @@ class SolveSpec:
     def n_rows(self) -> int:
         """Number of Jacobian rows computed from spec"""
         return sum(c.n_rows for c in self.constraints)
-    
+
     @property
     def corank(self) -> int:
         """
