@@ -303,6 +303,13 @@ class TestPeriodLockedLayout:
         guess = ky.CorrectorGuess(
             seed.state, seed.period, cr3bp_system, "lyapunov", "period_locked",
         )
-        orbit = ky.correct_as(guess, ky.DifferentialCorrector(tol=1e-14))
+        # cond_fail is raised above the config default (1e12): this path is
+        # deliberately stiff and its Jacobian condition number peaks at ~1.6e12
+        # mid-solve, which aborts the solve at iteration 16 with the residual
+        # still at 3e-11. Allowed past that ceiling it converges in 25
+        # iterations to 1.3e-15, closing to 7e-14.
+        orbit = ky.correct_as(
+            guess, ky.DifferentialCorrector(tol=1e-14, cond_fail=1e14)
+        )
         assert isinstance(orbit, PeriodicOrbit)
         assert orbit.periodicity_residual < 1e-9

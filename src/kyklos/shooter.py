@@ -724,11 +724,15 @@ class JacobiConstraint(TerminalConstraint):
         jacobi_term1 = (2 * (1 - self._mass_ratio)) / r1**3
         jacobi_term2 = (2 * self._mass_ratio) / r2**3
 
-        J[0] = (2*x - (x + self._mass_ratio)*jacobi_term1
-                    - (x - 1 + self._mass_ratio)*jacobi_term2)
-        J[1] = 2*y - y*jacobi_term1 - y*jacobi_term2
-        J[2] = -z*jacobi_term1 - z*jacobi_term2
-        J[3:6] = np.array([-2*vx, -2*vy, -2*vz])
+        # J is (1, 6): the row index is explicit on every assignment. A single
+        # subscript here would address the whole row, not a column -- J[0] = s
+        # would broadcast dC/dx across all six entries, and J[1] would be out
+        # of bounds.
+        J[0, 0] = (2*x - (x + self._mass_ratio)*jacobi_term1
+                       - (x - 1 + self._mass_ratio)*jacobi_term2)
+        J[0, 1] = 2*y - y*jacobi_term1 - y*jacobi_term2
+        J[0, 2] = -z*jacobi_term1 - z*jacobi_term2
+        J[0, 3:6] = np.array([-2*vx, -2*vy, -2*vz])
 
         return J
 

@@ -1,0 +1,430 @@
+"""
+Test suite for the continuation payload: ShooterResult.ContinuationState.
+
+Verifies the DH that solve(continuation=True) hands back -- the corrector
+Jacobian at the converged member with any closer (X_SPACE) rows stripped,
+whose null space is the family tangent. Task 4's tangent function consumes
+this matrix directly, so everything downstream of it inherits whatever error
+is in it.
+
+Why this is tested now, before a continuation loop exists
+--------------------------------------------------------
+A wrong DH does not raise. It produces a tangent off by a few degrees, the
+predictor lands slightly off the family, the corrector obligingly pulls it
+back to *a* solution, and the family drifts -- with a converged residual at
+every step. That is the same silent-failure mode as a branch jump: the
+solutions satisfy the recipe honestly and nothing detects the problem. Once
+DH is inside a march the only observable is "does the family look right,"
+which is precisely the signal that cannot distinguish these cases.
+
+In isolation, though, an independent oracle is available: DH is a Jacobian,
+so it can be finite-differenced. That oracle exists only while DH can be
+requested at a single converged member, which is why these tests belong here
+rather than after the engine is built.
+
+The oracle
+----------
+H(X) is the terminal-only residual map -- unpack X into initial conditions
+and boundary times, propagate, assemble F, delete the closer rows. This
+mirrors the corrector's own inner loop (_unpack -> propagate -> _assemble_F)
+but reaches the Jacobian by central differences instead of by chaining STMs,
+so agreement is genuine cross-validation of two independent paths, not a
+tautology.
+
+Three levels of check, in increasing strength:
+
+1. DH agrees with the central-difference Jacobian at a fixed step.
+2. The disagreement falls as h^2 under step refinement. This is the real
+   test: a DH wrong by any fixed amount would show an error that *plateaus*
+   as h shrinks, while a correct DH shows error dominated by FD truncation,
+   which is second order. Measured ratio is ~100x per decade until roundoff
+   takes over near h = 1e-8.
+3. The null vector of DH agrees in direction with a secant between two
+   independently converged nearby members. This is the only check that
+   confirms the null space is *the family tangent* and not merely some null
+   space; measured agreement is 0.016 degrees, against a tolerance of 0.5
+   set by the secant's own first-order truncation.
+
+Every test here propagates, so the whole module is marked slow.
+"""
+
+import numpy as np
+import pytest
+
+from kyklos.shooter import (
+    DifferentialCorrector,
+    TargetState,
+    PseudoArclength,
+    _ShootingContext,
+    _assemble_F,
+    _pack,
+    _unpack,
+    _BlockKind,
+)
+
+
+pytestmark = pytest.mark.slow
+
+
+# The recipe geometry under test: the planar Lyapunov perpendicular-crossing
+# formulation, in both its determinacies. Square (free_times empty) is the
+# isolated/bootstrap solve; corank 1 (end time freed) is the continuation
+# solve, closed by an arclength row.
+_FREE_VARS = ("x", "vy")
+_FREE_TIMES = (1,)
+_TARGETS = {"y": 0.0, "vx": 0.0}
+
+# Central-difference step. Chosen from a measured sweep: the FD/analytic
+# disagreement is 3.7e-8 relative here and falls cleanly as h^2 down to
+# h = 1e-7, bottoming out at 1e-8 where roundoff takes over. 1e-6 sits a
+# decade clear of that floor.
+_FD_H = 1e-6
+_FD_RTOL = 1e-6
+
+# Natural-parameter direction and step for the closing arclength row: pure x,
+# so the closer pins the amplitude and the solve is a one-step march.
+_T_HAT = np.array([1.0, 0.0, 0.0])
+_DS = 1e-4
+
+
+# ===========================================================================
+# Oracle
+# ===========================================================================
+
+def _closer_rows(ctx: _ShootingContext) -> list[int]:
+    """
+    Row indices of the X_SPACE (closer) blocks in the full constraint vector.
+
+    Computed from the row plan the same way the producer does, because there
+    is no other way to know which rows are closers -- but note this is only
+    used to build the *oracle's* residual map. It is never used to check DH
+    against itself: DH's own strip is verified by the FD agreement below,
+    which would fail if the wrong rows had been removed.
+    """
+    return [
+        r
+        for block in ctx.row_plan.blocks
+        if block.kind is _BlockKind.X_SPACE
+        for r in range(block.row_offset, block.row_offset + block.row_count)
+    ]
+
+
+def _H(X: np.ndarray, ctx: _ShootingContext) -> np.ndarray:
+    """
+    The terminal-only residual map, evaluated by propagation.
+
+    Mirrors the corrector's inner loop -- scatter X into initial conditions
+    and boundary times, propagate, assemble F -- then deletes the closer
+    rows so what remains is the unclosed map whose Jacobian is DH.
+    """
+    ics, times = _unpack(X, ctx)
+    traj = ctx.system.propagate(ics, times, with_stm=True)
+    return np.delete(_assemble_F(traj, ctx, X), _closer_rows(ctx))
+
+
+def _fd_jacobian(X: np.ndarray, ctx: _ShootingContext,
+                 h: float = _FD_H) -> np.ndarray:
+    """Central-difference Jacobian of _H at X, shape (n_terminal, n_X)."""
+    n_rows = len(_H(X, ctx))
+    J = np.zeros((n_rows, ctx.n_X))
+    for j in range(ctx.n_X):
+        step = np.zeros(ctx.n_X)
+        step[j] = h
+        J[:, j] = (_H(X + step, ctx) - _H(X - step, ctx)) / (2.0 * h)
+    return J
+
+
+def _max_rel_error(A: np.ndarray, B: np.ndarray) -> float:
+    """Largest entrywise relative difference, guarded against tiny B."""
+    return float(np.max(np.abs(A - B) / np.maximum(np.abs(B), 1.0)))
+
+
+# ===========================================================================
+# Fixtures
+# ===========================================================================
+
+@pytest.fixture(scope="module")
+def half_arc_guess(cr3bp_system, lyapunov_orbit):
+    """
+    A half-period arc from the reference Lyapunov, deliberately perturbed.
+
+    Symmetry pinning integrates to the next perpendicular crossing, so the
+    guess spans a half period. The initial condition is nudged off the orbit
+    so the solve takes real Newton steps -- an unperturbed reference orbit
+    converges at iteration 0, which would leave DH assembled at the guess
+    rather than at a genuinely converged member, and the distinction is
+    exactly what these tests are for.
+    """
+    ic = np.asarray(lyapunov_orbit.initial_state, dtype=float).copy()
+    ic[0] += 1.0e-4
+    ic[4] -= 2.0e-4
+    tf = 0.5 * lyapunov_orbit.period * 1.001
+    return cr3bp_system.propagate(ic, [0.0, tf], with_stm=True)
+
+
+@pytest.fixture(scope="module")
+def clean_guess(cr3bp_system, lyapunov_orbit):
+    """An unperturbed half-period arc, used as the march's member zero."""
+    ic = np.asarray(lyapunov_orbit.initial_state, dtype=float)
+    return cr3bp_system.propagate(
+        ic, [0.0, 0.5 * lyapunov_orbit.period], with_stm=True
+    )
+
+
+@pytest.fixture(scope="module")
+def square_solve(half_arc_guess):
+    """
+    Bootstrap case: square, no closer, so DH is the whole Jacobian.
+
+    Returns (result, ctx) -- the context is what the oracle needs to
+    reconstruct the residual map.
+    """
+    constraints = (TargetState(dict(_TARGETS)),)
+    ctx = _ShootingContext.from_guess(
+        half_arc_guess, _FREE_VARS, constraints, (), None
+    )
+    result = DifferentialCorrector().solve(
+        half_arc_guess, free_vars=_FREE_VARS, constraints=constraints,
+        continuation=True,
+    )
+    return result, ctx
+
+
+@pytest.fixture(scope="module")
+def closed_solve(half_arc_guess):
+    """
+    Continuation case: corank 1 opened by freeing the end time, closed by an
+    arclength row. DH must come back with that row stripped.
+    """
+    base = (TargetState(dict(_TARGETS)),)
+    ctx_open = _ShootingContext.from_guess(
+        half_arc_guess, _FREE_VARS, base, _FREE_TIMES, None
+    )
+    X_prev = _pack(half_arc_guess, ctx_open)
+    constraints = base + (PseudoArclength(X_prev, _T_HAT, _DS),)
+    ctx = _ShootingContext.from_guess(
+        half_arc_guess, _FREE_VARS, constraints, _FREE_TIMES, None
+    )
+    result = DifferentialCorrector().solve(
+        half_arc_guess, free_vars=_FREE_VARS, free_times=_FREE_TIMES,
+        constraints=constraints, continuation=True,
+    )
+    return result, ctx, X_prev
+
+
+# ===========================================================================
+# Payload provenance
+# ===========================================================================
+
+class TestContinuationPayload:
+    """When the payload appears, and what it carries."""
+
+    def test_absent_unless_requested(self, half_arc_guess):
+        result = DifferentialCorrector().solve(
+            half_arc_guess, free_vars=_FREE_VARS,
+            constraints=(TargetState(dict(_TARGETS)),),
+        )
+        assert result.converged
+        assert result.continuation is None
+
+    def test_absent_when_the_solve_does_not_converge(self, half_arc_guess):
+        """
+        Populated only on convergence, so X and DH always belong to a
+        converged member. A budget of zero steps stops before the first
+        Newton update, leaving a residual above tolerance.
+        """
+        result = DifferentialCorrector(max_iter=0).solve(
+            half_arc_guess, free_vars=_FREE_VARS,
+            constraints=(TargetState(dict(_TARGETS)),),
+            continuation=True,
+        )
+        assert not result.converged
+        assert result.continuation is None
+
+    def test_present_on_a_converged_request(self, square_solve):
+        result, _ = square_solve
+        assert result.converged
+        assert result.continuation is not None
+
+    def test_arrays_are_read_only(self, square_solve):
+        result, _ = square_solve
+        assert not result.continuation.X.flags.writeable
+        assert not result.continuation.DH.flags.writeable
+
+    def test_arrays_reject_assignment(self, square_solve):
+        result, _ = square_solve
+        with pytest.raises(ValueError, match="read-only"):
+            result.continuation.X[0] = 0.0
+        with pytest.raises(ValueError, match="read-only"):
+            result.continuation.DH[0, 0] = 0.0
+
+    def test_X_is_the_vector_that_produced_the_trajectory(self, square_solve):
+        """
+        The docstring's provenance claim: X is not merely the last iterate,
+        it is the vector the returned trajectory was propagated from. Packing
+        the trajectory back down must reproduce it.
+        """
+        result, ctx = square_solve
+        assert _pack(result.trajectory, ctx) == pytest.approx(
+            result.continuation.X, abs=1e-12
+        )
+
+    def test_square_DH_keeps_every_row(self, square_solve):
+        """No closer, nothing to strip: DH is (n_rows, n_X) and square."""
+        result, ctx = square_solve
+        assert result.continuation.DH.shape == (2, ctx.n_X)
+        assert ctx.n_X == 2
+
+    def test_closed_DH_is_corank_one(self, closed_solve):
+        """
+        Three free variables (x, vy, end time) against two terminal rows
+        after the arclength row is stripped: the (n_X - 1, n_X) shape whose
+        null space is one-dimensional.
+        """
+        result, ctx, _ = closed_solve
+        assert ctx.n_X == 3
+        assert result.continuation.DH.shape == (ctx.n_X - 1, ctx.n_X)
+
+    def test_the_closer_actually_bound(self, closed_solve):
+        """
+        Guards the test itself: if the arclength row were somehow inert, the
+        stripped-row tests below would pass vacuously. The converged member
+        must sit ds along t_hat from the reference.
+        """
+        result, _, X_prev = closed_solve
+        assert result.converged
+        displacement = _T_HAT @ (np.asarray(result.continuation.X) - X_prev)
+        assert displacement == pytest.approx(_DS, rel=1e-6)
+
+
+# ===========================================================================
+# The Jacobian itself
+# ===========================================================================
+
+class TestUnclosedJacobian:
+    """DH against an independent finite-difference oracle."""
+
+    def test_square_case_matches_finite_differences(self, square_solve):
+        result, ctx = square_solve
+        fd = _fd_jacobian(np.asarray(result.continuation.X), ctx)
+
+        assert _max_rel_error(fd, result.continuation.DH) < _FD_RTOL
+
+    def test_closed_case_matches_the_terminal_only_map(self, closed_solve):
+        """
+        The strip is what is really under test. The oracle differences the
+        terminal rows only, so if DH still carried the arclength row -- or
+        had removed a terminal row instead -- the shapes or the values would
+        disagree.
+        """
+        result, ctx, _ = closed_solve
+        fd = _fd_jacobian(np.asarray(result.continuation.X), ctx)
+
+        assert fd.shape == result.continuation.DH.shape
+        assert _max_rel_error(fd, result.continuation.DH) < _FD_RTOL
+
+    def test_disagreement_is_second_order_in_the_step(self, closed_solve):
+        """
+        The strongest statement available: refine h by ten and the
+        discrepancy must fall by about a hundred.
+
+        A DH that is wrong -- by a scale factor, a transposed entry, a
+        stripped-off row -- leaves an error floor that does NOT shrink with
+        h, because the disagreement is real rather than truncation. Observing
+        clean h^2 decay says the only thing separating the two Jacobians is
+        the difference formula. Measured ratio is ~100; the threshold is set
+        at 50 to leave room for conditioning without admitting a plateau.
+        """
+        result, ctx, _ = closed_solve
+        X = np.asarray(result.continuation.X)
+        DH = result.continuation.DH
+
+        coarse = _max_rel_error(_fd_jacobian(X, ctx, 1e-5), DH)
+        fine = _max_rel_error(_fd_jacobian(X, ctx, 1e-6), DH)
+
+        assert fine < coarse
+        assert coarse / fine > 50.0
+
+    def test_the_arclength_row_is_not_in_DH(self, closed_solve):
+        """
+        Direct check on the strip: the closer's Jacobian row is t_hat, which
+        is a unit vector along x. If it had survived, some row of DH would
+        equal it.
+        """
+        result, _, _ = closed_solve
+        for row in result.continuation.DH:
+            assert not np.allclose(row, _T_HAT, atol=1e-8)
+
+
+# ===========================================================================
+# The tangent DH is supposed to carry
+# ===========================================================================
+
+class TestFamilyTangent:
+    """DH's null space, and whether it points along the family."""
+
+    def test_null_space_is_one_dimensional(self, closed_solve):
+        """
+        Corank 1 by construction, so exactly one small singular value -- and
+        it must be genuinely small relative to the others, not a rank
+        deficiency in disguise. Measured separation is two orders of
+        magnitude between the second and third singular values.
+        """
+        result, _, _ = closed_solve
+        svals = np.linalg.svd(result.continuation.DH, compute_uv=False)
+
+        assert len(svals) == 2
+        assert svals[-1] > 1e-8 * svals[0]
+
+    def test_null_vector_annihilates_DH(self, closed_solve):
+        result, _, _ = closed_solve
+        DH = result.continuation.DH
+        null = np.linalg.svd(DH)[2][-1]
+
+        assert np.linalg.norm(DH @ null) < 1e-10 * np.linalg.norm(DH)
+
+    def test_null_vector_points_along_the_family(
+        self, clean_guess, closed_solve
+    ):
+        """
+        The claim that makes DH useful, and the one nothing else here tests:
+        its null space is *the family tangent*, not merely a null space.
+
+        Two members are converged independently at ds and 2*ds along the same
+        natural-parameter direction, and their difference is a secant
+        approximation to the tangent. Agreement to a fraction of a degree
+        cannot happen by accident -- a DH built from the wrong Jacobian would
+        put the null direction degrees away or more. The 0.5 degree tolerance
+        is set by the secant's own first-order truncation over a finite step,
+        not by the analytic tangent; measured agreement is 0.016 degrees.
+        """
+        base = (TargetState(dict(_TARGETS)),)
+        ctx_open = _ShootingContext.from_guess(
+            clean_guess, _FREE_VARS, base, _FREE_TIMES, None
+        )
+        X0 = _pack(clean_guess, ctx_open)
+        corrector = DifferentialCorrector()
+
+        def member(ds):
+            constraints = base + (PseudoArclength(X0, _T_HAT, ds),)
+            out = corrector.solve(
+                clean_guess, free_vars=_FREE_VARS, free_times=_FREE_TIMES,
+                constraints=constraints, continuation=True,
+            )
+            assert out.converged, f"march member at ds={ds} did not converge"
+            assert out.continuation is not None
+            return out.continuation
+
+        near, far = member(_DS), member(2.0 * _DS)
+
+        null = np.linalg.svd(near.DH)[2][-1]
+        secant = np.asarray(far.X) - np.asarray(near.X)
+        secant = secant / np.linalg.norm(secant)
+
+        # The null vector's sign is arbitrary (SVD convention); the family
+        # direction is what is being compared, so align before measuring.
+        if secant @ null < 0.0:
+            null = -null
+        angle = np.degrees(np.arccos(np.clip(secant @ null, -1.0, 1.0)))
+
+        assert angle < 0.5

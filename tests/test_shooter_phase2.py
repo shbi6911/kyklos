@@ -32,10 +32,13 @@ from dataclasses import FrozenInstanceError
 from kyklos import temp_config
 from kyklos.shooter import (
     TerminalConstraint, TargetState, Periodicity, CallableConstraint,
+    JacobiConstraint, ConstraintSpace,
     _ShootingContext, _BlockKind, _RowBlock, _RowPlan, _Selector,
     _ColumnPlan, _build_row_plan, _build_column_plan, _select,
-    NodeSpec, _NodeTarget, _resolve_node_specs,
+    NodeSpec, _NodeTarget, _resolve_node_specs, _finite_diff,
 )
+from kyklos.orbital_elements import OrbitalElements, OEType
+from kyklos.system import SysType
 
 
 # A representative final state and start state for evaluating residuals. The
@@ -1036,3 +1039,232 @@ class TestResolveNodeSpecs:
     def test_non_dict_rejected(self):
         with pytest.raises(TypeError):
             _resolve_node_specs([NodeSpec.impulsive()], 4)      #type: ignore
+
+
+# ==========================================================================
+# JacobiConstraint -- bound terminal constraint on the CR3BP energy integral
+# ==========================================================================
+# Bound rather than inert: the mass ratio is not known at construction and is
+# captured from the System at the corrector's single bind point. bind() checks
+# base_type rather than isinstance, precisely so a duck-typed stand-in can
+# satisfy it -- which is what keeps this whole section Tier 1, with no
+# compiled integrator anywhere in it.
+#
+# x0 is supplied only to satisfy the TerminalConstraint signature: this
+# constraint's residual, jacobian_tf and jacobian_x0 all ignore it (pinned
+# by test_ignores_x0 below). _X0 is the file's shared arbitrary start state
+# and has no dynamical relationship to the states defined here -- notably
+# its Jacobi constant differs from theirs, which on a real arc it could
+# not, since C is the conserved integral. Do not read the pairing as an
+# arc. A constraint that relies on the inherited finite-difference
+# jacobian_tf WOULD be sensitive to x0, because that fallback closes over
+# it; this one overrides jacobian_tf and never reaches that path.
+
+_MU_EM = 0.012150581477176512      # Earth-Moon mass ratio
+
+
+class _FakeCR3BP:
+    """Minimal CR3BP stand-in: bind() reads only these two attributes."""
+
+    base_type = SysType.CR3BP
+
+    def __init__(self, mass_ratio=_MU_EM):
+        self.mass_ratio = mass_ratio
+
+
+class _FakeTwoBody:
+    """Minimal non-CR3BP stand-in, for the bind() rejection path."""
+
+    base_type = SysType.TWO_BODY
+    mass_ratio = _MU_EM            # present but must not be reached
+
+
+def _jacobi(state, mu):
+    """Reference Jacobi constant, via the package's single source of truth."""
+    return float(OrbitalElements(np.asarray(state, dtype=float), OEType.CR3BP,
+                                 validate=False, mu=mu).jacobi_const())
+
+
+# A generic state, deliberately off-plane so the z column of the gradient is
+# actually exercised. dC/dz is -z*(t1 + t2) with no 2*z term, unlike dC/dx and
+# dC/dy, so a state with z = 0 would leave the most easily mis-derived entry
+# untested.
+_JC_STATE = np.array([0.82, 0.05, 0.01, 0.02, 0.41, -0.03])
+_JC_STATE_OFF = np.array([1.05, -0.12, 0.30, -0.04, 0.22, 0.11])
+
+
+class TestJacobiConstraintConstruction:
+    """Construction is inert; no System, no validation beyond coercion."""
+
+    def test_n_rows_is_one(self):
+        assert JacobiConstraint(3.0).n_rows == 1
+
+    def test_is_a_terminal_constraint(self):
+        assert isinstance(JacobiConstraint(3.0), TerminalConstraint)
+        assert JacobiConstraint.space is ConstraintSpace.TERMINAL
+
+    def test_integer_target_is_coerced_to_float(self):
+        c = JacobiConstraint(3).bind(_FakeCR3BP())
+        assert isinstance(c.residual(_JC_STATE, _X0)[0], float)
+
+    def test_target_is_not_otherwise_validated(self):
+        # An unreachable target is the corrector's problem to surface as
+        # non-convergence, not something gated at construction.
+        assert JacobiConstraint(-1e9).n_rows == 1
+
+
+class TestJacobiConstraintBinding:
+    """bind() captures the mass ratio and leaves the template alone."""
+
+    def test_returns_a_new_instance(self):
+        template = JacobiConstraint(3.0)
+        assert template.bind(_FakeCR3BP()) is not template
+
+    def test_template_stays_reusable_across_systems(self):
+        template = JacobiConstraint(3.0)
+        a = template.bind(_FakeCR3BP(mass_ratio=0.01))
+        b = template.bind(_FakeCR3BP(mass_ratio=0.30))
+        # Two bindings of one template must not clobber each other.
+        assert a.residual(_JC_STATE, _X0)[0] != pytest.approx(
+            b.residual(_JC_STATE, _X0)[0])
+
+    def test_accepts_a_duck_typed_cr3bp_system(self):
+        # The documented reason bind() checks base_type instead of isinstance.
+        assert JacobiConstraint(3.0).bind(_FakeCR3BP()).n_rows == 1
+
+    def test_rejects_a_non_cr3bp_system(self):
+        with pytest.raises(ValueError, match="only defined for CR3BP"):
+            JacobiConstraint(3.0).bind(_FakeTwoBody())
+
+    def test_rejection_message_names_the_system_type(self):
+        with pytest.raises(ValueError, match="2body"):
+            JacobiConstraint(3.0).bind(_FakeTwoBody())
+
+    def test_unbound_evaluation_fails(self):
+        # No _require_bound guard here, unlike PhaseConstraint: the missing
+        # mass ratio surfaces as a bare AttributeError. Pinned as current
+        # behavior so a future guard is a deliberate change, not a surprise.
+        with pytest.raises(AttributeError):
+            JacobiConstraint(3.0).residual(_JC_STATE, _X0)
+
+
+class TestJacobiConstraintResidual:
+    """residual = C(state_tf) - target, delegated to OrbitalElements."""
+
+    def test_shape_and_dtype(self):
+        c = JacobiConstraint(3.0).bind(_FakeCR3BP())
+        r = c.residual(_JC_STATE, _X0)
+        assert r.shape == (1,)
+        assert r.dtype == float
+
+    def test_vanishes_at_the_targeted_energy(self):
+        target = _jacobi(_JC_STATE, _MU_EM)
+        c = JacobiConstraint(target).bind(_FakeCR3BP())
+        assert c.residual(_JC_STATE, _X0)[0] == pytest.approx(0.0, abs=1e-14)
+
+    def test_sign_is_actual_minus_target(self):
+        actual = _jacobi(_JC_STATE, _MU_EM)
+        low = JacobiConstraint(actual - 0.5).bind(_FakeCR3BP())
+        high = JacobiConstraint(actual + 0.5).bind(_FakeCR3BP())
+        assert low.residual(_JC_STATE, _X0)[0] == pytest.approx(0.5)
+        assert high.residual(_JC_STATE, _X0)[0] == pytest.approx(-0.5)
+
+    @pytest.mark.parametrize("state", [_JC_STATE, _JC_STATE_OFF])
+    def test_agrees_with_orbital_elements(self, state):
+        c = JacobiConstraint(0.0).bind(_FakeCR3BP())
+        assert c.residual(state, _X0)[0] == pytest.approx(
+            _jacobi(state, _MU_EM), rel=1e-14)
+
+    def test_uses_the_bound_mass_ratio(self):
+        a = JacobiConstraint(0.0).bind(_FakeCR3BP(mass_ratio=0.01))
+        b = JacobiConstraint(0.0).bind(_FakeCR3BP(mass_ratio=0.30))
+        assert a.residual(_JC_STATE, _X0)[0] == pytest.approx(
+            _jacobi(_JC_STATE, 0.01), rel=1e-14)
+        assert b.residual(_JC_STATE, _X0)[0] == pytest.approx(
+            _jacobi(_JC_STATE, 0.30), rel=1e-14)
+
+    def test_ignores_x0(self):
+        # C depends on the final state alone; x0 is in the signature for the
+        # TerminalConstraint contract, not because this constraint reads it.
+        # Two genuinely different, valid start states must give bit-identical
+        # results across all three methods.
+        c = JacobiConstraint(3.0).bind(_FakeCR3BP())
+        other = np.arange(6.0)
+        assert c.residual(_JC_STATE, _X0)[0] == (
+            c.residual(_JC_STATE, other)[0])
+        assert c.jacobian_tf(_JC_STATE, _X0) == pytest.approx(
+            c.jacobian_tf(_JC_STATE, other))
+        assert c.jacobian_x0(_JC_STATE, _X0) == pytest.approx(
+            c.jacobian_x0(_JC_STATE, other))
+
+
+class TestJacobiConstraintJacobian:
+    """The hand-derived analytic gradient, checked against the residual."""
+
+    def test_shape_is_one_by_six(self):
+        # Regression guard on the row/column arity. A (6,) return would still
+        # finite-difference correctly under broadcasting but would misplace
+        # the row in DF.
+        c = JacobiConstraint(3.0).bind(_FakeCR3BP())
+        assert c.jacobian_tf(_JC_STATE, _X0).shape == (1, 6)
+
+    @pytest.mark.parametrize("state", [_JC_STATE, _JC_STATE_OFF])
+    def test_matches_finite_differences(self, state):
+        c = JacobiConstraint(3.0).bind(_FakeCR3BP())
+        J_fd = _finite_diff(lambda v: c.residual(v, _X0), state, 1e-6)
+        assert c.jacobian_tf(state, _X0) == pytest.approx(J_fd, abs=1e-7)
+
+    @pytest.mark.parametrize("state", [_JC_STATE, _JC_STATE_OFF])
+    def test_velocity_block_is_minus_two_v(self, state):
+        c = JacobiConstraint(3.0).bind(_FakeCR3BP())
+        J = c.jacobian_tf(state, _X0)
+        assert J[0, 3:6] == pytest.approx(-2.0 * state[3:6], rel=1e-14)
+
+    def test_z_column_has_no_linear_term(self):
+        """
+        dC/dz = -z*(t1 + t2), with no 2*z: the centrifugal term is (x^2 + y^2)
+        only, so z differs structurally from x and y. This is the entry most
+        easily mis-derived by pattern-matching the x and y rows.
+        """
+        mu = _MU_EM
+        x, y, z = _JC_STATE_OFF[:3]
+        r1 = np.sqrt((x + mu) ** 2 + y ** 2 + z ** 2)
+        r2 = np.sqrt((x - 1 + mu) ** 2 + y ** 2 + z ** 2)
+        expected = -z * (2 * (1 - mu) / r1 ** 3 + 2 * mu / r2 ** 3)
+        c = JacobiConstraint(3.0).bind(_FakeCR3BP())
+        assert c.jacobian_tf(_JC_STATE_OFF, _X0)[0, 2] == pytest.approx(
+            expected, rel=1e-14)
+
+    def test_in_plane_state_has_zero_z_gradient(self):
+        planar = np.array([0.82, 0.05, 0.0, 0.02, 0.41, 0.0])
+        c = JacobiConstraint(3.0).bind(_FakeCR3BP())
+        assert c.jacobian_tf(planar, _X0)[0, 2] == pytest.approx(0.0)
+
+    def test_does_not_depend_on_the_target(self):
+        # The target enters the residual as a constant, so it must drop out of
+        # the gradient entirely.
+        a = JacobiConstraint(0.0).bind(_FakeCR3BP())
+        b = JacobiConstraint(99.0).bind(_FakeCR3BP())
+        assert a.jacobian_tf(_JC_STATE, _X0) == pytest.approx(
+            b.jacobian_tf(_JC_STATE, _X0))
+
+    def test_returns_a_fresh_array(self):
+        c = JacobiConstraint(3.0).bind(_FakeCR3BP())
+        J = c.jacobian_tf(_JC_STATE, _X0)
+        J[0, 0] = 123.0
+        assert c.jacobian_tf(_JC_STATE, _X0)[0, 0] != 123.0
+
+    def test_jacobian_x0_is_the_inherited_zero_block(self):
+        """
+        Not overridden, so it falls through to TerminalConstraint's zeros.
+
+        That default IS the declaration that this constraint has no
+        start-state dependence -- the same role `space` plays for
+        placement. Overriding jacobian_x0 is how Periodicity announces
+        the opposite, so the zero block here is a contract, not an
+        accident of not having written the method.
+        """
+        c = JacobiConstraint(3.0).bind(_FakeCR3BP())
+        J0 = c.jacobian_x0(_JC_STATE, _X0)
+        assert J0.shape == (1, 6)
+        assert not J0.any()

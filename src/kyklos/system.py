@@ -262,6 +262,12 @@ class _BodyParamsWithND:
     immutable BodyParams dataclass.
     """
     def __init__(self, body_params: BodyParams, L_star: float):
+        if not isinstance(body_params, BodyParams):
+            raise TypeError(
+                "_BodyParamsWithND wraps a BodyParams instance, got "
+                f"{type(body_params).__name__}. Nesting wrappers is not "
+                "supported; unwrap before rewrapping."
+            )
         self._body_params = body_params
         self._L_star = L_star
 
@@ -282,20 +288,17 @@ class _BodyParamsWithND:
         type(obj) and so cannot see through __getattr__, and any
         isinstance(x, BodyParams) validation at a module boundary.
 
-        Nested wrappers are collapsed. Passing an already-wrapped body back
-        into the System factory yields a wrapper around a wrapper, so this
-        loops until it reaches the dataclass rather than returning another
-        wrapper and breaking its own contract.
+        The constructor rejects anything that is not a BodyParams, and
+        CR3BPSystem unwraps its body arguments before storing them, so the
+        wrapped object is never itself a wrapper and no unnesting loop is
+        needed here.
 
         Returns
         -------
         BodyParams
             The wrapped dataclass instance, never a wrapper.
         """
-        inner = self._body_params
-        while isinstance(inner, _BodyParamsWithND):
-            inner = inner._body_params
-        return inner
+        return self._body_params
 
     def __getattr__(self, name):
         return getattr(self._body_params, name)
@@ -314,6 +317,42 @@ class _BodyParamsWithND:
     # Hash based on wrapped BodyParams.
     def __hash__(self):
         return hash(self._body_params)
+
+
+def _as_body_params(body, label: str) -> BodyParams:
+    """
+    Coerce a body argument to a genuine BodyParams dataclass instance.
+
+    Accepts either a BodyParams or a _BodyParamsWithND handed back out of a
+    CR3BPSystem property, so a system can be rebuilt from another system's
+    bodies. Anything else is a construction error, raised here rather than
+    surfacing later as a missing attribute inside the parameter setup.
+
+    Parameters
+    ----------
+    body : BodyParams or _BodyParamsWithND
+        The body argument as supplied by the caller.
+    label : str
+        Parameter name, used in the error message.
+
+    Returns
+    -------
+    BodyParams
+        The unwrapped dataclass instance.
+
+    Raises
+    ------
+    TypeError
+        If body is neither a BodyParams nor a wrapper around one.
+    """
+    if isinstance(body, _BodyParamsWithND):
+        body = body.unwrap()
+    if not isinstance(body, BodyParams):
+        raise TypeError(
+            f"{label} must be a BodyParams instance, got "
+            f"{type(body).__name__}"
+        )
+    return body
 
 
 # ========== SYSTEM BASE CLASS ==========
@@ -1347,6 +1386,12 @@ class TwoBodySystem(System):
 
         self._base_type = SysType.TWO_BODY
 
+        # Normalize at the boundary, as CR3BPSystem does. A two-body system
+        # never wraps, but a body handed over from a CR3BP system's property
+        # is a _BodyParamsWithND, and would otherwise be stored and handed
+        # straight back out of a property annotated BodyParams.
+        primary_body = _as_body_params(primary_body, "primary_body")
+
         # --- Validate perturbations ---
         for pert in perturbations:
             if pert not in System._VALID_PERTURBATIONS:
@@ -1763,8 +1808,14 @@ class CR3BPSystem(System):
             compile = config.DEFAULT_COMPILE
 
         self._base_type = SysType.CR3BP
-        self._primary_body   = primary_body
-        self._secondary_body = secondary_body
+        # Unwrap at the boundary. primary_body/secondary_body hand out
+        # _BodyParamsWithND, so rebuilding a system from another system's
+        # bodies would otherwise store a wrapper and wrap it again on the
+        # way back out. Storing the dataclass keeps that wrapper flat.
+        self._primary_body   = _as_body_params(primary_body, "primary_body")
+        self._secondary_body = _as_body_params(
+            secondary_body, "secondary_body"
+        )
         self._distance       = distance
 
         # Compute nondimensional parameters and Lagrange points

@@ -116,6 +116,19 @@ class CorrectorGuess:
         A label naming the layout of variables used for correction, modifies the base
         recipe.  For example, a 'lyapunov' can be converged with 'period_locked'
         layout (the default) or 'x_amplitude_locked'
+    scheme : str or None, optional
+        Continuation scheme label, e.g. 'pseudo_arclength'. None (default)
+        means an isolated solve: the layout stays square and no closer is
+        appended. A non-None label selects the corank-opening transform and
+        the closing constraint the continuation engine applies per step, and
+        is validated against the scheme registry here so a typo fails at
+        guess construction rather than deep inside a march.
+
+        This is the single source of truth for which closer a march uses.
+        correct_as rejects a scheme-bearing guess: opening corank without
+        closing it would leave an underdetermined solve, and closing it needs
+        per-step reference data (X_prev, t_hat, ds) that an isolated
+        correction does not have.
     period_is_half : bool, optional
         Convention flag for ``period``. If True, ``period`` is a half period
         (the time to the next perpendicular crossing), which is what a
@@ -138,6 +151,8 @@ class CorrectorGuess:
         Validated recipe label.
     layout : str
         Validated layout label.
+    scheme : str or None
+        Validated continuation scheme label, or None for an isolated solve.
     period_is_half : bool
         The convention flag for ``period``.
 
@@ -145,12 +160,12 @@ class CorrectorGuess:
     ------
     ValueError
         If the state is not a finite (6,) array, the period is not positive and
-        finite, the recipe or layout label is not registered, 
+        finite, the recipe, layout, or scheme label is not registered,
         or the System is not CR3BP.
     """
 
     __slots__ = ("_state", "_period", "_system", 
-                 "_recipe", "_layout", "_period_is_half"
+                 "_recipe", "_layout", "_scheme", "_period_is_half"
     )
 
     def __init__(
@@ -160,6 +175,7 @@ class CorrectorGuess:
         system: System,
         recipe: str,
         layout: str,
+        scheme: str | None = None,
         period_is_half: bool = False,
     ):
         # State: validate shape/finiteness, store read-only.
@@ -195,11 +211,21 @@ class CorrectorGuess:
                 f"known recipes are {available_layouts()}."
             )
 
+        # Scheme label: optional, but must be registered when given. See
+        # _SCHEMES in this file. Validated here rather than at march setup so
+        # a typo fails while the guess is being built, with the guess in hand.
+        if scheme is not None and scheme not in _SCHEMES:
+            raise ValueError(
+                f"Unknown scheme label {scheme!r}; "
+                f"known schemes are {available_schemes()}."
+            )
+
         self._state = arr
         self._period = period
         self._system = system
         self._recipe = recipe
         self._layout = layout
+        self._scheme = scheme
         self._period_is_half = bool(period_is_half)
 
     # Read-only properties: the guess is immutable once constructed.
@@ -227,6 +253,13 @@ class CorrectorGuess:
     def layout(self) -> str:
         """Validated layout label."""
         return self._layout
+
+    @property
+    def scheme(self) -> str | None:
+        """
+        Validated continuation scheme label, or None for an isolated solve.
+        """
+        return self._scheme
 
     @property
     def period_is_half(self) -> bool:
@@ -293,6 +326,7 @@ class CorrectorGuess:
     def __repr__(self) -> str:
         return (
             f"CorrectorGuess(recipe={self._recipe!r}, layout={self._layout!r}, "
+            f"scheme={self._scheme!r}, "
             f"period={self._period!r}, period_is_half={self._period_is_half!r} "
             f"state={self._state!r}), system.mass ratio={self._system.mass_ratio}"
         )
@@ -321,9 +355,6 @@ class _SolveLayout(NamedTuple):
     constraint_spec : dict[str, float]
         Terminal target conditions, {component: value}. Owned by the layout (a
         copy of the recipe's spec), so a scheme may edit it freely.
-    period_convention : str
-        The convention for propagation time of the guess (full or half) 
-        according to the solver recipe.
     """
 
     free_vars: tuple[str, ...]
@@ -976,14 +1007,85 @@ def correct_as(
     Raises
     ------
     NotImplementedError
-        If the recipe uses a phase-pinning scheme other than 'symmetry'.
-    """
-    result = solve_recipe(guess, corrector)
+        If the recipe uses a phase-pinning scheme other than 'symmetry', or if
+        the guess carries a continuation scheme (see Notes).
+    ValueError
+        If the recipe and layout combine to a non-square solve.
+    ConvergenceError
+        If the corrector does not converge.
+    ClosureError
+        If the corrector converges but the mirrored full orbit fails
+        periodicity closure. Deliberately allowed to propagate: a half arc
+        that converges to the shooter tolerance can still close poorly over
+        the full period, and that is a real failure the caller must see.
 
-    if result.trajectory is None:
-        raise ConvergenceError(
-            f"Corrector failed to converge for a {guess.recipe!r} guess; "
-            f"the initial guess may be too far from a periodic orbit."
+    Notes
+    -----
+    A scheme-bearing guess is rejected. A scheme opens corank by one so a
+    continuation closer can square it back up, and the closer needs per-step
+    reference data (X_prev, t_hat, ds) that an isolated correction has no
+    source for -- honoring the scheme here would leave an underdetermined
+    solve. Marching a scheme is the continuation engine's job.
+    """
+    entry = _RECIPES.get(guess.recipe)
+
+    # Only the perpendicular-crossing formulation is implemented. It implies
+    # the half-period convention used below; a future 'poincare' pinning would
+    # propagate a full period and carry an explicit phase constraint instead.
+    if entry.phase_pinning != "symmetry":
+        raise NotImplementedError(
+            f"correct_as implements the 'symmetry' (perpendicular-crossing) "
+            f"phase pinning only; recipe {guess.recipe!r} uses "
+            f"{entry.phase_pinning!r}."
         )
 
-    return PeriodicOrbit(result.trajectory)
+    if guess.scheme is not None:
+        raise NotImplementedError(
+            f"This guess carries the continuation scheme {guess.scheme!r}, "
+            f"which opens corank 1 for a closer that correct_as cannot supply "
+            f"(it has no previous member, tangent, or step size). Build the "
+            f"guess without a scheme for an isolated correction, or march it "
+            f"with the continuation engine."
+        )
+
+    # Spec construction: recipe -> base layout -> member-selection transform
+    # -> built terminal constraints. The layout owns its own constraint_spec
+    # copy, and TargetState gets a fresh dict, so the registry entry is never
+    # reachable for mutation from here.
+    layout = _get_layout(guess.layout)(_base_layout(entry))
+    spec = SolveSpec(
+        free_vars=layout.free_vars,
+        free_times=layout.free_times,
+        constraints=(TargetState(dict(layout.constraint_spec)),),
+    )
+
+    # solve_recipe trusts the caller on determinacy, so assert it here: an
+    # isolated correction must be square. A non-zero corank means the recipe
+    # and layout disagree, which the shooter would otherwise absorb into a
+    # least-squares or minimum-norm step and quietly return the wrong member.
+    if spec.corank != 0:
+        raise ValueError(
+            f"Recipe {guess.recipe!r} with layout {guess.layout!r} gives a "
+            f"corank-{spec.corank} solve ({spec.n_X} free variables against "
+            f"{spec.n_rows} constraint rows); an isolated correction requires "
+            f"a square system."
+        )
+
+    # Symmetry pinning integrates to the next perpendicular crossing, so the
+    # guess arc spans a half period. half_period() resolves the guess's own
+    # full/half convention.
+    guess_traj = guess.system.propagate(
+        guess.state, [0.0, guess.half_period()], with_stm=True
+    )
+
+    result = solve_recipe(spec, guess_traj, corrector)
+
+    if not result.converged or result.trajectory is None:
+        raise ConvergenceError(guess.recipe)
+
+    # Period is inferred, not supplied: both ends of the converged arc are
+    # perpendicular x-z crossings, so PeriodicOrbit recognizes the mirror
+    # half-orbit, repropagates the full period, and validates closure. That
+    # closure check is the second gate -- the corrector tolerance governs the
+    # half arc, this governs the whole orbit.
+    return PeriodicOrbit(result.trajectory, name=guess.recipe)

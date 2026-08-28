@@ -123,6 +123,65 @@ class TestValidConstruction:
             assert isinstance(sys, CR3BPSystem)
 
 
+class TestBodyArgumentNormalization:
+    """
+    Body arguments are coerced to BodyParams at the constructor boundary.
+
+    CR3BPSystem hands its bodies out wrapped in _BodyParamsWithND to expose
+    radius_nd. Feeding those back into the factory used to store a wrapper,
+    which the property would then wrap again. Both constructors now unwrap
+    on the way in, so a system can be rebuilt from another system's bodies
+    and the stored attribute is always the dataclass.
+    """
+
+    def test_cr3bp_rebuilds_from_another_systems_bodies(self):
+        """A CR3BP system can be cloned at a different distance."""
+        sys1 = System('3body', earth(), moon(), distance=384400.0,
+                      compile=False)
+        # Narrow the factory's return union for the type checker.
+        assert isinstance(sys1, CR3BPSystem)
+        sys2 = System('3body', sys1.primary_body, sys1.secondary_body,
+                      distance=400000.0, compile=False)
+        assert isinstance(sys2, CR3BPSystem)
+
+        assert sys2.primary_body == earth()
+        assert sys2.secondary_body == moon()
+        assert sys2.mass_ratio == sys1.mass_ratio
+        assert sys2.distance == 400000.0
+
+    def test_rebuilt_cr3bp_wrapper_is_not_nested(self):
+        """The property still hands out a wrapper, one layer deep."""
+        sys1 = System('3body', earth(), moon(), distance=384400.0,
+                      compile=False)
+        assert isinstance(sys1, CR3BPSystem)
+        sys2 = System('3body', sys1.primary_body, sys1.secondary_body,
+                      distance=384400.0, compile=False)
+        assert isinstance(sys2, CR3BPSystem)
+
+        assert type(sys2.primary_body.unwrap()) is BodyParams
+        assert sys2.primary_body.radius_nd == sys1.primary_body.radius_nd
+
+    def test_two_body_accepts_a_body_from_a_cr3bp_system(self):
+        """TwoBodySystem stores the dataclass, not the wrapper."""
+        sys3b = System('3body', earth(), moon(), distance=384400.0,
+                       compile=False)
+        sys2b = System('2body', sys3b.primary_body, compile=False)
+
+        assert type(sys2b.primary_body) is BodyParams
+        assert sys2b.primary_body == earth()
+
+    def test_non_bodyparams_is_rejected_at_construction(self):
+        """The error names the parameter and fires at the constructor."""
+        with pytest.raises(TypeError, match="primary_body must be"):
+            System('3body', "earth", moon(), distance=384400.0,
+                   compile=False)
+        with pytest.raises(TypeError, match="secondary_body must be"):
+            System('3body', earth(), "moon", distance=384400.0,
+                   compile=False)
+        with pytest.raises(TypeError, match="primary_body must be"):
+            System('2body', "earth", compile=False)
+
+
 class TestInvalidConstruction:
     """Test that invalid construction patterns fail appropriately."""
 
