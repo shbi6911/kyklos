@@ -170,6 +170,128 @@ class TestCorrectorGuessProperties:
 
 
 # ===========================================================================
+# FAST: CorrectorGuess.replace()
+# ===========================================================================
+class TestCorrectorGuessReplace:
+    """
+    Functional-update semantics of CorrectorGuess.replace().
+
+    replace() funnels back through __init__, so these tests check three
+    things: (1) an override lands and everything else carries over from self
+    unchanged, (2) self is never mutated, and (3) a bad override surfaces the
+    same validation __init__ would raise on direct construction -- replace()
+    adds no separate validation path to drift out of sync.
+    """
+
+    @staticmethod
+    def _make(uncompiled_cr3bp, *, state=None, period=None, system=None,
+              recipe="lyapunov", layout="period_locked", scheme=None,
+              period_is_half=False):
+        """
+        Build a baseline CorrectorGuess, overriding only what a test passes.
+        """
+        return ky.CorrectorGuess(
+            state=_VALID_STATE if state is None else state,
+            period=_VALID_PERIOD if period is None else period,
+            system=uncompiled_cr3bp if system is None else system,
+            recipe=recipe,
+            layout=layout,
+            scheme=scheme,
+            period_is_half=period_is_half,
+        )
+
+    def test_no_change_round_trips(self, uncompiled_cr3bp):
+        """replace() with no kwargs returns an equal-valued, distinct instance."""
+        g = self._make(uncompiled_cr3bp)
+        g2 = g.replace()
+        assert g2 is not g
+        assert np.array_equal(g2.state, g.state)
+        assert g2.period == g.period
+        assert g2.system is g.system
+        assert g2.recipe == g.recipe
+        assert g2.layout == g.layout
+        assert g2.scheme == g.scheme
+        assert g2.period_is_half == g.period_is_half
+
+    @pytest.mark.parametrize("field,value", [
+        ("period", 5.5),
+        ("recipe", "halo"),
+        ("layout", "x_amplitude_locked"),
+        ("scheme", "pseudo_arclength"),
+        ("period_is_half", True),
+    ])
+    def test_single_field_override(self, uncompiled_cr3bp, field, value):
+        """Overriding one field changes only that field; the rest carry over."""
+        g = self._make(uncompiled_cr3bp)
+        g2 = g.replace(**{field: value})
+        assert getattr(g2, field) == value
+        for other in ("period", "recipe", "layout", "scheme", "period_is_half"):
+            if other != field:
+                assert getattr(g2, other) == getattr(g, other)
+        assert np.array_equal(g2.state, g.state)
+        assert g2.system is g.system
+
+    def test_state_override(self, uncompiled_cr3bp):
+        """A replaced state lands, and the new copy is independently read-only."""
+        g = self._make(uncompiled_cr3bp)
+        new_state = np.array([0.5, 0.1, 0.0, 0.0, 0.2, 0.0])
+        g2 = g.replace(state=new_state)
+        assert np.array_equal(g2.state, new_state)
+        assert g2.state.flags.writeable is False
+        assert np.array_equal(g.state, _VALID_STATE)  # original untouched
+
+    def test_system_override(self, uncompiled_cr3bp):
+        """Overriding system with another CR3BP system swaps it, revalidated."""
+        other = System("3body", earth(), moon(), distance=_EM_DISTANCE, compile=False)
+        g = self._make(uncompiled_cr3bp)
+        g2 = g.replace(system=other)
+        assert g2.system is other
+        assert g.system is uncompiled_cr3bp  # original untouched
+
+    def test_original_is_untouched(self, uncompiled_cr3bp):
+        """replace() never mutates self, even when the override is accepted."""
+        g = self._make(uncompiled_cr3bp)
+        original_recipe = g.recipe
+        _ = g.replace(recipe="halo")
+        assert g.recipe == original_recipe
+
+    def test_unknown_field_raises_typeerror(self, uncompiled_cr3bp):
+        """A keyword that does not name a CorrectorGuess field is rejected."""
+        g = self._make(uncompiled_cr3bp)
+        with pytest.raises(TypeError, match="unexpected"):
+            g.replace(period_guess=5.5)
+
+    def test_invalid_period_override_reraises_init_validation(self, uncompiled_cr3bp):
+        """A period override that fails __init__'s check raises the same error."""
+        g = self._make(uncompiled_cr3bp)
+        with pytest.raises(ValueError, match="[Pp]eriod"):
+            g.replace(period=-1.0)
+
+    def test_unregistered_recipe_override_rejected(self, uncompiled_cr3bp):
+        """An unregistered recipe override is rejected, same as direct construction."""
+        g = self._make(uncompiled_cr3bp)
+        with pytest.raises(ValueError, match="recipe"):
+            g.replace(recipe="lyapnov")
+
+    def test_non_cr3bp_system_override_rejected(self, uncompiled_cr3bp, earth_2bp_system):
+        """A non-CR3BP system override is rejected, same as direct construction."""
+        g = self._make(uncompiled_cr3bp)
+        with pytest.raises(ValueError, match="CR3BP"):
+            g.replace(system=earth_2bp_system)
+
+    def test_coupled_period_and_flag_together(self, uncompiled_cr3bp):
+        """
+        Regression guard for the period / period_is_half coupling documented on
+        replace(): passing both together lands half_period() where the caller
+        intended, not where leaving the flag untouched would have.
+        """
+        g = self._make(uncompiled_cr3bp, period=2.0, period_is_half=False)
+        g2 = g.replace(period=1.3, period_is_half=True)
+        assert g2.period_is_half is True
+        assert g2.half_period() == pytest.approx(1.3)
+
+
+# ===========================================================================
 # FAST: from_seeder_result projection
 # ===========================================================================
 class TestFromSeederResult:
@@ -293,23 +415,23 @@ class TestPeriodLockedLayout:
 
     period_locked pins the period at the linear estimate and frees the
     amplitude, so the orbit collapses toward the libration point and the solve
-    is stiff (hence the tight (1e-14) corrector tolerance and the ignored 
-    conditioning warning). This exercises the manual CorrectorGuess construction path 
+    is stiff (hence the tight (1e-14) corrector tolerance and the ignored
+    conditioning warning). This exercises the manual CorrectorGuess construction path
     and the period_locked (identity) layout end to end.
     """
 
     def test_period_locked_converges(self, cr3bp_system):
-        seed = cr3bp_system.planar_seeder("L1", amplitude=_AMPLITUDE)
-        guess = ky.CorrectorGuess(
-            seed.state, seed.period, cr3bp_system, "lyapunov", "period_locked",
-        )
-        # cond_fail is raised above the config default (1e12): this path is
-        # deliberately stiff and its Jacobian condition number peaks at ~1.6e12
-        # mid-solve, which aborts the solve at iteration 16 with the residual
-        # still at 3e-11. Allowed past that ceiling it converges in 25
-        # iterations to 1.3e-15, closing to 7e-14.
-        orbit = ky.correct_as(
-            guess, ky.DifferentialCorrector(tol=1e-14, cond_fail=1e14)
-        )
-        assert isinstance(orbit, PeriodicOrbit)
-        assert orbit.periodicity_residual < 1e-9
+            seed = cr3bp_system.planar_seeder("L1", amplitude=_AMPLITUDE)
+            guess = ky.CorrectorGuess(
+                seed.state, seed.period, cr3bp_system, "lyapunov", "period_locked",
+            )
+            # cond_fail is raised above the config default (1e12): this path is
+            # deliberately stiff and its Jacobian condition number peaks at ~1.6e12
+            # mid-solve, which aborts the solve at iteration 16 with the residual
+            # still at 3e-11. Allowed past that ceiling it converges in 25
+            # iterations to 1.3e-15, closing to 7e-14.
+            orbit = ky.correct_as(
+                guess, ky.DifferentialCorrector(tol=1e-14, cond_fail=1e14)
+            )
+            assert isinstance(orbit, PeriodicOrbit)
+            assert orbit.periodicity_residual < 1e-9
