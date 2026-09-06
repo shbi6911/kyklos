@@ -202,7 +202,6 @@ class PeriodicOrbit:
         self._period = period
         self._mode = mode
         self._periodicity_residual = residual
-        # state_at attaches the system, so jacobi_const() resolves mu.
         self._initial_state = full.state_at(full.t0)
         # Composite STM over one full period = monodromy. Copy to decouple
         # from any internal Heyoka buffers.

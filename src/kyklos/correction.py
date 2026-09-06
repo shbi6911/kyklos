@@ -41,6 +41,183 @@ from .exceptions import ConvergenceError
 if TYPE_CHECKING:
     from .trajectory import Trajectory
 
+# Relative tolerance on the seed-mode dot product used by _family_tangent. Below
+# this, the seed member is too close to a period extremum to sign
+# reliably from dT_dX alone.
+_SEED_DOT_RTOL = 1e-8
+
+# ===========================================================================
+# Continuation helpers
+# ===========================================================================
+def _family_tangent(
+    DH: np.ndarray,
+    *,
+    prev_t_hat: np.ndarray | None = None,
+    dT_dX: np.ndarray | None = None,
+    direction: int = 1,
+) -> np.ndarray:
+    """
+    Compute the signed, unit family tangent from an unclosed corank-1
+    Jacobian.
+
+    Pure function: DH -> t_hat. Extracts the null direction DH's shape
+    forces to exist (see Notes) via SVD, then resolves its sign one of
+    two mutually exclusive ways, selected by which of prev_t_hat / dT_dX
+    is supplied.
+
+    Continuity mode (prev_t_hat given): flips the raw null vector, if
+    needed, so its dot product with the previous step's resolved tangent
+    is positive. This is every step after the first -- small ds keeps
+    consecutive tangents close, so a positive dot product is the correct
+    continuation of the same branch.
+
+    Seed mode (dT_dX given): flips the raw null vector, if needed, so its
+    dot product with dT_dX (the gradient of the total period with
+    respect to X) has the sign of `direction`. This is member one only,
+    where there is no previous tangent to be continuous with; it is safe
+    because a fresh seed is not generically sitting at a period extremum,
+    so the dot product is generically nonzero and well-signed. See
+    Raises for what happens when that assumption fails.
+
+    Parameters
+    ----------
+    DH : np.ndarray
+        Unclosed corrector Jacobian at a converged corank-1 member, shape
+        (n_X - 1, n_X) -- ShooterResult.continuation.DH, with the
+        X_SPACE closer row already stripped.
+    prev_t_hat : np.ndarray, optional
+        Previous step's resolved, unit-norm tangent, shape (n_X,).
+        Selects continuity mode. Mutually exclusive with dT_dX.
+    dT_dX : np.ndarray, optional
+        Gradient of the total period with respect to X, shape (n_X,).
+        For single shooting, a one-hot vector at the free end-node
+        time's column. Selects seed mode. Mutually exclusive with
+        prev_t_hat.
+    direction : int, default 1
+        Target sign, in {1, -1}, for dT_dX . t_hat in seed mode: +1
+        seeds a tangent along which the period increases, -1 along
+        which it decreases. Consulted only in seed mode; harmlessly
+        ignored in continuity mode, where sign is fully determined by
+        prev_t_hat.
+
+    Returns
+    -------
+    np.ndarray
+        The signed, unit family tangent, shape (n_X,).
+
+    Raises
+    ------
+    ValueError
+        If neither or both of prev_t_hat / dT_dX are supplied; if DH is
+        not 2-D or is not exactly one column wider than it is tall (the
+        single-shooting corank-1 shape); if prev_t_hat or dT_dX is not
+        shape (n_X,), not finite, or (dT_dX only) identically zero; if
+        direction is not in {1, -1}; or, in seed mode, if the null
+        direction is nearly orthogonal to dT_dX (the seed sits at or
+        near a period extremum, so sign cannot be resolved this way).
+    TypeError
+        If direction is a bool (a subclass of int, rejected so True/False
+        are never silently read as 1/0) or otherwise not an integer.
+
+    Notes
+    -----
+    DH is always exactly one column wider than it is tall, so it has
+    exactly n_X - 1 singular values -- every one of them genuine, none of
+    them the tangent's. The tangent is the null direction that rank-
+    nullity forces to exist purely from that shape, which is why
+    np.linalg.svd is called with full_matrices=True: only the full
+    (n_X, n_X) right factor gives back the n_X-th right singular vector
+    (Vt's last row) spanning it. The economy SVD (full_matrices=False)
+    silently returns one row short, and Vt[-1] would then be the vector
+    for DH's smallest *computed* singular value instead -- a real,
+    plausible-looking, wrong tangent, not an error.
+
+    Genuine corank-1 nullity is trusted here, not checked: the caller
+    (the continuation engine) has already asserted SolveSpec.corank == 1
+    before this function runs. Watching the smallest computed singular
+    value (S[-1], not zero -- just the smallest actually returned) for a
+    drift toward zero relative to the largest is a separate, deferred
+    diagnostic (the corank-2 bifurcation monitor), not this function's
+    job.
+    """
+    DH = np.asarray(DH, dtype=float)
+    if DH.ndim != 2:
+        raise ValueError(f"DH must be 2-D, got shape {DH.shape}.")
+    n_rows, n_X = DH.shape
+    if n_rows != n_X - 1:
+        raise ValueError(
+            f"DH must have exactly one more column than row (the "
+            f"single-shooting corank-1 shape (n_X - 1, n_X)), got "
+            f"shape {DH.shape}."
+        )
+    if not np.all(np.isfinite(DH)):
+        raise ValueError("DH must be finite.")
+
+    if (prev_t_hat is None) == (dT_dX is None):
+        raise ValueError(
+            "Exactly one of prev_t_hat or dT_dX must be supplied -- "
+            "prev_t_hat selects continuity mode (every step after the "
+            "first), dT_dX selects seed mode (member one only)."
+        )
+
+    if isinstance(direction, bool) or not isinstance(
+        direction, (int, np.integer)
+    ):
+        raise TypeError(
+            f"direction must be an integer, got "
+            f"{type(direction).__name__}."
+        )
+    direction = int(direction)
+    if direction not in (1, -1):
+        raise ValueError(f"direction must be 1 or -1, got {direction}.")
+
+    # DH is (n_X - 1, n_X): only full_matrices=True returns the n_X-th
+    # right singular vector (Vt's last row) -- the forced null direction.
+    # See Notes.
+    _, S, Vt = np.linalg.svd(DH, full_matrices=True)
+    v_raw = Vt[-1]
+
+    if prev_t_hat is not None:
+        ref = np.asarray(prev_t_hat, dtype=float)
+        if ref.shape != (n_X,):
+            raise ValueError(
+                f"prev_t_hat must have shape ({n_X},) to match DH's "
+                f"column count, got shape {ref.shape}."
+            )
+        if not np.all(np.isfinite(ref)):
+            raise ValueError("prev_t_hat must be finite.")
+
+        if np.dot(v_raw, ref) < 0.0:
+            v_raw = -v_raw
+
+    else:
+        ref = np.asarray(dT_dX, dtype=float)
+        if ref.shape != (n_X,):
+            raise ValueError(
+                f"dT_dX must have shape ({n_X},) to match DH's column "
+                f"count, got shape {ref.shape}."
+            )
+        if not np.all(np.isfinite(ref)):
+            raise ValueError("dT_dX must be finite.")
+
+        ref_scale = np.linalg.norm(ref)
+        if ref_scale == 0.0:
+            raise ValueError("dT_dX must not be identically zero.")
+
+        dot = float(np.dot(v_raw, ref))
+        if abs(dot) < _SEED_DOT_RTOL * ref_scale:
+            raise ValueError(
+                f"Seed sign is degenerate: the null direction is "
+                f"nearly orthogonal to dT_dX (dot = {dot:.3e} against "
+                f"a scale of {ref_scale:.3e}). The seed member appears "
+                f"to sit at, or very near, a period extremum, where "
+                f"sign cannot be resolved this way."
+            )
+        if np.sign(dot) != direction:
+            v_raw = -v_raw
+
+    return v_raw
+
 # ===========================================================================
 # Corrector guess
 # ===========================================================================
