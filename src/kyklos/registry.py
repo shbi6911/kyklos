@@ -216,10 +216,10 @@ _RECIPES = _RecipeRegistry(
 def available_recipes() -> list[str]:
     """
     Return the sorted list of correction recipe labels available for use with
-    CorrectorGuess and the recipe wrapper.
+    CorrectorGuess, the recipe wrapper, and continuation.
 
     This is the public way to discover which families can be corrected, e.g.
-    to know what label to pass to CorrectorGuess.
+    to know what label to pass to CorrectorGuess or march_family().
 
     Returns
     -------

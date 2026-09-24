@@ -41,7 +41,7 @@ import dataclasses
 import numpy as np
 import pytest
 
-from kyklos.correction import (
+from kyklos.continuation import (
     SolveSpec,
     ContinuationRef,
     _SolveLayout,

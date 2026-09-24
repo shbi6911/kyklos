@@ -7,7 +7,7 @@ purpose" while letting genuine programming bugs (KeyError, TypeError, and the
 like) propagate and crash as they should.
 
 Below the root, exceptions are grouped by the subsystem that raises them. Only
-the correction subtree exists so far:
+the correction/continuation subtree exists so far:
 
     KyklosError
     +-- CorrectionError          orbit-correction / periodic-orbit failures

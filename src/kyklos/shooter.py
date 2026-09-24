@@ -1065,9 +1065,9 @@ class PhaseConstraint(FreeVarConstraint):
     the same specification the solve uses keeps the row aligned with the start
     block. A disagreement is not detectable here -- the constraint would build
     a row of the wrong width or, worse, the right width against the wrong
-    components -- so the caller (a recipe, layout, or the correction wrapper)
-    should source both from one place. The width check in residual() catches
-    the wrong-width case; the wrong-components case is a caller invariant.
+    components -- so the caller (a recipe, layout, the correction wrapper, or 
+    march_family) should source both from one place. The width check in residual() 
+    catches the wrong-width case; the wrong-components case is a caller invariant.
  
     A System carrying runtime parameters (drag, SRP) would need those passed
     to vector_field. bind() does not, matching _assemble_DF's free-time pass,

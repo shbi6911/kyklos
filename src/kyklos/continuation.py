@@ -27,15 +27,17 @@ CorrectorGuess.from_seeder_result() method.  If a period_locked correction
 from a seed is desired, the CorrectorGuess can be constructed standalone.
 """
 import numpy as np
-from typing import NamedTuple, Callable, TYPE_CHECKING
+from typing import NamedTuple, Callable, Any, TYPE_CHECKING
 from dataclasses import dataclass
+import warnings
 
-from .registry import _RECIPES, _RecipeEntry, available_recipes
+from .registry import _RECIPES, _RecipeEntry, available_recipes, period_convention_for
 from .shooter import (DifferentialCorrector, TargetState, ShooterResult,
                       Constraint, ConstraintSpace, FreeVarConstraint,
                       PseudoArclength)
 from .periodic_orbit import PeriodicOrbit
-from .system import System, SysType
+from .system import System, SysType, CR3BPSystem
+from .orbit_family import OrbitFamily
 from .exceptions import ConvergenceError
 
 if TYPE_CHECKING:
@@ -49,6 +51,35 @@ _SEED_DOT_RTOL = 1e-8
 # ===========================================================================
 # Continuation helpers
 # ===========================================================================
+def _check_direction(direction) -> int:
+    """
+    Validate a march direction and return it as a plain int in {1, -1}.
+
+    Shared by march_family, which checks before paying for the bootstrap
+    solve, and _family_tangent, which consumes the value, so the two
+    cannot drift apart.
+
+    Raises
+    ------
+    TypeError
+        If direction is a bool (a subclass of int, rejected so True/False
+        are never silently read as 1/0) or otherwise not an integer.
+    ValueError
+        If direction is not 1 or -1.
+    """
+    if isinstance(direction, bool) or not isinstance(
+        direction, (int, np.integer)
+    ):
+        raise TypeError(
+            f"direction must be an integer, got "
+            f"{type(direction).__name__}."
+        )
+    direction = int(direction)
+    if direction not in (1, -1):
+        raise ValueError(f"direction must be 1 or -1, got {direction}.")
+    return direction
+
+
 def _family_tangent(
     DH: np.ndarray,
     *,
@@ -160,16 +191,7 @@ def _family_tangent(
             "first), dT_dX selects seed mode (member one only)."
         )
 
-    if isinstance(direction, bool) or not isinstance(
-        direction, (int, np.integer)
-    ):
-        raise TypeError(
-            f"direction must be an integer, got "
-            f"{type(direction).__name__}."
-        )
-    direction = int(direction)
-    if direction not in (1, -1):
-        raise ValueError(f"direction must be 1 or -1, got {direction}.")
+    direction = _check_direction(direction)
 
     # DH is (n_X - 1, n_X): only full_matrices=True returns the n_X-th
     # right singular vector (Vt's last row) -- the forced null direction.
@@ -1362,3 +1384,445 @@ def correct_as(
     # closure check is the second gate -- the corrector tolerance governs the
     # half arc, this governs the whole orbit.
     return PeriodicOrbit(result.trajectory, name=guess.recipe)
+
+
+# ===========================================================================
+# Continuation march
+# ===========================================================================
+class _MarchSetup(NamedTuple):
+    """
+    Loop-invariant configuration for one continuation march.
+
+    Built once above the loop by _build_march_setup. A NamedTuple because it
+    is an inert bundle of already-built objects: no arrays, no validation
+    step of its own, no methods. Consumers read fields by name.
+
+    Fields
+    ------
+    entry : _RecipeEntry
+        The recipe's registry entry, kept for the seed check (which reads
+        phase_pinning and constraint_spec).
+    spec : SolveSpec
+        The corank-1 spec every solve in the march uses, bootstrap included.
+    closer_factory : callable
+        (ContinuationRef, int) -> FreeVarConstraint; the scheme's closing
+        half.
+    period_factor : float
+        Full period divided by the duration of the solved arc: 2.0 under a
+        'half' period convention (symmetry pinning), 1.0 under 'full'.
+    """
+
+    entry: _RecipeEntry
+    spec: SolveSpec
+    closer_factory: Callable[[ContinuationRef, int], FreeVarConstraint]
+    period_factor: float
+
+
+def _build_march_setup(recipe: str, scheme: str) -> _MarchSetup:
+    """
+    Run the spec pipeline for a march: recipe -> base layout -> scheme
+    transform -> built SolveSpec.
+
+    The march's counterpart to the spec construction inside correct_as,
+    minus the member-selection layout (see the comment in the body) and
+    with a corank-1 check in place of correct_as's corank-0 check.
+
+    Parameters
+    ----------
+    recipe : str
+        Registered recipe label, e.g. 'lyapunov'.
+    scheme : str
+        Registered continuation scheme label, e.g. 'pseudo_arclength'.
+
+    Returns
+    -------
+    _MarchSetup
+
+    Raises
+    ------
+    ValueError
+        If recipe or scheme is not registered, or if the pair does not give
+        a corank-1 spec.
+    NotImplementedError
+        If the recipe's phase pinning is not 'symmetry'. The half-arc guess,
+        the doubled period, and the seed check all rest on it.
+    """
+    entry = _RECIPES.get(recipe)
+    if entry.phase_pinning != "symmetry":
+        raise NotImplementedError(
+            f"march_family implements the 'symmetry' (perpendicular-"
+            f"crossing) phase pinning only; recipe {recipe!r} uses "
+            f"{entry.phase_pinning!r}."
+        )
+    scheme_entry = _get_scheme(scheme)
+
+    # No member-selection layout. A layout is corank-preserving and exists
+    # to choose which member an *isolated* solve lands on; a march selects
+    # members by arclength instead. The scheme transform also requires the
+    # square, fixed-time base layout as its input.
+    layout = scheme_entry.transform(_base_layout(entry))
+    spec = SolveSpec(
+        free_vars=layout.free_vars,
+        free_times=layout.free_times,
+        constraints=(TargetState(dict(layout.constraint_spec)),),
+    )
+
+    # solve_recipe trusts its caller on determinacy; this is that caller.
+    if spec.corank != 1:
+        raise ValueError(
+            f"Recipe {recipe!r} under scheme {scheme!r} gives a "
+            f"corank-{spec.corank} solve ({spec.n_X} free variables "
+            f"against {spec.n_rows} constraint rows); a march requires "
+            f"corank 1, so that the scheme's single closer squares it."
+        )
+
+    convention = period_convention_for(entry.phase_pinning)
+    period_factor = 2.0 if convention == "half" else 1.0
+    return _MarchSetup(entry, spec, scheme_entry.closer_factory,
+                       period_factor)
+
+
+def _start_state(trajectory: "Trajectory") -> np.ndarray:
+    """
+    Return a trajectory's start state as a fresh, writeable (6,) array.
+
+    Read through the start node. BoundaryNode.post_state is Optional in the
+    base-class signature. A propagated trajectory's start node always
+    carries one, but the None branch is not decoration:
+    np.array(None, dtype=float) is a silent 0-d NaN, not an error.
+    """
+    state = trajectory.start_node.post_state
+    if state is None:
+        raise ValueError("Trajectory start node carries no post_state.")
+    return np.array(state, dtype=float)
+
+
+def _prepare_seed(state: np.ndarray, entry: _RecipeEntry,
+                  tol: float) -> np.ndarray:
+    """
+    Check a seed state against the recipe's phase pinning, and snap it on.
+
+    The corrector holds every start component outside free_vars at its
+    guess value, and the trivial predictor hands those values from member
+    to member unchanged. Whatever the seed carries in its fixed components,
+    the whole family carries. So the seed's phase is a precondition of the
+    march, not something the bootstrap solve will repair.
+
+    Dispatches on phase_pinning, so a future non-symmetric recipe adds its
+    own branch without touching this one.
+
+    'symmetry': the half arc starts and ends on a perpendicular x-z
+    crossing, so the seed must meet the same targets the corrector enforces
+    at the end of the arc (y = 0, vx = 0, plus vz = 0 for halo). A seed
+    within tol is then snapped exactly onto them. That matters: the mirror
+    symmetry maps a start offset (y0, vx0) to (-y0, -vx0) at the end of the
+    period, so an unsnapped offset shows up doubled in every member's
+    closure residual -- enough, near tol, to fail OrbitFamily's closure
+    check on members that are otherwise fine.
+
+    Parameters
+    ----------
+    state : np.ndarray
+        Seed start state, shape (6,).
+    entry : _RecipeEntry
+        The recipe being marched.
+    tol : float
+        Absolute tolerance on each pinning condition.
+
+    Returns
+    -------
+    np.ndarray
+        The snapped seed state, shape (6,). A new array.
+
+    Raises
+    ------
+    ValueError
+        If the seed misses a pinning condition by more than tol.
+    NotImplementedError
+        For a phase pinning other than 'symmetry'.
+    """
+    if entry.phase_pinning == "symmetry":
+        crossing = TargetState(dict(entry.constraint_spec))
+        residual = crossing.residual(state, state)
+        worst = float(np.max(np.abs(residual)))
+        if worst > tol:
+            raise ValueError(
+                f"Seed orbit does not start on a perpendicular x-z "
+                f"crossing: the targets {entry.constraint_spec} are missed "
+                f"by up to {worst:.3e}, against a tolerance of {tol:.3e}. "
+                f"A symmetry-pinned march needs a seed whose trajectory "
+                f"starts at the crossing."
+            )
+        # TargetState is a selection: its Jacobian is rows of the identity,
+        # so J^T r moves exactly the targeted components by exactly their
+        # residuals. One Newton step onto a linear constraint is exact.
+        jac = crossing.jacobian_tf(state, state)
+        return state - jac.T @ residual
+
+    raise NotImplementedError(
+        f"No seed check is implemented for phase_pinning "
+        f"{entry.phase_pinning!r}."
+    )
+
+
+def _period_gradient(spec: SolveSpec, period_factor: float) -> np.ndarray:
+    """
+    Gradient of the full period with respect to X, for single shooting.
+
+    Single-shooting X is [free start components | free boundary times].
+    Under a period-opening scheme the only free time is the end node, whose
+    value is the solved arc's duration; the full period is period_factor
+    times that. So dT/dX is period_factor in that one column, zero
+    elsewhere. Only its sign reaches the tangent (seed mode compares signs),
+    but the honest magnitude costs nothing.
+
+    Raises
+    ------
+    ValueError
+        If the spec does not free exactly one boundary time -- the layout
+        this function reads the period column from.
+    """
+    if len(spec.free_times) != 1:
+        raise ValueError(
+            f"Seeding the march direction needs exactly one free boundary "
+            f"time (the end node, i.e. the period), got free_times="
+            f"{spec.free_times}."
+        )
+    grad = np.zeros(spec.n_X)
+    grad[len(spec.free_vars)] = period_factor
+    return grad
+
+
+def march_family(
+    orbit: PeriodicOrbit,
+    recipe: str,
+    *,
+    ds: float,
+    scheme: str = "pseudo_arclength",
+    n_steps: int = 100,
+    direction: int = 1,
+    corrector: DifferentialCorrector | None = None,
+    targeter: Any | None = None,
+) -> OrbitFamily:
+    """
+    March a family of periodic orbits by pseudo-arclength continuation.
+
+    Takes one converged member and walks the family from it at a fixed
+    arclength step, returning every converged member as an OrbitFamily.
+    Single shooting, constant step, trivial predictor (each solve is seeded
+    with the previous member's trajectory), analytic tangent from the null
+    space of the unclosed corrector Jacobian.
+
+    The march has a loop-and-a-half shape. The bootstrap re-solves the seed
+    once, unclosed, under the march's own corank-1 spec: that yields the
+    seed's X and DH in the march's layout, and gates the whole march -- a
+    seed that will not re-converge raises. Every later step is a closed
+    solve, identical in form.
+
+    Parameters
+    ----------
+    orbit : PeriodicOrbit
+        Converged seed member. Its trajectory must start on the recipe's
+        pinning plane (a perpendicular x-z crossing for the symmetric
+        recipes); see Raises. Its System is the one the family is marched
+        and returned in.
+    recipe : str
+        Family recipe label, e.g. 'lyapunov' or 'halo'.
+    ds : float
+        Arclength step, > 0. Distance along the unit tangent in X-space,
+        where X mixes state components and the half period, so it has no
+        single physical unit.
+    scheme : str, optional
+        Continuation scheme label. Default 'pseudo_arclength'.
+    n_steps : int, optional
+        Number of arclength steps to take beyond the bootstrap. On complete
+        success the family has n_steps + 1 members; n_steps = 0 returns the
+        re-solved seed alone. Default 100.
+    direction : {1, -1}, optional
+        Initial marching direction: +1 toward increasing period, -1 toward
+        decreasing. Sets the sign of the first tangent only; tangent
+        continuity carries it after that. Default 1.
+    corrector : DifferentialCorrector, optional
+        Corrector reused for every solve in the march. If None, a default
+        is built.
+    targeter : None
+        Reserved for a future stop-condition interface. Must be None.
+
+    Returns
+    -------
+    OrbitFamily
+        Member 0 is the re-solved seed (step_sizes[0] = 0.0), followed by
+        each converged step in order. The marching System is attached, so
+        propagation-backed family methods do not recompile it.
+
+    Raises
+    ------
+    TypeError
+        If orbit is not a PeriodicOrbit or its System is not CR3BP; if
+        n_steps is not an integer (bools rejected); if direction is a bool
+        or not an integer.
+    ValueError
+        If ds is not positive and finite; if n_steps < 0; if direction is
+        not 1 or -1; if the recipe or scheme is not registered or the pair
+        is not corank 1; if the seed does not start on the pinning plane
+        within orbit.tol; or if the seed sits at a period extremum, where
+        the first tangent's sign cannot be seeded from the period.
+    NotImplementedError
+        If targeter is not None, or the recipe's phase pinning is not
+        'symmetry'.
+    ConvergenceError
+        If the bootstrap solve does not converge. A march that cannot
+        re-converge its own seed has no first member, and OrbitFamily
+        cannot be empty.
+
+    Warns
+    -----
+    UserWarning
+        If a march step fails to converge. The march stops there and the
+        members converged so far are returned; the warning carries the
+        step number and the corrector's abort reason.
+
+    Notes
+    -----
+    Recorded periods are full periods: the solved arc is a half period
+    under symmetry pinning, and its duration is doubled on the way into the
+    family.
+
+    The seed is snapped exactly onto its pinning conditions before the
+    bootstrap (see _prepare_seed), so member 0 can differ from the input
+    orbit by that snap as well as by the bootstrap's own minimum-norm
+    correction.
+    """
+    # ----- Argument checks: all before the first solve -----
+    if targeter is not None:
+        raise NotImplementedError(
+            "targeter is reserved for a future stop-condition interface "
+            "and is not implemented; pass None."
+        )
+
+    ds = float(ds)
+    if not np.isfinite(ds) or ds <= 0.0:
+        raise ValueError(f"ds must be a positive finite step, got {ds}.")
+
+    if isinstance(n_steps, bool) or not isinstance(
+        n_steps, (int, np.integer)
+    ):
+        raise TypeError(
+            f"n_steps must be an integer, got {type(n_steps).__name__}."
+        )
+    n_steps = int(n_steps)
+    if n_steps < 0:
+        raise ValueError(f"n_steps must be non-negative, got {n_steps}.")
+
+    direction = _check_direction(direction)
+
+    if not isinstance(orbit, PeriodicOrbit):
+        raise TypeError(
+            f"orbit must be a PeriodicOrbit, got {type(orbit).__name__}."
+        )
+    # A PeriodicOrbit already guarantees CR3BP (by base_type value). The
+    # isinstance check is what gives the header reads at the end --
+    # distance, mass_ratio, secondary_body -- their CR3BPSystem types.
+    system = orbit.system
+    if not isinstance(system, CR3BPSystem):
+        raise TypeError(
+            f"march_family requires a CR3BP system, got "
+            f"{type(system).__name__}."
+        )
+
+    setup = _build_march_setup(recipe, scheme)
+    seed = _prepare_seed(_start_state(orbit.trajectory), setup.entry,
+                         orbit.tol)
+    corrector = corrector if corrector is not None else DifferentialCorrector()
+
+    # ----- Member table, accumulated as plain lists -----
+    states: list[np.ndarray] = []
+    periods: list[float] = []
+    iterations: list[int] = []
+    residuals: list[float] = []
+    step_sizes: list[float] = []
+
+    def record(result: ShooterResult, trajectory: "Trajectory",
+               step: float) -> None:
+        # One row per converged member, taken from the solve that produced
+        # it, so every column in a row describes the same point.
+        states.append(_start_state(trajectory))
+        periods.append(setup.period_factor * trajectory.duration)
+        iterations.append(result.iterations)
+        residuals.append(result.final_residual)
+        step_sizes.append(step)
+
+    # ----- Bootstrap: re-solve the seed, unclosed, in the march layout ---
+    guess = system.propagate(
+        seed, [0.0, orbit.period / setup.period_factor], with_stm=True
+    )
+    result = solve_recipe(setup.spec, guess, corrector, continuation=True)
+    if (not result.converged or result.trajectory is None
+            or result.continuation is None):
+        raise ConvergenceError(
+            recipe,
+            message=(
+                f"march_family bootstrap failed: the seed orbit did not "
+                f"re-converge under the march's corank-1 spec "
+                f"(abort_reason={result.abort_reason!r}, final residual "
+                f"{result.final_residual:.3e} after {result.iterations} "
+                f"iterations). The seed may not be a {recipe!r} member, or "
+                f"the corrector tolerance may be tighter than the seed was "
+                f"converged to."
+            ),
+        )
+    trajectory = result.trajectory
+    record(result, trajectory, 0.0)
+    X_prev = result.continuation.X
+    t_hat = _family_tangent(
+        result.continuation.DH,
+        dT_dX=_period_gradient(setup.spec, setup.period_factor),
+        direction=direction,
+    )
+
+    # ----- March: closed solves at constant ds -----
+    for k in range(1, n_steps + 1):
+        ref = ContinuationRef(X_prev=X_prev, t_hat=t_hat, ds=ds)
+        # Trivial predictor: the previous member's trajectory is the guess.
+        result = solve_recipe(
+            setup.spec, trajectory, corrector,
+            closer_factory=setup.closer_factory, ref=ref,
+            continuation=True,
+        )
+        if (not result.converged or result.trajectory is None
+                or result.continuation is None):
+            warnings.warn(
+                f"march_family stopped early: step {k} of {n_steps} did "
+                f"not converge (abort_reason={result.abort_reason!r}, "
+                f"final residual {result.final_residual:.3e} after "
+                f"{result.iterations} iterations). Returning the "
+                f"{len(periods)} member(s) converged so far.",
+                UserWarning,
+                stacklevel=2,
+            )
+            break
+
+        trajectory = result.trajectory
+        record(result, trajectory, ds)
+        X_prev = result.continuation.X
+        t_hat = _family_tangent(result.continuation.DH, prev_t_hat=t_hat)
+
+    # ----- Assemble -----
+    family = OrbitFamily(
+        initial_states=np.array(states),
+        periods=periods,
+        iterations=iterations,
+        final_residuals=residuals,
+        step_sizes=step_sizes,
+        primary_body=system.primary_body,
+        secondary_body=system.secondary_body,
+        distance=system.distance,
+        mu=system.mass_ratio,
+        recipe=recipe,
+        scheme=scheme,
+        free_vars=setup.spec.free_vars,
+        free_times=setup.spec.free_times,
+        node_specs=setup.spec.node_specs,
+    )
+    family.attach_system(system)
+    return family
