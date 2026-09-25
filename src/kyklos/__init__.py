@@ -60,7 +60,9 @@ from .shooter import (
 from .periodic_orbit import PeriodicOrbit
 from .orbit_family import OrbitFamily
 from .registry import available_recipes
-from .continuation import CorrectorGuess, available_layouts, correct_as, march_family
+from .continuation import (CorrectorGuess, available_layouts, correct_as, 
+                           march_family, available_schemes)
+
 
 # helper utilities and config control
 from .utils import Timer
@@ -137,7 +139,9 @@ __all__ = [
     # Module-level Functions
     "available_recipes",
     "available_layouts",
+    "available_schemes",
     "correct_as",
+    "march_family",
     # Abbreviations
     "OE",
     "Sat",

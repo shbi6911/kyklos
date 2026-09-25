@@ -1182,9 +1182,7 @@ def available_schemes() -> list[str]:
     Return the sorted list of continuation scheme labels.
 
     Discovery for the scheme vocabulary, parallel to available_recipes() and
-    available_layouts(). Not re-exported from the package yet: the only
-    consumer is the continuation engine, and the vocabulary should not be
-    advertised ahead of it.
+    available_layouts().
 
     Returns
     -------
