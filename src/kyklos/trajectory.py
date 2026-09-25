@@ -1,6 +1,6 @@
 '''Development code for an orbital trajectory handling package
 Trajectory class definition
-created with the assistance of Claude Sonnet by Anthropic'''
+created with the assistance of Claude by Anthropic'''
 
 from __future__ import annotations
 
@@ -30,6 +30,16 @@ _NODE_COLORS = {
 }
 
 _LAGRANGE_NAMES = ('L1', 'L2', 'L3', 'L4', 'L5')
+
+_BODY_NAMES = ('primary', 'secondary')
+
+# Hover text for trajectory line traces. Six significant figures rather than
+# fixed decimals, so one format reads correctly in both unit systems:
+# nondimensional CR3BP coordinates (0.83691) and 2-body km (7000.3). Matches
+# the Lagrange point hover formatting.
+_DEFAULT_HOVER = (
+    'x: %{x:.6g}<br>y: %{y:.6g}<br>z: %{z:.6g}<extra></extra>'
+)
 
 # ========== PLOTTING HELPERS ==========
 
@@ -123,13 +133,14 @@ def _figure_line_positions(fig: go.Figure) -> np.ndarray | None:
     """
     Gather positions from all trajectory line traces on a figure.
 
-    Used by the automatic Lagrange point visibility test when points are
-    added to an existing figure: the relevant spatial extent is that of
-    everything already drawn, not of any single trajectory.
+    Used by the automatic visibility tests for bodies and Lagrange points
+    when they are added to an existing figure: the relevant spatial extent
+    is that of everything already drawn, not of any single trajectory.
 
-    Only traces drawn in a line mode are considered. Marker-only traces
-    (nodes, previously placed Lagrange points) are excluded so that
-    repeated calls cannot bootstrap the box outward.
+    Only Scatter3d traces drawn in a line mode are considered. Marker-only
+    traces (nodes, previously placed Lagrange points) and body Surfaces are
+    excluded, so repeated calls cannot bootstrap the box outward and a
+    drawn Earth cannot drag the box across the system.
 
     Parameters
     ----------
@@ -159,6 +170,43 @@ def _figure_line_positions(fig: go.Figure) -> np.ndarray | None:
     if not chunks:
         return None
     return np.vstack(chunks)
+
+
+def _apply_3d_layout(fig: go.Figure,
+                     is_cr3bp: bool,
+                     title: str | None = None) -> None:
+    """
+    Apply the standard 3D scene layout to a figure, in place.
+
+    Shared by Trajectory.plot_3d and OrbitFamily.plot_3d so the two produce
+    figures with identical axis labeling, aspect handling and legend
+    behavior. aspectmode='data' keeps the three axes to a common scale,
+    without which a planar orbit's out-of-plane axis is stretched to fill
+    the scene.
+
+    Parameters
+    ----------
+    fig : go.Figure
+        Figure to modify.
+    is_cr3bp : bool
+        Selects axis units: nondimensional for CR3BP, km otherwise.
+    title : str, optional
+        Figure title. If None, a generic title for the system type is used.
+    """
+    units = 'nd' if is_cr3bp else 'km'
+    if title is None:
+        title = 'CR3BP Trajectory' if is_cr3bp else 'Orbital Trajectory'
+    fig.update_layout(
+        scene=dict(
+            xaxis_title=f'X [{units}]',
+            yaxis_title=f'Y [{units}]',
+            zaxis_title=f'Z [{units}]',
+            aspectmode='data'
+        ),
+        title=title,
+        showlegend=True,
+        legend=dict(groupclick='toggleitem')
+    )
 
 # ========== MAIN TRAJECTORY CLASS ==========
 
@@ -1925,62 +1973,60 @@ class Trajectory:
     # ========== PLOTTING ==========
     # these methods are temporary until a Visualization module is established
 
-    def plot_3d(self, n_points: int | None = None, 
-                      show_body: bool = True,
+    def plot_3d(self, n_points: int | None = None,
+                      bodies: bool | str | Sequence[str] | None = True,
                       show_nodes: bool = True,
                       node_symbol: str = 'circle',
                       lagrange_points: bool | str | Sequence[str] | None = None,
-                      traj_name: str | None = None, 
-                      body_color: str | None = None, 
+                      traj_name: str | None = None,
                       traj_color: str | None = None,
-                      body_opacity: float | None = None, 
-                      proximity_threshold: float | None = None,
                       renderer: str | None = None) -> go.Figure:
         """
-        Create 3D plot of trajectory with optional central body.
-        
-        Parameters:
-            n_points : int, optional
-                Number of points to sample trajectory.
-                If None, uses config.DEFAULT_PLOT_POINTS (default: None)
-            show_body : bool, optional
-                Whether to show central body sphere (default: True)
-            show_nodes : bool, optional
-                Whether to plot trajectory Node locations (default: True)
-            node_symbol : str, optional
-                Plotly symbol to use for this Trajectory's Nodes (default: 'circle')
-            lagrange_points : bool, str, or sequence of str, optional
-                Lagrange points to draw. True runs an automatic visibility
-                test and shows any point falling within the trajectory's
-                bounding box, expanded by config.LAGRANGE_BBOX_MARGIN. A
-                designator such as 'L1', or a sequence such as
-                ('L1', 'L2'), draws exactly those points regardless of the
-                automatic test. None or False draws nothing. Ignored
-                silently when True on a non-CR3BP system; raises when a
-                designator is named explicitly on one. For control over
-                marker styling, use add_lagrange_points() instead.
-                (default: None)
-            traj_name : str, optional
-                Label for this trajectory in the legend and hover text 
-                (default: Trajectory)
-            body_color : str, optional
-                Color of central body.
-                If None, uses config.DEFAULT_BODY_COLOR (default: None)
-            traj_color: str, optional
-                Color of trajectory line.
-                If None, uses config.DEFAULT_TRAJ_COLOR (default: None)
-            body_opacity: float, optional
-                Opacity of central body.
-                If None, uses config.DEFAULT_BODY_OPACITY (default: None)
-            proximity_threshold: float, optional
-                Show body if trajectory within this many radii.
-                If None, uses config.PROXIMITY_THRESHOLD (default: 10)
-            renderer: str, optional
-                controls the Plotly renderer used to display plots
-                if None, uses config.RENDERER (default: 'browser')
-            
-        Returns:
-            Plotly Figure object
+        Create a 3D plot of this trajectory, with optional bodies and
+        Lagrange points.
+
+        Draws the trajectory line and nodes first, then bodies and Lagrange
+        points: both automatic visibility tests measure the line traces
+        already on the figure, so they must come after the line.
+
+        Parameters
+        ----------
+        n_points : int, optional
+            Number of points to sample the trajectory.
+            If None, uses config.DEFAULT_PLOT_POINTS (default: None)
+        bodies : bool, str, or sequence of str, optional
+            Bodies to draw. True runs the automatic visibility test (see
+            add_bodies); 'primary', 'secondary', or a sequence of them draws
+            exactly those; None or False draws nothing. For control over
+            styling and the test thresholds, use add_bodies() instead.
+            (default: True)
+        show_nodes : bool, optional
+            Whether to plot trajectory Node locations (default: True)
+        node_symbol : str, optional
+            Plotly symbol for this trajectory's Nodes (default: 'circle')
+        lagrange_points : bool, str, or sequence of str, optional
+            Lagrange points to draw. True runs an automatic visibility test
+            and shows any point falling within the trajectory's bounding
+            box, expanded by config.PLOT_BBOX_MARGIN. A designator such as
+            'L1', or a sequence such as ('L1', 'L2'), draws exactly those
+            points. None or False draws nothing. Ignored silently when True
+            on a non-CR3BP system; raises when a designator is named
+            explicitly on one. For control over marker styling, use
+            add_lagrange_points() instead. (default: None)
+        traj_name : str, optional
+            Label for this trajectory in the legend (default: 'Trajectory')
+        traj_color : str, optional
+            Color of the trajectory line.
+            If None, uses config.DEFAULT_TRAJ_COLOR (default: None)
+        renderer : str, optional
+            Plotly renderer to display with. If None, the figure is not
+            shown and config.RENDERER becomes the Plotly default.
+            (default: None)
+
+        Returns
+        -------
+        go.Figure
+            The new figure.
         """
         from .system import SysType
         import plotly.io as pio
@@ -1988,101 +2034,17 @@ class Trajectory:
         # Apply config defaults where user didn't specify
         if n_points is None:
             n_points = config.DEFAULT_PLOT_POINTS
-        if body_color is None:
-            body_color = config.DEFAULT_BODY_COLOR
         if traj_color is None:
             traj_color = config.DEFAULT_TRAJ_COLOR
-        if body_opacity is None:
-            body_opacity = config.DEFAULT_BODY_OPACITY
-        if proximity_threshold is None:
-            proximity_threshold = config.PROXIMITY_THRESHOLD
         if renderer is None:
             pio.renderers.default = config.RENDERER
-        
-        # Sample trajectory
-        states = self.sample_raw(n_points=n_points)
-        positions = states[:, 0:3]
-        
-        # Create figure
-        fig = go.Figure()
-        
-        # Determine which bodies to show
+
+        positions = self.sample_raw(n_points=n_points)[:, 0:3]
         is_cr3bp = self.system.base_type == SysType.CR3BP
-        show_primary = False
-        show_secondary = False
-        
-        if show_body:
-            if is_cr3bp:
-                mu = self.system.mass_ratio
-                assert mu is not None  # Always true for CR3BP
-                
-                # Body positions in rotating frame
-                p1_pos = np.array([-mu, 0, 0])
-                p2_pos = np.array([1 - mu, 0, 0])
-                
-                # Body radii
-                r1 = self.system.primary_body.radius_nd
-                r2 = self.system.secondary_body.radius_nd
-                
-                # Calculate minimum distance from trajectory to each body
-                dist_to_p1 = np.linalg.norm(positions - p1_pos, axis=1)
-                dist_to_p2 = np.linalg.norm(positions - p2_pos, axis=1)
-                
-                min_dist_p1 = np.min(dist_to_p1)
-                min_dist_p2 = np.min(dist_to_p2)
-                
-                # Show body if trajectory gets within threshold
-                show_primary = (min_dist_p1 < proximity_threshold * r1)
-                show_secondary = (min_dist_p2 < proximity_threshold * r2)
-                
-                # Inform user if no bodies shown
-                if not show_primary and not show_secondary:
-                    print(f"Trajectory does not approach either body within "
-                        f"{proximity_threshold} radii.")
-                    print(f"  Closest approach to primary: {min_dist_p1/r1:.1f} radii")
-                    print(f"  Closest approach to secondary: {min_dist_p2/r2:.1f} radii")
-                    print(f"  No bodies shown in plot.")
-            else:
-                # For 2-body systems, always show primary if show_body=True
-                show_primary = True
-        
-        # Add primary body sphere if needed
-        if show_primary:
-            if is_cr3bp:
-                mu = self.system.mass_ratio
-                self._add_sphere_to_plot(
-                    fig, 
-                    center=(-mu, 0, 0),
-                    radius=self.system.primary_body.radius_nd,
-                    color=body_color,
-                    opacity=body_opacity,
-                    name="Primary"
-                )
-            else:
-                # 2-body: central body at origin
-                self._add_sphere_to_plot(
-                    fig,
-                    center=(0, 0, 0),
-                    radius=self.system.primary_body.radius,
-                    color=body_color,
-                    opacity=body_opacity,
-                    name="Central Body"
-                )
-        
-        # Add secondary body sphere if needed
-        if show_secondary and is_cr3bp:
-            mu = self.system.mass_ratio
-            assert mu is not None   # always true if CR3BP
-            self._add_sphere_to_plot(
-                fig,
-                center=(1 - mu, 0, 0),
-                radius=self.system.secondary_body.radius_nd,
-                color=body_color,
-                opacity=body_opacity,
-                name="Secondary"
-            )
-        
-        # Add trajectory
+
+        fig = go.Figure()
+
+        # Trajectory line first: the automatic tests below measure it.
         fig.add_trace(go.Scatter3d(
             x=positions[:, 0],
             y=positions[:, 1],
@@ -2090,59 +2052,31 @@ class Trajectory:
             mode='lines',
             line=dict(color=traj_color, width=3),
             name=traj_name or 'Trajectory',
+            hovertemplate=_DEFAULT_HOVER,
             legendgroup='trajectory',
             legendgrouptitle=dict(text='Trajectory'),
             showlegend=True
         ))
 
-        # Add nodes if specified
         if show_nodes:
             for trace in self._build_node_traces(node_symbol, traj_name):
-                fig.add_trace(trace)\
-        
-        # Add Lagrange points if specified. Delegated so that the styling
-        # knobs live on add_lagrange_points() rather than inflating this
-        # signature; plot_3d exposes only the selection.
+                fig.add_trace(trace)
+
+        # Bodies and Lagrange points are delegated so their styling knobs
+        # live on add_bodies() / add_lagrange_points() rather than inflating
+        # this signature; plot_3d exposes only the selections.
+        if bodies is not None and bodies is not False:
+            self.add_bodies(fig, bodies=bodies, n_points=n_points)
         if lagrange_points is not None and lagrange_points is not False:
             self.add_lagrange_points(fig, points=lagrange_points,
                                      n_points=n_points)
-        
-        # Set layout
-        units = 'nd' if is_cr3bp else 'km'
-        fig.update_layout(
-            scene=dict(
-                xaxis_title=f'X [{units}]',
-                yaxis_title=f'Y [{units}]',
-                zaxis_title=f'Z [{units}]',
-                aspectmode='data'
-            ),
-            title='CR3BP Trajectory' if is_cr3bp else 'Orbital Trajectory',
-            showlegend=True,
-            legend=dict(groupclick='toggleitem')
-        )
+
+        _apply_3d_layout(fig, is_cr3bp)
 
         if renderer:
             fig.show(renderer=renderer)
-        
-        return fig
 
-    def _add_sphere_to_plot(self, fig, center, radius, color, opacity, name):
-        """Helper to add a sphere to the plot at specified center."""
-        u = np.linspace(0, 2 * np.pi, 30)
-        v = np.linspace(0, np.pi, 20)
-        
-        x = center[0] + radius * np.outer(np.cos(u), np.sin(v))
-        y = center[1] + radius * np.outer(np.sin(u), np.sin(v))
-        z = center[2] + radius * np.outer(np.ones(np.size(u)), np.cos(v))
-        
-        fig.add_trace(go.Surface(
-            x=x, y=y, z=z,
-            colorscale=[[0, color], [1, color]],
-            showscale=False,
-            opacity=opacity,
-            name=name,
-            hoverinfo='name'
-        ))
+        return fig
 
 
     def add_to_plot(self, fig: go.Figure, 
@@ -2165,7 +2099,10 @@ class Trajectory:
             node_symbol : str, optional
                 Plotly symbol to use for this Trajectory's Nodes (default: 'diamond')
             traj_name: Legend name for this trajectory (default: 'Trajectory N')
-            **kwargs: Additional arguments passed to Scatter3d
+           **kwargs: Additional arguments passed to Scatter3d. A
+                hovertemplate here replaces the default
+                (_DEFAULT_HOVER); any other key the method sets itself
+                (x, y, z, mode, line, name) cannot be overridden.
             
         Returns:
             Updated Plotly Figure object (same object, modified in place)
@@ -2174,7 +2111,7 @@ class Trajectory:
         if n_points is None:
             n_points = config.DEFAULT_PLOT_POINTS
         if color is None:
-            color = config.DEFAULT_TRAJ_COLOR
+            color = config.DEFAULT_TRAJ_COLOR_ADD
 
         # Sample trajectory
         states = self.sample_raw(n_points=n_points)
@@ -2184,7 +2121,12 @@ class Trajectory:
         if traj_name is None:
             # Count existing scatter3d traces
             n_existing = sum(1 for trace in fig.data if isinstance(trace, go.Scatter3d))
-            name = f'Trajectory {n_existing + 1}'
+            traj_name = f'Trajectory {n_existing + 1}'
+
+        # Hover text popped rather than read, so a caller-supplied hovertemplate 
+        # cannot also arrive through **kwargs and collide with the named argument
+        # below (TypeError: multiple values for keyword argument).
+        hovertemplate = kwargs.pop('hovertemplate', _DEFAULT_HOVER)
         
         # Add trajectory to figure
         fig.add_trace(go.Scatter3d(
@@ -2194,7 +2136,7 @@ class Trajectory:
             mode='lines',
             line=dict(color=color, width=3),
             name=traj_name,
-            hovertemplate='x: %{x:.1f}<br>y: %{y:.1f}<br>z: %{z:.1f}<extra></extra>',
+            hovertemplate=hovertemplate,
             **kwargs
         ))
 
@@ -2315,10 +2257,10 @@ class Trajectory:
             test. Ignored when spec is an explicit selection.
         margin : float, optional
             Bounding box expansion fraction. If None, uses
-            config.LAGRANGE_BBOX_MARGIN (default: None).
+            config.PLOT_BBOX_MARGIN (default: None).
         min_extent_frac : float, optional
             Bounding box degenerate-dimension floor. If None, uses
-            config.LAGRANGE_MIN_EXTENT_FRAC (default: None).
+            config.PLOT_MIN_EXTENT_FRAC (default: None).
 
         Returns
         -------
@@ -2352,9 +2294,9 @@ class Trajectory:
             if not is_cr3bp:
                 return []
             if margin is None:
-                margin = config.LAGRANGE_BBOX_MARGIN
+                margin = config.PLOT_BBOX_MARGIN
             if min_extent_frac is None:
-                min_extent_frac = config.LAGRANGE_MIN_EXTENT_FRAC
+                min_extent_frac = config.PLOT_MIN_EXTENT_FRAC
 
             lo, hi = _expanded_bbox(positions, margin, min_extent_frac)
             return [
@@ -2526,10 +2468,10 @@ class Trajectory:
             If None, uses config.DEFAULT_PLOT_POINTS (default: None)
         margin : float, optional
             Bounding box expansion fraction for the automatic test.
-            If None, uses config.LAGRANGE_BBOX_MARGIN (default: None)
+            If None, uses config.PLOT_BBOX_MARGIN (default: None)
         min_extent_frac : float, optional
             Bounding box degenerate-dimension floor for the automatic test.
-            If None, uses config.LAGRANGE_MIN_EXTENT_FRAC (default: None)
+            If None, uses config.PLOT_MIN_EXTENT_FRAC (default: None)
 
         Returns
         -------
@@ -2585,6 +2527,334 @@ class Trajectory:
         for trace in self._build_lagrange_traces(
                 names, color, symbol, size, labels,
                 skip_names=existing):
+            fig.add_trace(trace)
+
+        return fig
+
+    def _body_geometry(self, name: str) -> tuple[np.ndarray, float]:
+        """
+        Center and radius of a primary body, in this system's plot units.
+
+        The single source of body geometry for both the automatic visibility
+        test (which needs distances) and the sphere builder (which needs the
+        surface). CR3BP bodies sit on the rotating x-axis at -mu and 1 - mu
+        with nondimensional radii; a 2-body primary sits at the origin with
+        its radius in km, matching the units of the plotted states.
+
+        Parameters
+        ----------
+        name : str
+            Canonical designator, 'primary' or 'secondary', already
+            validated against the system type by the caller.
+
+        Returns
+        -------
+        center : np.ndarray, shape (3,)
+        radius : float
+        """
+        from .system import SysType
+
+        if self.system.base_type == SysType.CR3BP:
+            mu = self.system.mass_ratio
+            assert mu is not None  # always true for CR3BP
+            if name == 'primary':
+                return (np.array([-mu, 0.0, 0.0]),
+                        float(self.system.primary_body.radius_nd))
+            return (np.array([1.0 - mu, 0.0, 0.0]),
+                    float(self.system.secondary_body.radius_nd))
+
+        assert name == 'primary'  # caller rejects 'secondary' for 2-body
+        return np.zeros(3), float(self.system.primary_body.radius)
+
+    def _resolve_body_names(
+        self,
+        spec: bool | str | Sequence[str] | None,
+        positions: np.ndarray,
+        proximity_threshold: float | None = None,
+        margin: float | None = None,
+        min_extent_frac: float | None = None) -> list[str]:
+        """
+        Resolve a body selection into a list of canonical body designators.
+
+        Mirrors _resolve_lagrange_names: no selection, automatic visibility
+        test, or explicit request, with an explicit request always drawn
+        regardless of where the body falls.
+
+        The automatic test for a CR3BP system shows a body if EITHER of two
+        conditions holds over the supplied positions:
+
+        - proximity: the closest approach is within proximity_threshold body
+          radii. Catches flybys that pass near a body without enclosing it.
+        - enclosure: the body's center lies inside the expanded bounding box,
+          the same test the Lagrange points use. Catches orbits that encircle
+          a body at a distance, such as a large DRO about the Moon, which
+          never come within proximity range of it.
+
+        For a 2-body system the automatic test always selects the primary:
+        every 2-body trajectory is about it.
+
+        Parameters
+        ----------
+        spec : bool, str, sequence of str, or None
+            None or False selects nothing. True runs the automatic test. A
+            string or sequence of strings names bodies explicitly;
+            designators are 'primary' and 'secondary', case-insensitive.
+        positions : np.ndarray, shape (N, 3)
+            Positions defining the extent used by the automatic test.
+            Ignored when spec is an explicit selection.
+        proximity_threshold : float, optional
+            Proximity distance in body radii. If None, uses
+            config.PROXIMITY_THRESHOLD (default: None).
+        margin : float, optional
+            Bounding box expansion fraction. If None, uses
+            config.PLOT_BBOX_MARGIN (default: None).
+        min_extent_frac : float, optional
+            Bounding box degenerate-dimension floor. If None, uses
+            config.PLOT_MIN_EXTENT_FRAC (default: None).
+
+        Returns
+        -------
+        list of str
+            Selected designators in canonical order (primary, secondary).
+
+        Raises
+        ------
+        ValueError
+            If a designator is not a string or not a known body, or if
+            'secondary' is requested on a system that has only a primary.
+        """
+        from .system import SysType
+
+        if spec is None or spec is False:
+            return []
+
+        is_cr3bp = self.system.base_type == SysType.CR3BP
+        available = _BODY_NAMES if is_cr3bp else ('primary',)
+
+        # Automatic selection
+        if spec is True:
+            if not is_cr3bp:
+                return ['primary']
+            if proximity_threshold is None:
+                proximity_threshold = config.PROXIMITY_THRESHOLD
+            if margin is None:
+                margin = config.PLOT_BBOX_MARGIN
+            if min_extent_frac is None:
+                min_extent_frac = config.PLOT_MIN_EXTENT_FRAC
+
+            lo, hi = _expanded_bbox(positions, margin, min_extent_frac)
+            names = []
+            for name in _BODY_NAMES:
+                center, radius = self._body_geometry(name)
+                closest = float(np.min(
+                    np.linalg.norm(positions - center, axis=1)))
+                near = closest < proximity_threshold * radius
+                if near or _in_bbox(center, lo, hi):
+                    names.append(name)
+            return names
+
+        # Explicit selection
+        if isinstance(spec, str):
+            requested = [spec]
+        else:
+            requested = list(spec)
+
+        names = []
+        for item in requested:
+            if not isinstance(item, str):
+                raise ValueError(
+                    f"Body designators must be strings, got "
+                    f"{type(item).__name__}: {item!r}"
+                )
+            name = item.strip().lower()
+            if name not in _BODY_NAMES:
+                raise ValueError(
+                    f"Unknown body designator {item!r}. Valid designators "
+                    f"are {', '.join(_BODY_NAMES)}, case-insensitive."
+                )
+            if name not in available:
+                raise ValueError(
+                    f"Body {item!r} was explicitly requested, but this "
+                    f"trajectory belongs to a {self.system.base_type.value} "
+                    f"system, which has only a primary body."
+                )
+            if name not in names:
+                names.append(name)
+
+        # Canonical order, so legend and trace order never depend on how the
+        # caller listed them.
+        return [name for name in _BODY_NAMES if name in names]
+
+    def _build_body_traces(
+        self,
+        names: Sequence[str],
+        color: str,
+        opacity: float,
+        skip_names: set | None = None) -> list:
+        """
+        Build Plotly Surface traces for the named bodies.
+
+        Each trace carries its canonical designator in `meta`, which is how
+        add_bodies recognizes bodies already on a figure, and the body's own
+        name (from BodyParams.name, falling back to 'Primary'/'Secondary')
+        in `name`, which is what hover displays. Keeping identity and label
+        in separate fields lets the label be whatever reads best without
+        weakening the duplicate check.
+
+        All traces are in the 'bodies' legend group. Surfaces default to
+        showlegend=False, so the group adds no legend entries; it exists so
+        the traces can be found again.
+
+        Parameters
+        ----------
+        names : sequence of str
+            Canonical designators to draw, already validated.
+        color : str
+            Surface color.
+        opacity : float
+            Surface opacity, 0.0 to 1.0.
+        skip_names : set, optional
+            Designators already on the target figure, omitted to avoid
+            duplicate spheres. Default: None (nothing skipped).
+
+        Returns
+        -------
+        list
+            List of go.Surface traces ready to add to a figure.
+        """
+        if skip_names is None:
+            skip_names = set()
+
+        u = np.linspace(0, 2 * np.pi, 30)
+        v = np.linspace(0, np.pi, 20)
+
+        traces = []
+        for name in names:
+            if name in skip_names:
+                continue
+
+            center, radius = self._body_geometry(name)
+            body = (self.system.primary_body if name == 'primary'
+                    else self.system.secondary_body)
+            label = getattr(body, 'name', None) or name.capitalize()
+
+            x = center[0] + radius * np.outer(np.cos(u), np.sin(v))
+            y = center[1] + radius * np.outer(np.sin(u), np.sin(v))
+            z = center[2] + radius * np.outer(np.ones(np.size(u)), np.cos(v))
+
+            traces.append(go.Surface(
+                x=x, y=y, z=z,
+                colorscale=[[0, color], [1, color]],
+                showscale=False,
+                opacity=opacity,
+                name=label,
+                meta=name,
+                legendgroup='bodies',
+                hoverinfo='name'
+            ))
+
+        return traces
+
+    def add_bodies(
+        self,
+        fig: go.Figure,
+        bodies: bool | str | Sequence[str] = True,
+        color: str | None = None,
+        opacity: float | None = None,
+        proximity_threshold: float | None = None,
+        n_points: int | None = None,
+        margin: float | None = None,
+        min_extent_frac: float | None = None) -> go.Figure:
+        """
+        Add primary and secondary body spheres to an existing Plotly figure.
+
+        The full-control entry point for bodies, mirroring
+        add_lagrange_points. For the common case pass `bodies` to plot_3d,
+        which delegates here with default styling.
+
+        Parameters
+        ----------
+        fig : go.Figure
+            Existing figure to modify in place.
+        bodies : bool, str, or sequence of str, optional
+            Selection of bodies to draw. True runs the automatic visibility
+            test (see Notes); 'primary', 'secondary', or a sequence of them
+            draws exactly those bodies; False draws nothing. Default: True.
+        color : str, optional
+            Surface color.
+            If None, uses config.DEFAULT_BODY_COLOR (default: None)
+        opacity : float, optional
+            Surface opacity.
+            If None, uses config.DEFAULT_BODY_OPACITY (default: None)
+        proximity_threshold : float, optional
+            Proximity half of the automatic test, in body radii.
+            If None, uses config.PROXIMITY_THRESHOLD (default: None)
+        n_points : int, optional
+            Number of trajectory samples used for the automatic test, in the
+            fallback case where the figure contains no line traces.
+            If None, uses config.DEFAULT_PLOT_POINTS (default: None)
+        margin : float, optional
+            Bounding box expansion fraction for the enclosure half of the
+            automatic test.
+            If None, uses config.PLOT_BBOX_MARGIN (default: None)
+        min_extent_frac : float, optional
+            Bounding box degenerate-dimension floor.
+            If None, uses config.PLOT_MIN_EXTENT_FRAC (default: None)
+
+        Returns
+        -------
+        go.Figure
+            The same figure object, modified in place.
+
+        Raises
+        ------
+        ValueError
+            If a designator is invalid, or 'secondary' is requested
+            explicitly on a 2-body system.
+
+        Notes
+        -----
+        In a CR3BP system the automatic test shows a body if the plotted
+        trajectories come within proximity_threshold radii of it, OR if its
+        center lies inside their expanded bounding box. The first catches
+        close approaches, the second catches orbits that enclose a body from
+        a distance. In a 2-body system the primary is always shown.
+
+        As with add_lagrange_points, the automatic test measures every line
+        trace already on the figure, not just this trajectory, so call it
+        after the trajectories are drawn. If the figure has no line traces,
+        this trajectory's own samples are used. Bodies already on the figure
+        are skipped, so repeated calls do not duplicate spheres.
+        """
+        if color is None:
+            color = config.DEFAULT_BODY_COLOR
+        if opacity is None:
+            opacity = config.DEFAULT_BODY_OPACITY
+        if n_points is None:
+            n_points = config.DEFAULT_PLOT_POINTS
+
+        # Automatic mode measures what is actually on the figure; fall back
+        # to this trajectory only if nothing has been drawn yet.
+        positions = _figure_line_positions(fig)
+        if positions is None:
+            positions = self.sample_raw(n_points=n_points)[:, 0:3]
+
+        names = self._resolve_body_names(
+            bodies, positions,
+            proximity_threshold=proximity_threshold,
+            margin=margin,
+            min_extent_frac=min_extent_frac
+        )
+        if not names:
+            return fig
+
+        existing = {
+            trace.meta for trace in fig.data
+            if getattr(trace, 'legendgroup', None) == 'bodies'
+        }
+
+        for trace in self._build_body_traces(
+                names, color, opacity, skip_names=existing):
             fig.add_trace(trace)
 
         return fig

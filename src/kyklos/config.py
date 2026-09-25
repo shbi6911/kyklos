@@ -113,22 +113,49 @@ class KyklosConfig:
     DEFAULT_PLOT_POINTS : int
         Default number of points for trajectory plotting.
         Default: 1000
+    DEFAULT_FAMILY_PLOT_POINTS : int
+        Samples per member in OrbitFamily.plot_3d. Lower than
+        DEFAULT_PLOT_POINTS because a family figure holds many orbits.
+        Default: 300
     DEFAULT_BODY_COLOR : str
         Default color for celestial bodies in plots.
         Default: 'lightblue'
     DEFAULT_TRAJ_COLOR : str
         Default color for trajectory lines in plots.
         Default: 'red'
+    DEFAULT_TRAJ_COLOR_ADD : str
+        Default color for additional trajectory lines added via add_to_plot.
+        Default: 'blue'
     DEFAULT_BODY_OPACITY : float
         Default opacity for celestial body spheres (0.0 to 1.0).
         Default: 0.6
     PROXIMITY_THRESHOLD : float
-        Show celestial body if trajectory within this many body radii.
-        Only affects CR3BP plotting.
+        Proximity half of the automatic body test: show a body if the
+        plotted trajectories come within this many body radii of it. The
+        other half is bounding-box enclosure (PLOT_BBOX_MARGIN). CR3BP only;
+        a 2-body primary is always shown.
         Default: 10.0
     RENDERER : str
         default renderer used by Plotly when displaying plots
         Default: 'browser'
+    PLOT_BBOX_MARGIN : float
+        Fractional expansion of the bounding box used by the automatic
+        visibility tests for bodies and Lagrange points. 0.25 grows each
+        half-width by 25 percent.
+        Default: 0.25
+    PLOT_MIN_EXTENT_FRAC : float
+        Floor on each bounding box half-width, as a fraction of the largest,
+        so a planar trajectory's box keeps some out-of-plane thickness.
+        Default: 0.05
+    DEFAULT_LAGRANGE_COLOR : str
+        Marker color for Lagrange points.
+        Default: 'black'
+    DEFAULT_LAGRANGE_SYMBOL : str
+        Plotly 3D marker symbol for Lagrange points.
+        Default: 'x'
+    DEFAULT_LAGRANGE_SIZE : int
+        Marker size for Lagrange points.
+        Default: 5
     """
     
     # Numerical tolerance for equality comparisons
@@ -157,6 +184,7 @@ class KyklosConfig:
     
     # Plotting defaults
     DEFAULT_PLOT_POINTS: int = 1000
+    DEFAULT_FAMILY_PLOT_POINTS: int = 300
     DEFAULT_BODY_COLOR: str = 'lightblue'
     DEFAULT_TRAJ_COLOR: str = 'red'
     DEFAULT_TRAJ_COLOR_ADD: str = 'blue'
@@ -164,12 +192,14 @@ class KyklosConfig:
     PROXIMITY_THRESHOLD: float = 10.0
     RENDERER: str = 'browser'
 
+    # Automatic visibility tests (bodies and Lagrange points)
+    PLOT_BBOX_MARGIN: float = 0.25
+    PLOT_MIN_EXTENT_FRAC: float = 0.05
+
     # Lagrange point plotting defaults
     DEFAULT_LAGRANGE_COLOR: str = 'black'
     DEFAULT_LAGRANGE_SYMBOL: str = 'x'
     DEFAULT_LAGRANGE_SIZE: int = 5
-    LAGRANGE_BBOX_MARGIN: float = 0.25
-    LAGRANGE_MIN_EXTENT_FRAC: float = 0.05
 
     @property
     def HASH_DECIMALS(self) -> int:
@@ -230,16 +260,18 @@ class KyklosConfig:
         lines.append(f"    PERIODICITY_TOL = {self.PERIODICITY_TOL}")
         lines.append("  Plotting:")
         lines.append(f"    DEFAULT_PLOT_POINTS = {self.DEFAULT_PLOT_POINTS}")
+        lines.append(f"    DEFAULT_FAMILY_PLOT_POINTS = {self.DEFAULT_FAMILY_PLOT_POINTS}")
         lines.append(f"    DEFAULT_BODY_COLOR = '{self.DEFAULT_BODY_COLOR}'")
         lines.append(f"    DEFAULT_TRAJ_COLOR = '{self.DEFAULT_TRAJ_COLOR}'")
         lines.append(f"    DEFAULT_TRAJ_COLOR_ADD = '{self.DEFAULT_TRAJ_COLOR_ADD}'")
         lines.append(f"    DEFAULT_BODY_OPACITY = {self.DEFAULT_BODY_OPACITY}")
         lines.append(f"    PROXIMITY_THRESHOLD = {self.PROXIMITY_THRESHOLD}")
         lines.append(f"    RENDERER = {self.RENDERER}")
+        lines.append(f"    PLOT_BBOX_MARGIN = {self.PLOT_BBOX_MARGIN}")
+        lines.append(f"    PLOT_MIN_EXTENT_FRAC = {self.PLOT_MIN_EXTENT_FRAC}")
         lines.append(f"    DEFAULT_LAGRANGE_COLOR = {self.DEFAULT_LAGRANGE_COLOR}")
         lines.append(f"    DEFAULT_LAGRANGE_SYMBOL = {self.DEFAULT_LAGRANGE_SYMBOL}")
-        lines.append(f"    LAGRANGE_BBOX_MARGIN = {self.LAGRANGE_BBOX_MARGIN}")
-        lines.append(f"    LAGRANGE_MIN_EXTENT_FRAC = {self.LAGRANGE_MIN_EXTENT_FRAC}")
+        lines.append(f"    DEFAULT_LAGRANGE_SIZE = {self.DEFAULT_LAGRANGE_SIZE}")
         return "\n".join(lines)
 
 

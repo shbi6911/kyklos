@@ -43,6 +43,8 @@ from typing import Any
 
 import numpy as np
 import pytest
+import plotly.graph_objects as go
+from kyklos.trajectory import _figure_line_positions
 
 import kyklos as ky
 from kyklos import temp_config
@@ -996,3 +998,152 @@ class TestClosureFailureRecord:
 
     def test_ratio_with_zero_threshold_is_inf(self):
         assert ClosureFailure(0, 1e-9, 0.0).ratio == np.inf
+
+# ===========================================================================
+# Plotting tests
+# ===========================================================================
+
+def _family_lines(fig):
+    """The member line traces, identified by their legend group."""
+    return [t for t in fig.data
+            if getattr(t, 'legendgroup', None) == 'family']
+ 
+ 
+def _colorbar(fig):
+    (bar,) = [t for t in fig.data if t.name == 'colorbar']
+    return bar
+ 
+ 
+class TestPlot3dArgumentChecks:
+    """Checks that must fail before any propagation."""
+ 
+    def test_bad_color_by_raises_without_propagating(self, family):
+        # The fake System has no propagate(). If validation came after
+        # to_orbits(), this would die with AttributeError instead -- a
+        # tripwire on the ordering, not just on the message.
+        family.attach_system(_FakeCR3BP())
+        with pytest.raises(ValueError, match="Unknown color_by"):
+            family.plot_3d(color_by='amplitude')
+        assert not family.has_multipliers
+ 
+ 
+@pytest.mark.slow
+class TestPlot3d:
+    """OrbitFamily.plot_3d over the five real Lyapunov members."""
+ 
+    N_POINTS = 50
+ 
+    # ---------- structure ----------
+ 
+    def test_one_line_per_member(self, make_real_family):
+        fam = make_real_family()
+        lines = _family_lines(fam.plot_3d(n_points=self.N_POINTS))
+        assert len(lines) == fam.n
+        assert all(len(t.x) == self.N_POINTS for t in lines)  # type: ignore
+ 
+    def test_default_points_come_from_config(self, make_real_family):
+        fam = make_real_family()
+        with temp_config(DEFAULT_FAMILY_PLOT_POINTS=40):
+            lines = _family_lines(fam.plot_3d())
+        assert all(len(t.x) == 40 for t in lines)  # type: ignore
+ 
+    def test_members_are_kept_out_of_the_legend(self, make_real_family):
+        fig = make_real_family().plot_3d(n_points=self.N_POINTS)
+        assert all(t.showlegend is False for t in _family_lines(fig))
+ 
+    def test_default_title_names_recipe_and_count(self, make_real_family):
+        fig = make_real_family().plot_3d(n_points=self.N_POINTS)
+        assert fig.layout.title.text == "lyapunov family: 5 members"
+ 
+    def test_colorbar_stays_out_of_the_figure_extent(self, make_real_family):
+        fam = make_real_family()
+        fig = fam.plot_3d(n_points=self.N_POINTS)
+        positions = _figure_line_positions(fig)
+        assert positions is not None
+        assert positions.shape == (fam.n * self.N_POINTS, 3)
+ 
+    # ---------- cache handling ----------
+ 
+    def test_releases_orbits_it_cached(self, make_real_family):
+        fam = make_real_family()
+        fam.plot_3d(n_points=self.N_POINTS)
+        assert not fam.has_orbits
+        assert fam.has_multipliers          # the cheap tier survives
+ 
+    def test_retain_orbits_keeps_them(self, make_real_family):
+        fam = make_real_family()
+        fam.plot_3d(n_points=self.N_POINTS, retain_orbits=True)
+        assert fam.has_orbits
+ 
+    def test_leaves_an_existing_cache_alone(self, make_real_family):
+        fam = make_real_family()
+        orbits = fam.to_orbits()
+        fam.plot_3d(n_points=self.N_POINTS)          # retain_orbits=False
+        assert fam.to_orbits() is orbits             # same cache, no repropagation
+ 
+    # ---------- coloring ----------
+ 
+    @pytest.mark.parametrize("color_by,title", [
+        ('index', 'member'),
+        ('jacobi', 'C'),
+        ('period', 'T [nd]'),
+        ('stability', 'log10(nu)'),
+    ])
+    def test_every_option_colors_and_labels(self, make_real_family,
+                                            color_by, title):
+        fig = make_real_family().plot_3d(n_points=self.N_POINTS,
+                                         color_by=color_by)
+        bar = _colorbar(fig)
+        assert bar.marker.showscale is True
+        assert bar.marker.colorbar.title.text == title
+        lines = _family_lines(fig)
+        # Five members span the parameter, so the end colors must differ.
+        assert lines[0].line.color != lines[-1].line.color
+ 
+    def test_stability_is_colored_on_a_log_scale(self, make_real_family):
+        fam = make_real_family()
+        fig = fam.plot_3d(n_points=self.N_POINTS, color_by='stability')
+        nu = fam.stability_indices()
+        bar = _colorbar(fig)
+        assert bar.marker.cmin == pytest.approx(np.log10(np.nanmin(nu)))
+        assert bar.marker.cmax == pytest.approx(np.log10(np.nanmax(nu)))
+ 
+    # ---------- hover ----------
+ 
+    def test_hover_reports_march_position_for_a_subfamily(
+            self, make_real_family):
+        sub = make_real_family()[2:]
+        lines = _family_lines(sub.plot_3d(n_points=self.N_POINTS))
+        assert lines[0].hovertemplate.startswith("member 2<br>")
+ 
+    def test_hover_carries_the_member_values(self, make_real_family):
+        fam = make_real_family()
+        lines = _family_lines(fam.plot_3d(n_points=self.N_POINTS))
+        text = lines[0].hovertemplate
+        assert f"C = {fam.jacobi_constants[0]:.8f}" in text
+        assert f"T = {fam.periods[0]:.8f}" in text
+        assert "%{x:.6g}" in text           # Plotly placeholder survived
+ 
+    # ---------- bodies and Lagrange points ----------
+ 
+    def test_lagrange_points_on_by_default(self, make_real_family):
+        fig = make_real_family().plot_3d(n_points=self.N_POINTS)
+        drawn = {t.name for t in fig.data
+                 if getattr(t, 'legendgroup', None) == 'lagrange_points'}
+        assert 'L1' in drawn
+ 
+    def test_bodies_false_passes_through(self, make_real_family):
+        fig = make_real_family().plot_3d(n_points=self.N_POINTS,
+                                         bodies=False)
+        assert not any(isinstance(t, go.Surface) for t in fig.data)
+ 
+    # ---------- closure failures ----------
+ 
+    def test_all_failed_raises_and_still_releases(self, make_real_family):
+        failing = make_real_family(closure_tol=1e-16)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            with pytest.raises(RuntimeError, match="nothing to plot"):
+                failing.plot_3d(n_points=self.N_POINTS)
+        # The finally clause ran even though the figure build raised.
+        assert not failing.has_orbits

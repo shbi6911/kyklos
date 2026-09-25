@@ -32,6 +32,8 @@ from __future__ import annotations
 
 import numpy as np
 import warnings
+import plotly.graph_objects as go
+from plotly.colors import sample_colorscale
 from dataclasses import dataclass
 from typing import Optional, Sequence, TYPE_CHECKING
 
@@ -40,6 +42,10 @@ from .exceptions import ClosureError
 from .orbital_elements import OrbitalElements, OEType
 from .periodic_orbit import PeriodicOrbit
 from .system import System, BodyParams
+# Private helper, shared until plotting moves to a visualization module.
+# A runtime import of trajectory is safe here for the same reason the System
+# import is: system already imports trajectory, so no new edge is created.
+from .trajectory import _apply_3d_layout
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -62,6 +68,17 @@ _MAX_REPORTED_INDICES = 10
 # heyoka integrator) can satisfy attach_system's check. Same idiom as
 # periodic_orbit.
 _CR3BP_SYS_VALUE = '3body'
+
+# Coloring options for plot_3d, mapped to their colorbar titles. Stability is
+# colored on a log scale: nu runs from ~1 to thousands across a typical
+# family, and a linear scale would crowd nearly every member into the bottom
+# of the colorscale.
+_COLOR_BY = {
+    'index': 'member',
+    'jacobi': 'C',
+    'period': 'T [nd]',
+    'stability': 'log10(nu)',
+}
 
 # Column names for the six state components in to_frame(), in the canonical
 # CR3BP order matching initial_states.
@@ -1325,6 +1342,249 @@ class OrbitFamily:
 
         index = pd.Index(self._member_indices.copy(), name='member')
         return pd.DataFrame(data, index=index)
+
+    # ========== PLOTTING ==========
+    def plot_3d(
+        self,
+        color_by: str = 'index',
+        colorscale: str = 'Viridis',
+        n_points: int | None = None,
+        bodies: bool | str | Sequence[str] | None = True,
+        lagrange_points: bool | str | Sequence[str] | None = True,
+        retain_orbits: bool = False,
+        title: str | None = None,
+        renderer: str | None = None) -> go.Figure:
+        """
+        Plot every member of the family on one 3D figure, colored by a
+        family parameter.
+
+        Expensive in the same way as to_orbits(), which it calls: n
+        integrations with the STM unless the orbits are already cached.
+        Slice first to plot a subset -- `family[::5].plot_3d()`,
+        `family[40:60].plot_3d()` -- which propagates only the selected
+        members.
+
+        Members that failed closure are skipped; the summarizing warning from
+        the propagation pass has already reported them, and the default
+        title shows how many members were drawn. Members are kept out of the
+        legend -- the colorbar and the per-member hover text identify them.
+
+        Parameters
+        ----------
+        color_by : {'index', 'jacobi', 'period', 'stability'}, optional
+            Parameter mapped onto the colorscale. 'index' is the position in
+            the original march (member_indices), so a subfamily keeps its
+            parent's numbering. 'stability' uses log10 of the stability
+            index. Default: 'index'.
+        colorscale : str, optional
+            Any Plotly named colorscale. Default: 'Viridis'.
+        n_points : int, optional
+            Samples per member.
+            If None, uses config.DEFAULT_FAMILY_PLOT_POINTS (default: None)
+        bodies : bool, str, or sequence of str, optional
+            Bodies to draw, as for Trajectory.plot_3d. The automatic test
+            measures the whole family. (default: True)
+        lagrange_points : bool, str, or sequence of str, optional
+            Lagrange points to draw, as for Trajectory.plot_3d. On by
+            default here: libration-point families are nearly always shown
+            with their point, and automatic mode draws only what falls in
+            the family's bounding box. (default: True)
+        retain_orbits : bool, optional
+            Keep the reconstructed PeriodicOrbits cached afterwards. If
+            False (default), orbits cached by this call are released when it
+            returns; orbits that were already cached before the call are
+            left alone. The multipliers survive either way.
+        title : str, optional
+            Figure title. If None, names the recipe and the member count.
+        renderer : str, optional
+            Plotly renderer to display with. If None, the figure is not
+            shown and config.RENDERER becomes the Plotly default.
+            (default: None)
+
+        Returns
+        -------
+        go.Figure
+            The new figure.
+
+        Raises
+        ------
+        ValueError
+            If color_by is not one of the listed options. Checked before any
+            propagation.
+        RuntimeError
+            If every member failed closure, leaving nothing to plot.
+        """
+        import plotly.io as pio
+
+        # Validated before anything expensive, so a typo costs nothing.
+        if color_by not in _COLOR_BY:
+            raise ValueError(
+                f"Unknown color_by {color_by!r}. Valid options are "
+                f"{', '.join(_COLOR_BY)}."
+            )
+        if n_points is None:
+            n_points = config.DEFAULT_FAMILY_PLOT_POINTS
+        if renderer is None:
+            pio.renderers.default = config.RENDERER
+
+        # Leave the orbit cache as it was found: release it afterwards only
+        # if this call is what filled it. The finally clause makes that hold
+        # even if building the figure raises.
+        had_orbits = self.has_orbits
+        try:
+            orbits = self.to_orbits()
+            fig = self._build_family_figure(
+                orbits, color_by, colorscale, n_points,
+                bodies, lagrange_points, title,
+            )
+        finally:
+            if not retain_orbits and not had_orbits:
+                self.clear_orbit_cache()
+
+        if renderer:
+            fig.show(renderer=renderer)
+
+        return fig
+
+    def _build_family_figure(
+        self,
+        orbits: tuple,
+        color_by: str,
+        colorscale: str,
+        n_points: int,
+        bodies: bool | str | Sequence[str] | None,
+        lagrange_points: bool | str | Sequence[str] | None,
+        title: str | None) -> go.Figure:
+        """
+        Assemble the family figure from reconstructed orbits.
+
+        Split from plot_3d so the cache bookkeeping there stays readable;
+        this function never touches the caches beyond reading multipliers
+        that to_orbits() has already filled.
+
+        Returns
+        -------
+        go.Figure
+
+        Raises
+        ------
+        RuntimeError
+            If every entry of orbits is None.
+        """
+        members = [(k, orbit) for k, orbit in enumerate(orbits)
+                   if orbit is not None]
+        if not members:
+            raise RuntimeError(
+                f"All {self.n} family members failed periodicity closure, "
+                f"so there is nothing to plot. See .closure_failures for "
+                f"per-member residuals."
+            )
+        keep = [k for k, _ in members]
+
+        # Free here: to_orbits() filled the multiplier cache on its way.
+        nu = self.stability_indices()
+
+        values = self._color_values(color_by, nu)[keep]
+        vmin, vmax = float(values.min()), float(values.max())
+        if vmax > vmin:
+            fractions = (values - vmin) / (vmax - vmin)
+        else:
+            # One member, or a column that is constant across the plotted
+            # members: color everything mid-scale and give the colorbar a
+            # nonzero span to draw.
+            fractions = np.full(len(keep), 0.5)
+            vmin, vmax = vmin - 0.5, vmax + 0.5
+        colors = sample_colorscale(colorscale, fractions.tolist())
+
+        fig = go.Figure()
+
+        for (k, orbit), color in zip(members, colors):
+            idx = int(self._member_indices[k])
+            # Adjacent string literals are joined at compile time, and only
+            # the f-prefixed pieces are formatted by Python. The plain pieces
+            # carry Plotly's %{x} placeholders through untouched, so no
+            # brace doubling is needed.
+            hover = (
+                f"member {idx}<br>"
+                f"C = {self._jacobi_constants[k]:.8f}<br>"
+                f"T = {self._periods[k]:.8f}<br>"
+                f"nu = {nu[k]:.6g}<br>"
+                "x: %{x:.6g}<br>y: %{y:.6g}<br>z: %{z:.6g}"
+                "<extra></extra>"
+            )
+            orbit.trajectory.add_to_plot(
+                fig, n_points=n_points, color=color, show_nodes=False,
+                traj_name=f"member {idx}", hovertemplate=hover,
+                legendgroup='family', showlegend=False,
+            )
+
+        # Colorbar carrier: a two-point, zero-size marker trace whose color
+        # array spans the value range. Marker-only, so _figure_line_positions
+        # skips it and it cannot widen the automatic-visibility box.
+        x0, y0, z0 = (float(c) for c in self._initial_states[keep[0], :3])
+        fig.add_trace(go.Scatter3d(
+            x=[x0, x0], y=[y0, y0], z=[z0, z0],
+            mode='markers',
+            marker=dict(
+                size=0,
+                color=[vmin, vmax],
+                colorscale=colorscale,
+                cmin=vmin,
+                cmax=vmax,
+                showscale=True,
+                colorbar=dict(title=dict(text=_COLOR_BY[color_by])),
+            ),
+            name='colorbar',
+            hoverinfo='skip',
+            showlegend=False,
+        ))
+
+        # Every member shares the System, so any member's trajectory can
+        # place bodies and Lagrange points; both measure the whole figure.
+        anchor = members[0][1].trajectory
+        if bodies is not None and bodies is not False:
+            anchor.add_bodies(fig, bodies=bodies, n_points=n_points)
+        if lagrange_points is not None and lagrange_points is not False:
+            anchor.add_lagrange_points(fig, points=lagrange_points,
+                                       n_points=n_points)
+
+        if title is None:
+            if len(members) < self.n:
+                title = (f"{self._recipe} family: {len(members)} of "
+                         f"{self.n} members")
+            else:
+                title = f"{self._recipe} family: {self.n} members"
+        _apply_3d_layout(fig, True, title)
+
+        return fig
+
+    def _color_values(self, color_by: str, nu: np.ndarray) -> np.ndarray:
+        """
+        The per-member values plot_3d maps onto the colorscale.
+
+        Parameters
+        ----------
+        color_by : str
+            A key of _COLOR_BY, already validated.
+        nu : np.ndarray, shape (n,)
+            Stability indices, passed in rather than recomputed.
+
+        Returns
+        -------
+        np.ndarray, shape (n,), dtype float
+            Aligned with the member table. NaN where a member failed
+            closure under 'stability'; the caller drops those rows before
+            taking any min or max.
+        """
+        if color_by == 'index':
+            return self._member_indices.astype(float)
+        if color_by == 'jacobi':
+            return np.asarray(self._jacobi_constants, dtype=float)
+        if color_by == 'period':
+            return np.asarray(self._periods, dtype=float)
+        # 'stability'
+        with np.errstate(invalid='ignore'):
+            return np.log10(nu)
 
     def summary(self) -> None:
         """

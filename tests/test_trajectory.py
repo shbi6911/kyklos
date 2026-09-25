@@ -14,10 +14,69 @@ import pytest
 import numpy as np
 import plotly.graph_objects as go
 from kyklos import (
-    System, earth, moon, EARTH_STD_ATMO,
+    System, earth, moon, EARTH_STD_ATMO, config,
     OE, OEType, Trajectory, Satellite, earth_2body
 )
-from kyklos import FreeJunctionNode
+from kyklos.trajectory import (FreeJunctionNode, _DEFAULT_HOVER, 
+                               _figure_line_positions)
+
+
+# ========== FIXTURES AND HELPERS ==========
+ 
+@pytest.fixture(scope="module")
+def em_system():
+    return System('3body', earth(), moon(), distance=384400.0)
+ 
+ 
+@pytest.fixture(scope="module")
+def tb_system():
+    return System('2body', earth())
+ 
+ 
+@pytest.fixture(scope="module")
+def cr3bp_traj(em_system):
+    """Very short arc near x = 0.8: far from both bodies on its own."""
+    state = np.array([0.8, 0.0, 0.0, 0.0, 0.1, 0.0])
+    return em_system.propagate(state, times=[0, 0.2])
+ 
+ 
+@pytest.fixture(scope="module")
+def tb_traj(tb_system):
+    orbit = OE(a=7000, e=0.01, i=np.radians(30), omega=0, w=0, nu=0)
+    return tb_system.propagate(orbit, times=[0, 5400])
+ 
+ 
+def _ring(center_x, radius, n=400):
+    """Planar circle in the x-y plane about (center_x, 0, 0)."""
+    theta = np.linspace(0.0, 2.0 * np.pi, n)
+    return np.column_stack([
+        center_x + radius * np.cos(theta),
+        radius * np.sin(theta),
+        np.zeros(n),
+    ])
+ 
+ 
+def _line_figure(positions):
+    """Figure holding one line trace, as a plotted trajectory would."""
+    fig = go.Figure()
+    fig.add_trace(go.Scatter3d(
+        x=positions[:, 0], y=positions[:, 1], z=positions[:, 2],
+        mode='lines',
+    ))
+    return fig
+ 
+ 
+def _surfaces(fig):
+    return [t for t in fig.data if isinstance(t, go.Surface)]
+ 
+ 
+# Sized against Earth-Moon: Moon radius ~0.00452 nd, so the default
+# 10-radius proximity band is ~0.045 nd (~17,000 km).
+L1_X = 0.8369
+ 
+ 
+def _moon_x(system):
+    return 1.0 - system.mass_ratio
 
 
 class TestElementTypeParameter:
@@ -364,7 +423,7 @@ class TestPlotting:
         orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
         traj = sys.propagate(orbit, times=[0,5400])
         
-        fig = traj.plot_3d(n_points=100, show_body=False)
+        fig = traj.plot_3d(n_points=100, bodies=False)
         
         assert isinstance(fig, go.Figure)
     
@@ -385,7 +444,7 @@ class TestPlotting:
         state = np.array([0.8, 0.0, 0.0, 0.0, 0.1, 0.0])
         traj = sys.propagate(state, times=[0,10])
         
-        fig = traj.plot_3d(n_points=100, show_body=False)
+        fig = traj.plot_3d(n_points=100, bodies=False)
         
         assert isinstance(fig, go.Figure)
     
@@ -815,6 +874,257 @@ class TestWithJunctionNodes:
         assert new is not multiseg_traj
         for j, snap in zip(multiseg_traj.junction_nodes, before):
             np.testing.assert_array_equal(j.post_state, snap)
+
+# ====================================
+# plotting tests
+# ====================================
+
+# ========== _body_geometry ==========
+ 
+class TestBodyGeometry:
+ 
+    def test_cr3bp_primary(self, cr3bp_traj, em_system):
+        center, radius = cr3bp_traj._body_geometry('primary')
+        assert center == pytest.approx([-em_system.mass_ratio, 0.0, 0.0])
+        assert radius == pytest.approx(em_system.primary_body.radius_nd)
+ 
+    def test_cr3bp_secondary(self, cr3bp_traj, em_system):
+        center, radius = cr3bp_traj._body_geometry('secondary')
+        assert center == pytest.approx([_moon_x(em_system), 0.0, 0.0])
+        assert radius == pytest.approx(em_system.secondary_body.radius_nd)
+ 
+    def test_two_body_primary_is_at_origin_in_km(self, tb_traj, tb_system):
+        center, radius = tb_traj._body_geometry('primary')
+        assert center == pytest.approx([0.0, 0.0, 0.0])
+        assert radius == pytest.approx(tb_system.primary_body.radius)
+ 
+ 
+# ========== _resolve_body_names: selection modes ==========
+ 
+class TestResolveSelectionModes:
+ 
+    @pytest.mark.parametrize("spec", [None, False])
+    def test_no_selection(self, cr3bp_traj, spec):
+        assert cr3bp_traj._resolve_body_names(spec, _ring(L1_X, 0.02)) == []
+ 
+    def test_two_body_automatic_always_primary(self, tb_traj):
+        # Positions deliberately irrelevant: every 2-body orbit is about
+        # its primary.
+        far = _ring(1.0e6, 10.0)
+        assert tb_traj._resolve_body_names(True, far) == ['primary']
+ 
+    def test_explicit_overrides_automatic(self, cr3bp_traj):
+        # This ring would select nothing automatically.
+        names = cr3bp_traj._resolve_body_names(
+            'primary', _ring(L1_X, 0.02))
+        assert names == ['primary']
+ 
+    def test_explicit_is_case_insensitive_and_trimmed(self, cr3bp_traj):
+        assert cr3bp_traj._resolve_body_names(
+            ' Secondary ', None) == ['secondary']
+ 
+    def test_explicit_is_canonical_order_and_deduplicated(self, cr3bp_traj):
+        names = cr3bp_traj._resolve_body_names(
+            ['secondary', 'primary', 'PRIMARY'], None)
+        assert names == ['primary', 'secondary']
+ 
+    def test_unknown_designator_raises(self, cr3bp_traj):
+        with pytest.raises(ValueError, match="Unknown body designator"):
+            cr3bp_traj._resolve_body_names('moon', None)
+ 
+    def test_non_string_designator_raises(self, cr3bp_traj):
+        with pytest.raises(ValueError, match="must be strings"):
+            cr3bp_traj._resolve_body_names([2], None)
+ 
+    def test_secondary_on_two_body_raises(self, tb_traj):
+        with pytest.raises(ValueError, match="only a primary"):
+            tb_traj._resolve_body_names('secondary', None)
+ 
+ 
+# ========== _resolve_body_names: the automatic rule ==========
+ 
+class TestResolveAutomaticRule:
+    """
+    The rule is proximity OR enclosure. Each case below is built so that
+    exactly one condition (or neither) holds, which pins down that both
+    halves are live and that neither alone is doing all the work.
+    """
+ 
+    def test_neither_condition_selects_nothing(self, cr3bp_traj):
+        # Small L1 ring: ~0.15 nd from the Moon, box nowhere near either.
+        names = cr3bp_traj._resolve_body_names(True, _ring(L1_X, 0.02))
+        assert names == []
+ 
+    def test_enclosure_alone_selects_body(self, cr3bp_traj, em_system):
+        """
+        A DRO-like ring about the Moon at ~0.18 nd (~70,000 km): never
+        within the ~0.045 nd proximity band, but the Moon sits in the box.
+        This is the case the proximity-only rule got wrong.
+        """
+        ring = _ring(_moon_x(em_system), 0.18)
+        closest = np.min(np.linalg.norm(
+            ring - [_moon_x(em_system), 0.0, 0.0], axis=1))
+        r_moon = em_system.secondary_body.radius_nd
+        assert closest > config.PROXIMITY_THRESHOLD * r_moon  # precondition
+ 
+        assert cr3bp_traj._resolve_body_names(True, ring) == ['secondary']
+ 
+    def test_proximity_alone_selects_body(self, cr3bp_traj, em_system):
+        """
+        A straight pass at y = 0.03 nd (~6.6 Moon radii): inside the
+        proximity band, but the box is a thin slab at y ~ 0.03 that does
+        not contain the Moon's center at y = 0.
+        """
+        x = np.linspace(0.9, 1.08, 300)
+        line = np.column_stack([x, np.full_like(x, 0.03), np.zeros_like(x)])
+        assert cr3bp_traj._resolve_body_names(True, line) == ['secondary']
+ 
+    def test_proximity_threshold_is_respected(self, cr3bp_traj):
+        # Same pass, threshold shrunk to one radius: now neither holds.
+        x = np.linspace(0.9, 1.08, 300)
+        line = np.column_stack([x, np.full_like(x, 0.03), np.zeros_like(x)])
+        names = cr3bp_traj._resolve_body_names(
+            True, line, proximity_threshold=1.0)
+        assert names == []
+ 
+ 
+# ========== add_bodies ==========
+ 
+class TestAddBodies:
+ 
+    def test_returns_same_figure(self, cr3bp_traj):
+        fig = go.Figure()
+        assert cr3bp_traj.add_bodies(fig) is fig
+ 
+    def test_measures_the_figure_not_the_trajectory(self, cr3bp_traj,
+                                                   em_system):
+        # cr3bp_traj alone selects nothing; the ring on the figure encloses
+        # the Moon, and the figure is what the automatic test measures.
+        fig = _line_figure(_ring(_moon_x(em_system), 0.18))
+        cr3bp_traj.add_bodies(fig)
+        assert [s.meta for s in _surfaces(fig)] == ['secondary']
+ 
+    def test_falls_back_to_own_samples_on_empty_figure(self, cr3bp_traj):
+        fig = go.Figure()
+        cr3bp_traj.add_bodies(fig)          # must not raise
+        assert _surfaces(fig) == []         # tiny arc near 0.8: nothing
+ 
+    def test_repeated_calls_do_not_duplicate(self, cr3bp_traj):
+        fig = go.Figure()
+        cr3bp_traj.add_bodies(fig, bodies='primary')
+        cr3bp_traj.add_bodies(fig, bodies=['primary', 'secondary'])
+        metas = [str(s.meta) for s in _surfaces(fig)]
+        assert sorted(metas) == ['primary', 'secondary']
+ 
+    def test_false_draws_nothing(self, cr3bp_traj):
+        fig = go.Figure()
+        cr3bp_traj.add_bodies(fig, bodies=False)
+        assert len(fig.data) == 0                       # type: ignore
+ 
+    def test_trace_identity_and_label(self, cr3bp_traj, em_system):
+        fig = go.Figure()
+        cr3bp_traj.add_bodies(fig, bodies='secondary')
+        (surface,) = _surfaces(fig)
+        expected_label = em_system.secondary_body.name or 'Secondary'
+        assert surface.meta == 'secondary'
+        assert surface.name == expected_label
+        assert surface.legendgroup == 'bodies'
+ 
+    def test_styling_arguments_applied(self, cr3bp_traj):
+        fig = go.Figure()
+        cr3bp_traj.add_bodies(fig, bodies='primary', color='gray',
+                              opacity=0.3)
+        (surface,) = _surfaces(fig)
+        assert surface.opacity == pytest.approx(0.3)
+        assert surface.colorscale[0][1] == 'gray'
+ 
+    def test_spheres_do_not_enter_the_figure_extent(self, cr3bp_traj):
+        """
+        Body surfaces must not feed the automatic tests, or drawing Earth
+        would drag the Lagrange bounding box across the whole system.
+        """
+        ring = _ring(L1_X, 0.02)
+        fig = _line_figure(ring)
+        cr3bp_traj.add_bodies(fig, bodies=['primary', 'secondary'])
+        positions = _figure_line_positions(fig)
+        assert positions is not None
+        assert positions.shape == ring.shape
+ 
+ 
+# ========== plot_3d ==========
+ 
+class TestPlot3dBodies:
+ 
+    def test_bodies_false_draws_no_surfaces(self, tb_traj):
+        fig = tb_traj.plot_3d(n_points=50, bodies=False)
+        assert _surfaces(fig) == []
+ 
+    def test_two_body_default_draws_primary(self, tb_traj):
+        fig = tb_traj.plot_3d(n_points=50)
+        assert [s.meta for s in _surfaces(fig)] == ['primary']
+ 
+    def test_bodies_drawn_after_trajectory_line(self, tb_traj):
+        # Order matters: the automatic tests measure line traces already on
+        # the figure, so the line must be added first.
+        fig = tb_traj.plot_3d(n_points=50, show_nodes=False)
+        kinds = [type(t).__name__ for t in fig.data]
+        assert kinds.index('Scatter3d') < kinds.index('Surface')
+ 
+    def test_show_body_keyword_is_gone(self, tb_traj):
+        # Documents the intentional signature break.
+        with pytest.raises(TypeError):
+            tb_traj.plot_3d(n_points=50, show_body=False)  # type: ignore
+ 
+    def test_line_uses_default_hover(self, tb_traj):
+        fig = tb_traj.plot_3d(n_points=50, bodies=False, show_nodes=False)
+        assert fig.data[0].hovertemplate == _DEFAULT_HOVER
+ 
+ 
+# ========== add_to_plot hover ==========
+ 
+class TestAddToPlotHover:
+ 
+    def test_default_hover_uses_significant_figures(self, cr3bp_traj):
+        fig = go.Figure()
+        cr3bp_traj.add_to_plot(fig, n_points=20, show_nodes=False)
+        assert fig.data[0].hovertemplate == _DEFAULT_HOVER
+        assert '.6g' in _DEFAULT_HOVER
+        assert '.1f' not in _DEFAULT_HOVER
+ 
+    def test_hovertemplate_override_does_not_collide(self, cr3bp_traj):
+        # Before the kwargs.pop fix this raised TypeError: multiple values
+        # for keyword argument 'hovertemplate'.
+        fig = go.Figure()
+        cr3bp_traj.add_to_plot(fig, n_points=20, show_nodes=False,
+                               hovertemplate='custom<extra></extra>')
+        assert fig.data[0].hovertemplate == 'custom<extra></extra>'
+ 
+    def test_other_kwargs_still_pass_through(self, cr3bp_traj):
+        fig = go.Figure()
+        cr3bp_traj.add_to_plot(fig, n_points=20, show_nodes=False,
+                               legendgroup='family', showlegend=False)
+        assert fig.data[0].legendgroup == 'family'
+        assert fig.data[0].showlegend is False
+ 
+ 
+# ========== config rename ==========
+ 
+class TestPlotConfigRename:
+ 
+    def test_new_names_exist_with_old_defaults(self):
+        assert config.PLOT_BBOX_MARGIN == pytest.approx(0.25)
+        assert config.PLOT_MIN_EXTENT_FRAC == pytest.approx(0.05)
+ 
+    @pytest.mark.parametrize("old", ["LAGRANGE_BBOX_MARGIN",
+                                     "LAGRANGE_MIN_EXTENT_FRAC"])
+    def test_old_names_are_gone(self, old):
+        assert not hasattr(config, old)
+ 
+    def test_repr_lists_plotting_settings(self):
+        text = repr(config)
+        for key in ("PLOT_BBOX_MARGIN", "PLOT_MIN_EXTENT_FRAC",
+                    "DEFAULT_LAGRANGE_SIZE"):
+            assert key in text
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
