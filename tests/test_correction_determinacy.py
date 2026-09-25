@@ -31,9 +31,8 @@ array flags, and raised exceptions. That is deliberate -- these contracts are
 settled and cheap to check, and checking them here means an end-to-end
 continuation failure has this whole layer already excluded.
 
-solve_recipe is NOT covered here. Its closer_factory signature is the least
-settled interface in the module and is expected to move when the continuation
-engine is written; testing it now would pin a design still in flux.
+solve_recipe is NOT covered here. This file was written prior to solve_recipe
+being settled design, so it has its own testing file.
 """
 
 import dataclasses

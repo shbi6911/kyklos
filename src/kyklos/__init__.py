@@ -60,7 +60,7 @@ from .shooter import (
 from .periodic_orbit import PeriodicOrbit
 from .orbit_family import OrbitFamily
 from .registry import available_recipes
-from .continuation import CorrectorGuess, available_layouts, correct_as
+from .continuation import CorrectorGuess, available_layouts, correct_as, march_family
 
 # helper utilities and config control
 from .utils import Timer

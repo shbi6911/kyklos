@@ -1,37 +1,69 @@
 """
-Recipe correction wrapper: correct a guess into a verified periodic orbit.
+Periodic-orbit correction and continuation over the recipe registry.
 
-correct_as is the public convenience entry point of the correction ecosystem.
-Given a CorrectorGuess -- a state, a period estimate, a family label, and the
-System it belongs to -- it looks up the family's correction recipe, runs the
-differential corrector, and returns a verified PeriodicOrbit. The user says
-"correct this as an L1 halo" and gets back a full family member with
-repropagation and closure validation done.
+Two public entry points share one solve pipeline:
 
-CorrectorGuess lives in this module (it carries a System, so it belongs above
-the dependency-free registry leaf). The registry -- recipe entries and the
-label vocabulary -- exists in registry.py.
+correct_as(guess)
+    Isolated correction. Given a CorrectorGuess -- a state, a period
+    estimate, a recipe label, and the System it belongs to -- it returns a
+    verified PeriodicOrbit. The user says "correct this as an L1 halo" and
+    gets back a family member with repropagation and closure validation
+    done.
 
-This module also contains determinacy-layout transforms.
+march_family(orbit, recipe, ds=...)
+    Pseudo-arclength continuation. Given one converged PeriodicOrbit, it
+    walks the family at a fixed arclength step and returns the converged
+    members as an OrbitFamily.
 
-A correction *recipe* fixes the invariant family geometry (perpendicular-
-crossing free_vars and constraints). A *layout* selects which family member the
-corrector converges to, by choosing which of the recipe's freedoms is pinned
-and whether a node time is freed to keep the shooting system square. Recipe and
-layout are orthogonal: the recipe says which family, the layout says which
-member-selection coordinate.
+Vocabulary
+----------
+Three orthogonal choices define a solve:
 
-Currently supported layouts are period_locked (the default) and x_amplitude_locked.
-x_amplitude_locked is used by default when correcting from a planar seed via the
-CorrectorGuess.from_seeder_result() method.  If a period_locked correction
-from a seed is desired, the CorrectorGuess can be constructed standalone.
+- A *recipe* (registry.py) fixes the invariant family geometry: which start
+  components are free, which terminal conditions are targeted, and how the
+  phase is pinned. It says which family.
+- A *layout* (_LAYOUTS) is a corank-preserving transform used by isolated
+  correction. It selects which member the corrector converges to by
+  choosing which freedom to pin, keeping the system square. period_locked
+  is the default; CorrectorGuess.from_seeder_result() selects
+  x_amplitude_locked for a planar seed.
+- A *scheme* (_SCHEMES) is a corank-opening transform paired with the
+  closing constraint that squares the system back up at each step. It is
+  what turns an isolated solve into a march. pseudo_arclength is the only
+  scheme so far.
+
+Organization
+------------
+The module reads from building blocks up to their consumers:
+
+1. continuation helpers (_family_tangent and its direction check)
+2. CorrectorGuess, the validated input to correct_as
+3. layouts, then the SolveSpec and ContinuationRef input records
+4. schemes
+5. solve_recipe, the atomic operator both entry points call: it takes a
+   built SolveSpec and an already-propagated guess trajectory, optionally
+   appends one closer, and returns the raw ShooterResult
+6. correct_as, then the march machinery and march_family
+
+Spec construction and guess propagation belong to the callers, not to
+solve_recipe. One consequence is that the half- vs full-period convention
+is a caller obligation. Under symmetry pinning every solve integrates a
+half arc to the next perpendicular crossing, so each entry point must hand
+solve_recipe a half-arc guess and double the solved duration to recover the
+full period. A full-period guess still converges -- the end of a full
+period is also a crossing -- but silently, to the wrong multiple.
+
+CorrectorGuess lives here rather than in registry.py because it carries a
+System, and the registry stays a dependency-free leaf. This module imports
+OrbitFamily; orbit_family imports nothing from here, so no cycle forms.
 """
 import numpy as np
 from typing import NamedTuple, Callable, Any, TYPE_CHECKING
 from dataclasses import dataclass
 import warnings
 
-from .registry import _RECIPES, _RecipeEntry, available_recipes, period_convention_for
+from .registry import (_RECIPES, _RecipeEntry, available_recipes, 
+                       period_convention_for)
 from .shooter import (DifferentialCorrector, TargetState, ShooterResult,
                       Constraint, ConstraintSpace, FreeVarConstraint,
                       PseudoArclength)

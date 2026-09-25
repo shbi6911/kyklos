@@ -45,7 +45,11 @@ Three levels of check, in increasing strength:
    space; measured agreement is 0.016 degrees, against a tolerance of 0.5
    set by the secant's own first-order truncation.
 
-Every test here propagates, so the whole module is marked slow.
+ The payload and Jacobian tests propagate and are marked slow class
+by class. The tangent-function tests at the bottom (_check_direction
+and _family_tangent) are pure linear algebra on synthetic matrices
+and run in the fast tier; one slow class ties the function back to
+a real DH.
 """
 
 import numpy as np
@@ -61,9 +65,7 @@ from kyklos.shooter import (
     _unpack,
     _BlockKind,
 )
-
-
-pytestmark = pytest.mark.slow
+from kyklos.continuation import _check_direction, _family_tangent
 
 
 # The recipe geometry under test: the planar Lyapunov perpendicular-crossing
@@ -216,6 +218,7 @@ def closed_solve(half_arc_guess):
 # Payload provenance
 # ===========================================================================
 
+@pytest.mark.slow
 class TestContinuationPayload:
     """When the payload appears, and what it carries."""
 
@@ -301,6 +304,7 @@ class TestContinuationPayload:
 # The Jacobian itself
 # ===========================================================================
 
+@pytest.mark.slow
 class TestUnclosedJacobian:
     """DH against an independent finite-difference oracle."""
 
@@ -360,6 +364,7 @@ class TestUnclosedJacobian:
 # The tangent DH is supposed to carry
 # ===========================================================================
 
+@pytest.mark.slow
 class TestFamilyTangent:
     """DH's null space, and whether it points along the family."""
 
@@ -427,4 +432,347 @@ class TestFamilyTangent:
             null = -null
         angle = np.degrees(np.arccos(np.clip(secant @ null, -1.0, 1.0)))
 
+        assert angle < 0.5
+
+# ===========================================================================
+# The tangent function: DH -> t_hat
+# ===========================================================================
+#
+# _family_tangent is pure linear algebra, so most of it is tested on
+# synthetic DH matrices whose null direction is known exactly. _dh_with_null
+# builds one: an orthonormal basis for the complement of a chosen vector v,
+# mixed by a random, well-conditioned matrix so the rows look nothing like
+# that basis. The null space is span(v) by construction, and the sign SVD
+# hands back for it is arbitrary -- which is exactly the ambiguity the
+# sign-resolution logic exists to settle.
+
+def _dh_with_null(v, seed: int = 0) -> np.ndarray:
+    """
+    Return a (n - 1, n) matrix whose null space is exactly span(v).
+
+    Rows 1.. of the full right-singular basis of v^T span v's orthogonal
+    complement; a random mixing matrix (identity-shifted to stay well
+    conditioned) scrambles them without changing the row space.
+    """
+    v = np.asarray(v, dtype=float)
+    v = v / np.linalg.norm(v)
+    n = v.size
+    complement = np.linalg.svd(v.reshape(1, -1))[2][1:]
+    rng = np.random.default_rng(seed)
+    mix = rng.normal(size=(n - 1, n - 1)) + 3.0 * np.eye(n - 1)
+    return mix @ complement
+
+
+# A unit null direction with a nonzero period component (the last entry),
+# so seed mode is well-posed: (1, 2, 2) / 3.
+_V = np.array([1.0, 2.0, 2.0]) / 3.0
+
+# dT/dX for n_X = 3 with the period in the last column, the single-shooting
+# layout [x, vy, T_half].
+_E_T = np.array([0.0, 0.0, 1.0])
+
+
+class TestCheckDirection:
+    """The shared direction validator used by _family_tangent and the march."""
+
+    @pytest.mark.parametrize("value", [1, -1, np.int64(1), np.int32(-1)])
+    def test_accepts_plus_and_minus_one(self, value):
+        out = _check_direction(value)
+        assert out == int(value)
+
+    def test_returns_a_plain_int(self):
+        """NumPy integers come back as Python ints, not np.int64."""
+        assert type(_check_direction(np.int64(-1))) is int
+
+    @pytest.mark.parametrize("value", [True, False])
+    def test_rejects_bool(self, value):
+        """
+        bool subclasses int, so True would otherwise pass as 1. Rejected so a
+        boolean is never silently read as a direction.
+        """
+        with pytest.raises(TypeError, match="must be an integer"):
+            _check_direction(value)
+
+    @pytest.mark.parametrize("value", [1.0, "1", None])
+    def test_rejects_non_integers(self, value):
+        with pytest.raises(TypeError, match="must be an integer"):
+            _check_direction(value)
+
+    @pytest.mark.parametrize("value", [0, 2, -2])
+    def test_rejects_other_integers(self, value):
+        with pytest.raises(ValueError, match="must be 1 or -1"):
+            _check_direction(value)
+
+
+class TestFamilyTangentNullDirection:
+    """Whatever the mode, the result spans DH's null space and is unit."""
+
+    @pytest.mark.parametrize("n", [3, 4])
+    def test_returns_a_unit_vector(self, n):
+        v = np.arange(1.0, n + 1.0)
+        t = _family_tangent(_dh_with_null(v), prev_t_hat=v / np.linalg.norm(v))
+        assert np.linalg.norm(t) == pytest.approx(1.0, abs=1e-14)
+
+    @pytest.mark.parametrize("n", [3, 4])
+    def test_annihilates_DH(self, n):
+        v = np.arange(1.0, n + 1.0)
+        DH = _dh_with_null(v)
+        t = _family_tangent(DH, prev_t_hat=v / np.linalg.norm(v))
+        assert np.linalg.norm(DH @ t) < 1e-12 * np.linalg.norm(DH)
+
+    def test_is_parallel_to_the_known_null_direction(self):
+        t = _family_tangent(_dh_with_null(_V), prev_t_hat=_V)
+        assert abs(t @ _V) == pytest.approx(1.0, abs=1e-12)
+
+    def test_the_economy_svd_trap_is_real(self):
+        """
+        Why full_matrices=True is load-bearing. DH is one column wider than
+        tall, so the economy SVD returns only n_X - 1 right singular vectors
+        -- every one of them for a genuine, nonzero singular value. Its last
+        row is a plausible-looking unit vector that does NOT annihilate DH.
+        The first assertion proves the trap exists for this matrix, so the
+        second is not passing vacuously.
+        """
+        DH = _dh_with_null(_V)
+        economy_last = np.linalg.svd(DH, full_matrices=False)[2][-1]
+        t = _family_tangent(DH, prev_t_hat=_V)
+
+        assert np.linalg.norm(DH @ economy_last) > 1e-3 * np.linalg.norm(DH)
+        assert np.linalg.norm(DH @ t) < 1e-12 * np.linalg.norm(DH)
+
+    def test_depends_only_on_the_null_space(self):
+        """
+        Two DH matrices with different rows but the same null space give the
+        same resolved tangent. The row mixing is how a real corrector
+        Jacobian differs from any tidy basis, so this is the property that
+        makes the synthetic tests stand in for real ones.
+        """
+        t_a = _family_tangent(_dh_with_null(_V, seed=1), dT_dX=_E_T)
+        t_b = _family_tangent(_dh_with_null(_V, seed=2), dT_dX=_E_T)
+        np.testing.assert_allclose(t_a, t_b, atol=1e-12)
+
+    def test_is_invariant_to_scaling_DH(self):
+        DH = _dh_with_null(_V)
+        np.testing.assert_allclose(
+            _family_tangent(1e6 * DH, dT_dX=_E_T),
+            _family_tangent(DH, dT_dX=_E_T),
+            atol=1e-12,
+        )
+
+
+class TestFamilyTangentContinuityMode:
+    """prev_t_hat given: flip if needed to agree with the previous tangent."""
+
+    @pytest.mark.parametrize("sign", [1.0, -1.0])
+    def test_aligns_with_the_previous_tangent(self, sign):
+        prev = sign * _V
+        t = _family_tangent(_dh_with_null(_V), prev_t_hat=prev)
+        assert t @ prev > 0.0
+        np.testing.assert_allclose(t, prev, atol=1e-12)
+
+    @pytest.mark.parametrize("seed", range(10))
+    def test_sign_does_not_depend_on_the_svd_convention(self, seed):
+        """
+        Different row mixings leave SVD free to return either sign for the
+        null vector; the resolved tangent must come out the same every time.
+        """
+        t = _family_tangent(_dh_with_null(_V, seed=seed), prev_t_hat=_V)
+        np.testing.assert_allclose(t, _V, atol=1e-12)
+
+    def test_aligns_with_a_rotated_previous_tangent(self):
+        """
+        In a march the previous tangent is not the current null vector, only
+        close to it. A prev rotated a few degrees off still selects the
+        nearby sign.
+        """
+        off = np.array([2.0, -1.0, 0.0]) / np.sqrt(5.0)   # orthogonal to _V
+        prev = _V + 0.1 * off
+        prev = prev / np.linalg.norm(prev)
+        t = _family_tangent(_dh_with_null(_V), prev_t_hat=prev)
+        np.testing.assert_allclose(t, _V, atol=1e-12)
+
+    def test_direction_is_ignored(self):
+        """Sign comes from prev_t_hat alone; direction is for seed mode."""
+        DH = _dh_with_null(_V)
+        np.testing.assert_allclose(
+            _family_tangent(DH, prev_t_hat=_V, direction=-1),
+            _family_tangent(DH, prev_t_hat=_V, direction=1),
+            atol=1e-14,
+        )
+
+
+class TestFamilyTangentSeedMode:
+    """dT_dX given: sign so the period moves the way `direction` asks."""
+
+    def test_plus_one_points_toward_increasing_period(self):
+        t = _family_tangent(_dh_with_null(_V), dT_dX=_E_T, direction=1)
+        assert t @ _E_T > 0.0
+
+    def test_minus_one_points_toward_decreasing_period(self):
+        t = _family_tangent(_dh_with_null(_V), dT_dX=_E_T, direction=-1)
+        assert t @ _E_T < 0.0
+
+    def test_the_two_directions_are_exact_opposites(self):
+        DH = _dh_with_null(_V)
+        np.testing.assert_allclose(
+            _family_tangent(DH, dT_dX=_E_T, direction=-1),
+            -_family_tangent(DH, dT_dX=_E_T, direction=1),
+            atol=1e-14,
+        )
+
+    @pytest.mark.parametrize("seed", range(10))
+    def test_sign_does_not_depend_on_the_svd_convention(self, seed):
+        t = _family_tangent(_dh_with_null(_V, seed=seed), dT_dX=_E_T)
+        np.testing.assert_allclose(t, _V, atol=1e-12)
+
+    def test_only_the_sign_of_dT_dX_matters(self):
+        """
+        The march passes the honest gradient (2.0 in the period column, for
+        a half-arc solve), not a one-hot. Scaling must change nothing.
+        """
+        DH = _dh_with_null(_V)
+        np.testing.assert_allclose(
+            _family_tangent(DH, dT_dX=2.0 * _E_T),
+            _family_tangent(DH, dT_dX=_E_T),
+            atol=1e-14,
+        )
+
+    def test_raises_at_a_period_extremum(self):
+        """
+        A null direction with no period component is the seed-at-an-extremum
+        case: the period does not change to first order along the family, so
+        'increasing period' does not pick a side.
+        """
+        v = np.array([0.6, -0.8, 0.0])
+        with pytest.raises(ValueError, match="degenerate"):
+            _family_tangent(_dh_with_null(v), dT_dX=_E_T)
+
+    def test_a_small_but_resolvable_period_component_is_accepted(self):
+        """
+        The degeneracy threshold is relative (1e-8 of |dT_dX|), not a demand
+        for a large period component. A tangent that is mostly state-space
+        but carries a clear period slope still signs.
+        """
+        v = np.array([1.0, 1.0, 1e-6])
+        t = _family_tangent(_dh_with_null(v), dT_dX=_E_T, direction=1)
+        assert t @ _E_T > 0.0
+
+
+class TestFamilyTangentValidation:
+    """Argument checks. Messages are matched so the right check is proven."""
+
+    def test_requires_one_of_the_two_modes(self):
+        with pytest.raises(ValueError, match="Exactly one of"):
+            _family_tangent(_dh_with_null(_V))
+
+    def test_rejects_both_modes_at_once(self):
+        with pytest.raises(ValueError, match="Exactly one of"):
+            _family_tangent(_dh_with_null(_V), prev_t_hat=_V, dT_dX=_E_T)
+
+    def test_rejects_a_one_dimensional_DH(self):
+        with pytest.raises(ValueError, match="must be 2-D"):
+            _family_tangent(np.ones(3), prev_t_hat=_V)
+
+    @pytest.mark.parametrize("shape", [(3, 3), (3, 2), (1, 3)])
+    def test_rejects_a_DH_that_is_not_corank_one_shaped(self, shape):
+        with pytest.raises(ValueError, match="exactly one more column"):
+            _family_tangent(np.ones(shape), prev_t_hat=_V)
+
+    def test_rejects_a_nonfinite_DH(self):
+        DH = _dh_with_null(_V)
+        DH[0, 1] = np.nan
+        with pytest.raises(ValueError, match="DH must be finite"):
+            _family_tangent(DH, prev_t_hat=_V)
+
+    def test_rejects_a_prev_t_hat_of_the_wrong_width(self):
+        with pytest.raises(ValueError, match="prev_t_hat must have shape"):
+            _family_tangent(_dh_with_null(_V), prev_t_hat=np.ones(4))
+
+    def test_rejects_a_nonfinite_prev_t_hat(self):
+        with pytest.raises(ValueError, match="prev_t_hat must be finite"):
+            _family_tangent(_dh_with_null(_V),
+                            prev_t_hat=np.array([1.0, np.inf, 0.0]))
+
+    def test_rejects_a_dT_dX_of_the_wrong_width(self):
+        with pytest.raises(ValueError, match="dT_dX must have shape"):
+            _family_tangent(_dh_with_null(_V), dT_dX=np.ones(2))
+
+    def test_rejects_a_nonfinite_dT_dX(self):
+        with pytest.raises(ValueError, match="dT_dX must be finite"):
+            _family_tangent(_dh_with_null(_V),
+                            dT_dX=np.array([0.0, 0.0, np.nan]))
+
+    def test_rejects_an_all_zero_dT_dX(self):
+        with pytest.raises(ValueError, match="identically zero"):
+            _family_tangent(_dh_with_null(_V), dT_dX=np.zeros(3))
+
+    @pytest.mark.parametrize("mode", ["continuity", "seed"])
+    def test_validates_direction_in_both_modes(self, mode):
+        """
+        direction is only *used* in seed mode, but a bad value is still a
+        caller error in continuity mode and is rejected there too.
+        """
+        kwargs = ({"prev_t_hat": _V} if mode == "continuity"
+                  else {"dT_dX": _E_T})
+        with pytest.raises(TypeError, match="must be an integer"):
+            _family_tangent(_dh_with_null(_V), direction=True, **kwargs)
+        with pytest.raises(ValueError, match="must be 1 or -1"):
+            _family_tangent(_dh_with_null(_V), direction=0, **kwargs)
+
+
+@pytest.mark.slow
+class TestFamilyTangentOnRealDH:
+    """
+    The synthetic tests above pin the linear algebra; these tie it back to
+    a DH the corrector actually produced, reusing this module's fixtures.
+    """
+
+    def test_seed_mode_signs_a_real_tangent(self, closed_solve):
+        """
+        On a real corank-1 DH, both directions give null vectors of DH with
+        opposite period slopes. The period is the last X column for the
+        (x, vy) + free end time layout.
+        """
+        result, _, _ = closed_solve
+        DH = result.continuation.DH
+        t_up = _family_tangent(DH, dT_dX=_E_T, direction=1)
+        t_down = _family_tangent(DH, dT_dX=_E_T, direction=-1)
+
+        assert t_up[-1] > 0.0
+        assert t_down[-1] < 0.0
+        assert np.linalg.norm(DH @ t_up) < 1e-10 * np.linalg.norm(DH)
+
+    def test_continuity_mode_follows_the_family(self, clean_guess):
+        """
+        The existing null-vector test aligns SVD's sign by hand before
+        comparing to the secant. Here _family_tangent does the aligning:
+        handed the secant as the previous direction, it must return the null
+        vector that points along the family, to the same 0.5 degree
+        tolerance, with no manual sign fix.
+        """
+        base = (TargetState(dict(_TARGETS)),)
+        ctx_open = _ShootingContext.from_guess(
+            clean_guess, _FREE_VARS, base, _FREE_TIMES, None
+        )
+        X0 = _pack(clean_guess, ctx_open)
+        corrector = DifferentialCorrector()
+
+        def member(ds):
+            constraints = base + (PseudoArclength(X0, _T_HAT, ds),)
+            out = corrector.solve(
+                clean_guess, free_vars=_FREE_VARS, free_times=_FREE_TIMES,
+                constraints=constraints, continuation=True,
+            )
+            assert out.converged, f"member at ds={ds} did not converge"
+            assert out.continuation is not None
+            return out.continuation
+
+        near, far = member(_DS), member(2.0 * _DS)
+        secant = np.asarray(far.X) - np.asarray(near.X)
+        secant = secant / np.linalg.norm(secant)
+
+        t = _family_tangent(near.DH, prev_t_hat=secant)
+        angle = np.degrees(np.arccos(np.clip(t @ secant, -1.0, 1.0)))
+
+        assert t @ secant > 0.0
         assert angle < 0.5
