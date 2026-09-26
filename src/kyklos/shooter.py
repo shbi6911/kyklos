@@ -2625,9 +2625,9 @@ class ShooterResult:
     final_residual : float
         The 2-norm of the constraint vector at the last evaluated iterate.
     abort_reason : str or None
-        Set when the solve stopped on a failure (propagation error,
-        non-finite residual, or condition number above cond_fail). None
-        otherwise, including ordinary non-convergence by budget.
+        Why the solve stopped without converging: propagation error,
+        non-finite residual, condition number above cond_fail, or iteration
+        budget (max_iter) exhausted. None if and only if converged.
     diagnostics : dict or None
         Per-iteration residual and condition-number history, final rank, and
         abort reason. Populated only when solve(diagnostics=True).
@@ -2874,6 +2874,8 @@ class DifferentialCorrector:
                 converged = True
                 break
             if iterations >= self.max_iter:
+                abort_reason = (f"max_iter {self.max_iter} reached with "
+                                f"residual {res:.3e} (tol {self.tol:.3e})")
                 break
 
             DF = _assemble_DF(traj, ctx, X)

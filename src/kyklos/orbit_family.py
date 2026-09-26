@@ -1532,7 +1532,13 @@ class OrbitFamily:
                 cmin=vmin,
                 cmax=vmax,
                 showscale=True,
-                colorbar=dict(title=dict(text=_COLOR_BY[color_by])),
+                # Shortened and pinned to the bottom so it clears the legend
+                colorbar=dict(
+                    title=dict(text=_COLOR_BY[color_by]),
+                    len=0.55,
+                    y=0.0,
+                    yanchor='bottom',
+                ),
             ),
             name='colorbar',
             hoverinfo='skip',

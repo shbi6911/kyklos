@@ -1794,9 +1794,8 @@ def march_family(
             message=(
                 f"march_family bootstrap failed: the seed orbit did not "
                 f"re-converge under the march's corank-1 spec "
-                f"(abort_reason={result.abort_reason!r}, final residual "
-                f"{result.final_residual:.3e} after {result.iterations} "
-                f"iterations). The seed may not be a {recipe!r} member, or "
+                f"(abort_reason={result.abort_reason!r}, "
+                f"The seed may not be a {recipe!r} member, or "
                 f"the corrector tolerance may be tighter than the seed was "
                 f"converged to."
             ),
@@ -1823,10 +1822,8 @@ def march_family(
                 or result.continuation is None):
             warnings.warn(
                 f"march_family stopped early: step {k} of {n_steps} did "
-                f"not converge (abort_reason={result.abort_reason!r}, "
-                f"final residual {result.final_residual:.3e} after "
-                f"{result.iterations} iterations). Returning the "
-                f"{len(periods)} member(s) converged so far.",
+                f"not converge (abort_reason={result.abort_reason!r}. "
+                f"Returning the {len(periods)} member(s) converged so far.",
                 UserWarning,
                 stacklevel=2,
             )

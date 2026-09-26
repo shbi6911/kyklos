@@ -1264,7 +1264,8 @@ class TestSolveConvergence:
 
 
 class TestSolveAborts:
-    """The three graceful aborts: a recorded reason, converged False, no raise."""
+    """The three failure aborts: a recorded reason, converged False, no raise.
+    (Budget exhaustion, the fourth stop reason, is in TestSolveBudget.)"""
 
     def test_propagation_failure(self, make_fake_trajectory):
         guess = _linear_guess(make_fake_trajectory, _RaisingSystem(), np.ones(6))
@@ -1295,16 +1296,27 @@ class TestSolveAborts:
 
 
 class TestSolveBudget:
-    def test_budget_exhaustion_is_not_an_abort(self, make_fake_trajectory, 
-                                               make_linear_system):
-        # max_iter=0 hits the budget before any step: non-convergence, but
-        # abort_reason stays None (ordinary budget exhaustion, not a failure).
+    def test_budget_exhaustion_sets_abort_reason(self, make_fake_trajectory,
+                                                 make_linear_system):
+        # max_iter=0 hits the budget before any step: non-convergence, with
+        # the budget named as the stop reason.
         system = _linear_system(make_linear_system)
         guess = _linear_guess(make_fake_trajectory, system, np.ones(6))
         result = DifferentialCorrector(max_iter=0).solve(
             guess, 'all', constraints=[Periodicity()])
         assert not result.converged
         assert result.iterations == 0
+        assert result.abort_reason is not None
+        assert "max_iter" in result.abort_reason
+
+    def test_converged_solve_has_no_abort_reason(self, make_fake_trajectory,
+                                                 make_linear_system):
+        # The other half of the invariant: abort_reason is None iff converged.
+        system = _linear_system(make_linear_system)
+        guess = _linear_guess(make_fake_trajectory, system, np.ones(6))
+        result = DifferentialCorrector().solve(
+            guess, 'all', constraints=[Periodicity()])
+        assert result.converged
         assert result.abort_reason is None
 
 
