@@ -1,57 +1,208 @@
 
 import kyklos as ky
 
-print(f"We first establish an Earth-Moon CR3BP System.")
-sys = ky.earth_moon_cr3bp()
+# ============================================================================
+# User Input Parameters
+# ============================================================================
+def get_user_inputs(defaults):
+    """
+    Prompt user for benchmark configuration parameters.
+    
+    Returns
+    -------
+    dict
+        Configuration parameters
+    """
 
-print(f"We get a planar seed from linearizing about L1, which requires "
-      f"evaluating the system's Jacobian at the point.")
-seed = sys.planar_seeder('L1')
-print(f"We correct this initial guess into a PeriodicOrbit.  This requires the "
+    if (not isinstance(defaults['family'], str) or 
+        defaults['family'].strip().lower() not in ['lyapunov', 'halo']):
+        print("Family must be 'lyapunov' or 'halo' ")
+
+        while True:
+            msg = "Choose 'lyapunov' or 'halo' : "
+            family = input(msg).strip().lower()
+            
+            if family in ['lyapunov', 'halo']:
+                break  # Valid input received, exit the loop
+                
+            print("Invalid choice. Please enter 'lyapunov' or 'halo' ")
+    family = defaults['family']
+
+    if family == 'lyapunov':
+        lagrange = 'L1'
+    if family == 'halo':
+        lagrange = 'L2'
+
+    print("="*70)
+    print(f"Earth-Moon Periodic Orbit {family.capitalize()} Family Parameters")
+    print("="*70)
+    
+    # Step Size and Number of orbits
+    print("\n1. Number of Orbits and Pseudo-Arc Length step size")
+    print(f"   More orbits will take longer.  Larger step size is more likely to\n" 
+          f"   jump to the wrong family.")
+    print(f"   Defaults: {defaults['n_steps']} orbits at step size {defaults['ds']} ")
+    
+    while True:
+        try:
+            n_steps_input = input(f"   Number of orbits "
+                                  f"[{defaults['n_steps']}]: ").strip()
+            n_steps = int(n_steps_input) if n_steps_input else defaults['n_steps']
+            if n_steps <= 1:
+                print("   Error: Must have positive number of steps")
+                continue
+            break
+        except ValueError:
+            print("   Error: Please enter an integer number of steps.")
+    
+    while True:
+        try:
+            ds_input = input(f"   Step size [{defaults['ds']}]: ").strip()
+            ds = float(ds_input) if ds_input else defaults['ds']
+            if ds <= 0:
+                print("   Error: Step size must be positive")
+                continue
+            break
+        except ValueError:
+            print("   Error: Please enter a valid number (e.g., 0.01).")
+    
+    # Corrector tolerance
+    print(f"\n2. Corrector Tolerance")
+    print(f"   Lower tolerance improves accuracy but takes longer, and some orbits")
+    print(f"   may be incapable of meeting a low tolerance.")
+    print(f"   Default: {defaults['tol']}")
+    
+    while True:
+        try:
+            tol_input = input(f"   Corrector tolerance: [{defaults['tol']}]").strip()
+            tol = float(tol_input) if tol_input else defaults['tol']
+            if tol <= 0:
+                print("   Error: Must be positive")
+                continue
+            break
+        except ValueError:
+            print("   Error: Please enter a valid number (e.g. 1e-12)")
+
+    # Colorbar
+    print(f"\n2. Colorbar Key Parameter")
+    print(f"   Select one of the following parameters for the plot colorbar:")
+    print(f"   Default: {defaults['cbar']} ")
+
+    while True:
+        msg = "Choose 'index', 'jacobi', 'period', 'stability' : "
+        cbar_input = input(msg).strip().lower()
+        cbar = (cbar_input.replace('"', '').replace("'", "") 
+                if cbar_input else defaults['cbar'])
+        
+        if cbar in ['index', 'jacobi', 'period', 'stability']:
+            break  # Valid input received, exit the loop
+            
+        print("Invalid choice. Please enter 'index', 'jacobi', 'period', 'stability'")
+    
+    # Summary
+    print("\n" + "="*70)
+    print("Configuration Summary:")
+    print(f"  Family: {family}")
+    print(f"  Orbits and Step Size: {n_steps} total orbits at {ds} step size")
+    print(f"  Corrector tolerance: {tol}")
+    print(f"  Colorbar displays: {cbar}")
+    print("="*70)
+    
+    confirm = input("\nProceed with these settings? [Y/n]: ").strip().lower()
+    if confirm and confirm != 'y':
+        print("Continuation cancelled, rerun.")
+        import sys
+        sys.exit(0)
+    
+    return {
+        'family': family,
+        'lagrange': lagrange,
+        'n_steps': n_steps,
+        'ds': ds,
+        'tol': tol,
+        'cbar': cbar
+    }
+
+def initialize():
+
+    print(f"We first establish an Earth-Moon CR3BP System, using a factory default.")
+    sys = ky.earth_moon_cr3bp()
+
+    print(f"We get a planar seed from linearizing about L1, which requires "
+          f"evaluating the system's Jacobian at the point.")
+    seed = sys.planar_seeder('L1')
+
+    print(f"We correct this initial guess into a PeriodicOrbit.  This requires the "
       f"variational equations for the corrector STM, and the vector field "
       f"evaluator, because we free the period of the solve.")
 
-guess = ky.CorrectorGuess.from_seeder_result(seed,sys,'lyapunov')
-dc = ky.DifferentialCorrector(tol=1e-12)
-initial_orbit = ky.correct_as(guess, dc)
+    guess = ky.CorrectorGuess.from_seeder_result(seed,sys,'lyapunov')
+    dc = ky.DifferentialCorrector(tol=1e-12)
+    initial_lyapunov = ky.correct_as(guess, dc)
 
-lyapunov_kwargs = {'orbit':initial_orbit, 
-                   'recipe':'lyapunov',
-                   'ds': 0.01,
-                   'n_steps': 400,
-                   'corrector': dc}
-print(f"Marching L1 Lyapunov family with step size {lyapunov_kwargs['ds']}, "
-      f"targeting {lyapunov_kwargs['n_steps']} steps, "
-      f"with corrector tolerance {lyapunov_kwargs['corrector'].tol}")
-with ky.Timer(verbose=False) as t1:
-    family = ky.march_family(**lyapunov_kwargs)
-print(f"Marching L1 Lyapunovs took {t1.elapsed:.4g} seconds.")
+    print(f"Finally, we create an initial Near Rectilinear Halo Orbit using "
+          f"a premade factory default.")
+    initial_halo = ky.gateway_orbit()
 
-fig = family.plot_3d(color_by = 'stability')
+    return ({'lyapunov':initial_lyapunov, 'halo':initial_halo})
 
-fig.show()
-initial_halo = ky.gateway_orbit()
-halo_kwargs = {'orbit':initial_halo, 
-                'recipe':'halo',
-                'ds': 0.005,
-                'n_steps': 425,
-                'corrector': dc}
+def plot_family(inputs):
 
-print(f"Marching L2 Halo family with step size {halo_kwargs['ds']}, "
-      f"targeting {halo_kwargs['n_steps']} steps, "
-      f"with corrector tolerance {halo_kwargs['corrector'].tol}")
-with ky.Timer(verbose=False) as t2:
-    halo_family = ky.march_family(**halo_kwargs)
-print(f"Marching L2 Halos took {t2.elapsed:.4g} seconds.")
-halo_fig = halo_family.plot_3d(color_by = 'period')
-halo_fig.show()
+    input_kwargs = {'orbit':inputs['orbit'], 
+                    'recipe':inputs['family'],
+                    'ds': inputs['ds'],
+                    'n_steps': inputs['n_steps'],
+                    'corrector': ky.DifferentialCorrector(tol=inputs['tol'])
+                    }
 
-print(f"We need a small step size to prevent the halos from diverting onto the "
-      f"Lyapunovs, but this can interfere with visualization.")
-print(f"We can slice out some elements and only plot those.")
+    print(f"Marching {inputs['lagrange']} {inputs['family'].capitalize()} family "
+          f"with step size {inputs['ds']}, targeting {inputs['n_steps']} steps, "
+          f"with corrector tolerance {inputs['tol']}")
+    
+    with ky.Timer(verbose=False) as t:
+        family = ky.march_family(**input_kwargs)
+    print(f"Marching {inputs['lagrange']} {inputs['family'].capitalize()} family "
+          f"took {t.elapsed:.4g} seconds.")
 
-new_halos = halo_family[::5]
-new_halo_fig = new_halos.plot_3d(color_by='jacobi')
-print(f"Note that we have several properties of the family which can control "
-      f"the colorbar grading, according to the color_by input.")
-new_halo_fig.show()
+    fig1 = family.plot_3d(color_by = inputs['cbar'])
+
+    print(f"We can slice out every fifth element and only plot those.")
+    fig2 = family[::5].plot_3d(color_by=inputs['cbar'], 
+        title= f"{inputs['lagrange']} {inputs['family'].capitalize()} Family "
+               f"Sliced Every 5 Orbits")
+
+    fig1.show()
+    fig2.show()
+
+
+# ============================================================================
+# Script Entry Point
+# ============================================================================
+
+if __name__ == "__main__":
+
+    initial_orbits = initialize()
+
+    lyapunov_defaults = {'family':'lyapunov',
+                         'n_steps': 300,
+                         'ds': 0.01,
+                         'tol': 1e-12,
+                         'cbar': 'stability'
+                        }
+
+    halo_defaults = {'family':'halo',
+                             'n_steps': 425,
+                             'ds': 0.005,
+                             'tol': 1e-12,
+                             'cbar': 'period'
+                            }
+
+    lyapunov_inputs = get_user_inputs(lyapunov_defaults)
+    lyapunov_inputs['orbit'] = initial_orbits['lyapunov']
+
+    plot_family(lyapunov_inputs)
+
+    halo_inputs = get_user_inputs(halo_defaults)
+    halo_inputs['orbit'] = initial_orbits['halo']
+
+    plot_family(halo_inputs)
