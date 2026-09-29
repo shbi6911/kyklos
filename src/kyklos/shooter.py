@@ -15,6 +15,7 @@ import numpy as np
 
 from .config import config
 from .utils import validation_error
+from .exceptions import ConvergenceError
 from .trajectory import (
     FreeJunctionNode,
     ImpulsiveJunctionNode,
@@ -2606,18 +2607,26 @@ class ShooterResult:
     """
     Outcome of a differential-correction solve.
 
-    Always returned by DifferentialCorrector.solve. The converged (or last)
-    trajectory is always available as `.trajectory`, so the common case is a
-    one-liner: `traj = corrector.solve(...).trajectory`. Convergence status
-    and the final residual are always present too, since a shooting solve can
-    fail and a bare trajectory would hide that.
+    Always returned by DifferentialCorrector.solve. On success the converged
+    trajectory is `.trajectory`, so the common case is a one-liner:
+    `traj = corrector.solve(...).trajectory`. Reading `.trajectory` off a
+    solve that did not converge raises ConvergenceError (carrying the
+    abort_reason) rather than handing back a failed iterate that looks like a
+    solution. Check `.converged` first to handle failure without an
+    exception; the final Newton iterate stays available as `.last_iterate`
+    for diagnosis.
 
     Attributes
     ----------
-    trajectory : Trajectory or None
-        The converged trajectory on success (interior junctions converted to
-        appropriate nodes per node_specs, at the solver tolerance), or the last 
-        iterate on non-convergence. None only if the very first propagation failed.
+    trajectory : Trajectory
+        The converged trajectory, with interior junctions converted to
+        appropriate nodes per node_specs at the solver tolerance. Read-only
+        property. Raises ConvergenceError if the solve did not converge.
+    last_iterate : Trajectory or None
+        The trajectory at the final evaluated iterate, converged or not. On
+        success it is the same object as `.trajectory`; on failure it is the
+        raw iterate with FreeJunctionNodes intact. None only if the very first
+        propagation failed.
     converged : bool
         Whether ||F|| fell below the solver tolerance.
     iterations : int
@@ -2634,22 +2643,64 @@ class ShooterResult:
     iterates : list of Trajectory or None
         The trajectory at each evaluated iterate. Populated only when
         solve(iterates=True). These are the raw propagated iterates, with
-        FreeJunctionNodes intact (the conversion applies to the final
-        `.trajectory` only).
-    continuation : ContinuationState or None
+        FreeJunctionNodes intact (the node conversion applies only to the
+        converged `.trajectory`).
+    continuation : ContinuationState
         Free-variable vector and unclosed corrector Jacobian at the converged
-        member, for an analytic family tangent. Populated only when
-        solve(continuation=True) and the solve converged.
+        member, for an analytic family tangent. Read-only property. Raises
+        ConvergenceError if the solve did not converge, and ValueError if the
+        payload was not requested with solve(continuation=True).
+
+    Notes
+    -----
+    `trajectory` and `continuation` are properties over the stored fields
+    `last_iterate` and `_continuation`: a dataclass cannot have a field and a
+    property of the same name. Construct with those field names.
     """
 
-    trajectory: "Trajectory | None"
+    last_iterate: "Trajectory | None"
     converged: bool
     iterations: int
     final_residual: float
     abort_reason: str | None = None
     diagnostics: dict | None = None
     iterates: list | None = None
-    continuation: "ContinuationState | None" = None
+    _continuation: "ContinuationState | None" = None
+
+    @property
+    def trajectory(self) -> "Trajectory":
+        """The converged trajectory. Raises ConvergenceError on failure."""
+        if not self.converged or self.last_iterate is None:
+            raise ConvergenceError(message=(
+                f"No converged trajectory: the solve did not converge "
+                f"(abort_reason={self.abort_reason!r}, final residual "
+                f"{self.final_residual:.3e} after {self.iterations} "
+                f"iterations). Check result.converged before reading "
+                f"result.trajectory; the final iterate is available as "
+                f"result.last_iterate."
+            ))
+        return self.last_iterate
+
+    @property
+    def continuation(self) -> ContinuationState:
+        """
+        The continuation payload of a converged solve.
+
+        Raises ConvergenceError if the solve did not converge, and ValueError
+        if solve(continuation=True) was not requested.
+        """
+        if not self.converged:
+            raise ConvergenceError(message=(
+                f"No continuation payload: the solve did not converge "
+                f"(abort_reason={self.abort_reason!r}). The payload is "
+                f"populated only for a converged solve."
+            ))
+        if self._continuation is None:
+            raise ValueError(
+                "No continuation payload: it was not requested. Pass "
+                "continuation=True to solve() to populate it."
+            )
+        return self._continuation
 
     def __repr__(self) -> str:
         status = "converged" if self.converged else "NOT converged"
@@ -2778,14 +2829,14 @@ class DifferentialCorrector:
             cont = ContinuationState(X=X_final, DH=DH_final)
 
         return ShooterResult(
-            trajectory=out_traj,
+            last_iterate=out_traj,
             converged=raw['converged'],
             iterations=raw['iterations'],
             final_residual=raw['final_residual'],
             abort_reason=raw['abort_reason'],
             diagnostics=raw['diagnostics'],
             iterates=raw['iterates'],
-            continuation=cont,
+            _continuation=cont,
         )
 
     def _finalize(self, traj: "Trajectory", node_specs: dict | None) -> "Trajectory":

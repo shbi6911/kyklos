@@ -10,7 +10,8 @@ import warnings
 import heyoka as hy
 import plotly.graph_objects as go
 import bisect
-from typing import Sequence, Optional, cast, Any, TYPE_CHECKING
+from typing import (Sequence, Optional, Literal, TypeAlias, overload, cast, 
+                    Any, TYPE_CHECKING)
 from numpy.typing import ArrayLike
 from abc import ABC, abstractmethod
 from .orbital_elements import OrbitalElements, OEType
@@ -278,10 +279,10 @@ class Trajectory:
         The dynamical environment used to generate this trajectory.
     outputs : list
         List of Heyoka continuous output objects, one per segment.
-    start_node : BoundaryNode
-        Node at t0 of the trajectory.
-    end_node : BoundaryNode
-        Node at tf of the trajectory.
+    start_node : StartBoundaryNode or ImpulsiveBoundaryNode
+        Node at t0 of the trajectory. Its post_state is always populated.
+    end_node : EndBoundaryNode or ImpulsiveBoundaryNode
+        Node at tf of the trajectory. Its pre_state is always populated.
     junction_nodes : list of JunctionNode, optional
         Internal nodes between segments. len must equal len(outputs) - 1.
         Default: empty list (single-segment trajectory).
@@ -306,7 +307,7 @@ class Trajectory:
 
     >>> sys = earth_2body()
     >>> orbit = OE(a=7000, e=0.01, i=0.5, omega=0, w=0, nu=0)
-    >>> traj = sys.propagate(orbit, 0, 5400)
+    >>> traj = sys.propagate(orbit, [0, 5400])
     >>> state = traj.state_at(2700)          # midpoint state as OrbitalElements
     >>> state = traj(2700)                   # callable syntax, equivalent
     >>> arr = traj.state_at_raw(2700)        # midpoint as raw (6,) array
@@ -318,7 +319,7 @@ class Trajectory:
 
     STM propagation:
 
-    >>> traj_stm = sys.propagate(orbit, 0, 5400, with_stm=True)
+    >>> traj_stm = sys.propagate(orbit, [0, 5400], with_stm=True)
     >>> phi = traj_stm.get_stm(2700)         # (6, 6) STM at t=2700 s
     >>> phis = traj_stm.sample_stm(100)      # (100, 6, 6) STM history
 
@@ -334,8 +335,14 @@ class Trajectory:
     Trajectory.slice : Extract a sub-interval as a new Trajectory
     """
     # ========== CONSTRUCTION ==========
-    def __init__(self, system, outputs, junction_nodes=None, stm_order=None,
-             start_node=None, end_node=None):
+    def __init__(self, system: System, 
+                 outputs: Any,
+                 # outputs should be a Heyoka continuous output object or a list of
+                 # same.  These have no type stubs and can't be annotated for now.
+                 junction_nodes: Sequence[JunctionNode] | None = None,
+                 stm_order: int | None = None,
+                 start_node: StartNode | None = None,
+                 end_node: EndNode | None = None):
         """
         Parameters
         ----------
@@ -470,17 +477,47 @@ class Trajectory:
         return self.tf - self.t0
     
     @property
-    def start_node(self) -> BoundaryNode:
-        """Node at the start of this trajectory."""
+    def start_node(self) -> StartNode:
+        """Node at the start of this trajectory. post_state is never None."""
         return self._start_node
 
     @property
-    def end_node(self) -> BoundaryNode:
-        """Node at the end of this trajectory."""
+    def end_node(self) -> EndNode:
+        """Node at the end of this trajectory. pre_state is never None."""
         return self._end_node
 
     @property
-    def junction_nodes(self) -> list:
+    def initial_state(self) -> OrbitalElements:
+        """
+        State at t0 as OrbitalElements, in the system's default element type.
+
+        Shorthand for state_at(t0). For another element type, call
+        state_at(t0, element_type=...) directly.
+        """
+        return self.state_at(self.t0)
+
+    @property
+    def initial_state_raw(self) -> np.ndarray:
+        """State at t0 as a fresh (6,) array. Shorthand for state_at_raw(t0)."""
+        return self.state_at_raw(self.t0)
+
+    @property
+    def final_state(self) -> OrbitalElements:
+        """
+        State at tf as OrbitalElements, in the system's default element type.
+
+        Shorthand for state_at(tf). For another element type, call
+        state_at(tf, element_type=...) directly.
+        """
+        return self.state_at(self.tf)
+
+    @property
+    def final_state_raw(self) -> np.ndarray:
+        """State at tf as a fresh (6,) array. Shorthand for state_at_raw(tf)."""
+        return self.state_at_raw(self.tf)
+
+    @property
+    def junction_nodes(self) -> list[JunctionNode]:
         """
         Internal junction nodes between segments.
 
@@ -1239,8 +1276,18 @@ class Trajectory:
     # ========== TRAJECTORY MANIPULATION ==========
     
     # ========== HELPER METHODS ==========
+    @overload
     @staticmethod
-    def _boundary_from_junction(node: JunctionNode, role: str) -> BoundaryNode:
+    def _boundary_from_junction(node: JunctionNode,
+                                role: Literal['start']) -> StartNode: ...
+    @overload
+    @staticmethod
+    def _boundary_from_junction(node: JunctionNode,
+                                role: Literal['end']) -> EndNode: ...
+    @staticmethod
+    def _boundary_from_junction(node: JunctionNode,
+                                role: Literal['start', 'end']
+                                ) -> StartNode | EndNode:
         """
         Create a BoundaryNode from a JunctionNode.
 
@@ -1282,7 +1329,8 @@ class Trajectory:
             return FreeJunctionNode(node.time, node.pre_state, node.post_state)
         raise TypeError(f"Unrecognised JunctionNode type: {type(node).__name__}")
     
-    def with_junction_nodes(self, junction_nodes: list) -> "Trajectory":
+    def with_junction_nodes(self, 
+                            junction_nodes: Sequence[JunctionNode]) -> "Trajectory":
         """
         Return a new Trajectory with the same segments but replaced junction
         nodes.
@@ -3175,6 +3223,14 @@ class ImpulsiveBoundaryNode(BoundaryNode):
         dv_mag = np.linalg.norm(self.delta_v)
         return (f"ImpulsiveBoundaryNode(t={self.time:.6g}, "
                 f"|dv|={dv_mag:.6g} km/s)")
+
+# A Trajectory's boundary node is one of exactly two concrete classes per end.
+# Both members of each union carry a populated state on the trajectory side
+# (post_state at the start, pre_state at the end), so attribute access through
+# these aliases resolves to np.ndarray, where the abstract BoundaryNode must
+# admit None on both sides.
+StartNode: TypeAlias = StartBoundaryNode | ImpulsiveBoundaryNode
+EndNode: TypeAlias = EndBoundaryNode | ImpulsiveBoundaryNode
 
 class JunctionNode(Node):
     """

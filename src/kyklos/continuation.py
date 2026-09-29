@@ -1405,8 +1405,15 @@ def correct_as(
 
     result = solve_recipe(spec, guess_traj, corrector)
 
-    if not result.converged or result.trajectory is None:
-        raise ConvergenceError(guess.recipe)
+    if not result.converged:
+        raise ConvergenceError(
+            guess.recipe,
+            message=(
+                f"Corrector failed to converge for a {guess.recipe!r} guess "
+                f"(abort_reason={result.abort_reason!r}); the initial guess "
+                f"may be too far from a periodic orbit."
+            ),
+        )
 
     # Period is inferred, not supplied: both ends of the converged arc are
     # perpendicular x-z crossings, so PeriodicOrbit recognizes the mirror
@@ -1510,21 +1517,6 @@ def _build_march_setup(recipe: str, scheme: str) -> _MarchSetup:
     period_factor = 2.0 if convention == "half" else 1.0
     return _MarchSetup(entry, spec, scheme_entry.closer_factory,
                        period_factor)
-
-
-def _start_state(trajectory: "Trajectory") -> np.ndarray:
-    """
-    Return a trajectory's start state as a fresh, writeable (6,) array.
-
-    Read through the start node. BoundaryNode.post_state is Optional in the
-    base-class signature. A propagated trajectory's start node always
-    carries one, but the None branch is not decoration:
-    np.array(None, dtype=float) is a silent 0-d NaN, not an error.
-    """
-    state = trajectory.start_node.post_state
-    if state is None:
-        raise ValueError("Trajectory start node carries no post_state.")
-    return np.array(state, dtype=float)
 
 
 def _prepare_seed(state: np.ndarray, entry: _RecipeEntry,
@@ -1761,7 +1753,7 @@ def march_family(
         )
 
     setup = _build_march_setup(recipe, scheme)
-    seed = _prepare_seed(_start_state(orbit.trajectory), setup.entry,
+    seed = _prepare_seed(orbit.trajectory.initial_state_raw, setup.entry,
                          orbit.tol)
     corrector = corrector if corrector is not None else DifferentialCorrector()
 
@@ -1776,7 +1768,7 @@ def march_family(
                step: float) -> None:
         # One row per converged member, taken from the solve that produced
         # it, so every column in a row describes the same point.
-        states.append(_start_state(trajectory))
+        states.append(trajectory.initial_state_raw)
         periods.append(setup.period_factor * trajectory.duration)
         iterations.append(result.iterations)
         residuals.append(result.final_residual)
@@ -1787,14 +1779,13 @@ def march_family(
         seed, [0.0, orbit.period / setup.period_factor], with_stm=True
     )
     result = solve_recipe(setup.spec, guess, corrector, continuation=True)
-    if (not result.converged or result.trajectory is None
-            or result.continuation is None):
+    if not result.converged:
         raise ConvergenceError(
             recipe,
             message=(
                 f"march_family bootstrap failed: the seed orbit did not "
                 f"re-converge under the march's corank-1 spec "
-                f"(abort_reason={result.abort_reason!r}, "
+                f"(abort_reason={result.abort_reason!r}). "
                 f"The seed may not be a {recipe!r} member, or "
                 f"the corrector tolerance may be tighter than the seed was "
                 f"converged to."
@@ -1818,11 +1809,10 @@ def march_family(
             closer_factory=setup.closer_factory, ref=ref,
             continuation=True,
         )
-        if (not result.converged or result.trajectory is None
-                or result.continuation is None):
+        if not result.converged:
             warnings.warn(
                 f"march_family stopped early: step {k} of {n_steps} did "
-                f"not converge (abort_reason={result.abort_reason!r}. "
+                f"not converge (abort_reason={result.abort_reason!r}). "
                 f"Returning the {len(periods)} member(s) converged so far.",
                 UserWarning,
                 stacklevel=2,

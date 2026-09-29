@@ -63,6 +63,8 @@ from .registry import available_recipes
 from .continuation import (CorrectorGuess, available_layouts, correct_as, 
                            march_family, available_schemes)
 
+# custom Kyklos exceptions (more planned)
+from .exceptions import ConvergenceError
 
 # helper utilities and config control
 from .utils import Timer
@@ -149,6 +151,8 @@ __all__ = [
     # Configuration
     "config",
     "temp_config",
+    # Exceptions
+    "ConvergenceError",
     # Default Orbits and Orbit Constructors
     "iss_orbit",
     "geo_orbit",

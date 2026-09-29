@@ -27,6 +27,7 @@ corrector observes exactly:
   that the default corrector is built when none is passed.
 """
 
+from typing import cast
 import numpy as np
 import pytest
 
@@ -41,6 +42,7 @@ from kyklos.shooter import (
     ShooterResult,
     TargetState,
     PseudoArclength,
+    FreeVarConstraint,
 )
 
 
@@ -60,7 +62,7 @@ class _SpyCorrector:
     def __init__(self, result=None):
         self.calls = []
         self.result = result if result is not None else ShooterResult(
-            trajectory=None, converged=False, iterations=0,
+            last_iterate=None, converged=False, iterations=0,
             final_residual=1.0,
         )
 
@@ -76,9 +78,13 @@ class _SpyFactory:
         self.calls = []
         self.built = []
 
-    def __call__(self, ref, n_X):
+    def __call__(self, ref, n_X) -> FreeVarConstraint:
         self.calls.append((ref, n_X))
-        closer = object()          # a fresh, identifiable marker per call
+        # A fresh, identifiable marker per call, not a real constraint:
+        # solve_recipe only appends it to the list it forwards, so identity
+        # is all the tests check. The cast states that this spy satisfies
+        # the closer-factory contract for the type checker.
+        closer = cast(FreeVarConstraint, object())
         self.built.append(closer)
         return closer
 
@@ -181,7 +187,7 @@ class TestForwarding:
         Non-convergence is reported, not raised, so a march can inspect
         .converged and stop cleanly. Raising is correct_as's job.
         """
-        failed = ShooterResult(trajectory=None, converged=False,
+        failed = ShooterResult(last_iterate=None, converged=False,
                                iterations=50, final_residual=1e-3,
                                abort_reason="cond_fail")
         spy = _SpyCorrector(result=failed)
@@ -356,7 +362,8 @@ class TestRealSolves:
         result = solve_recipe(_spec(free_times=()), half_arc,
                               DifferentialCorrector())
         assert result.converged
-        assert result.continuation is None
+        with pytest.raises(ValueError, match="continuation=True"):
+            _ = result.continuation
 
     def test_default_corrector_is_built(self, half_arc):
         """corrector=None builds a default rather than failing."""

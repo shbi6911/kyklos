@@ -239,6 +239,56 @@ class TestRawArrayMethods:
         assert np.all(np.isfinite(states_sample))
 
 
+class TestBoundaryStateProperties:
+    """
+    initial_state / final_state and their _raw forms: shorthand for
+    state_at / state_at_raw at t0 and tf, in the system's default type.
+    """
+
+    def test_initial_state_raw_matches_state_at_raw(self, tb_traj):
+        np.testing.assert_array_equal(tb_traj.initial_state_raw,
+                                      tb_traj.state_at_raw(tb_traj.t0))
+
+    def test_final_state_raw_matches_state_at_raw(self, tb_traj):
+        np.testing.assert_array_equal(tb_traj.final_state_raw,
+                                      tb_traj.state_at_raw(tb_traj.tf))
+
+    def test_raw_forms_match_the_boundary_nodes(self, cr3bp_traj):
+        # Default boundary nodes are built from the same output evaluation,
+        # so the sugar agrees with the node states exactly.
+        np.testing.assert_array_equal(cr3bp_traj.initial_state_raw,
+                                      cr3bp_traj.start_node.post_state)
+        np.testing.assert_array_equal(cr3bp_traj.final_state_raw,
+                                      cr3bp_traj.end_node.pre_state)
+
+    def test_raw_forms_are_fresh_writeable_copies(self, tb_traj):
+        state = tb_traj.initial_state_raw
+        assert state.flags.writeable
+        state[0] = 9999.0
+        assert tb_traj.initial_state_raw[0] != 9999.0
+
+    def test_element_forms_use_the_default_type(self, tb_traj, cr3bp_traj):
+        assert tb_traj.initial_state.element_type == OEType.CARTESIAN
+        assert tb_traj.final_state.element_type == OEType.CARTESIAN
+        assert cr3bp_traj.initial_state.element_type == OEType.CR3BP
+        assert cr3bp_traj.final_state.element_type == OEType.CR3BP
+
+    def test_element_forms_match_raw_forms(self, cr3bp_traj):
+        np.testing.assert_array_equal(cr3bp_traj.initial_state.elements,
+                                      cr3bp_traj.initial_state_raw)
+        np.testing.assert_array_equal(cr3bp_traj.final_state.elements,
+                                      cr3bp_traj.final_state_raw)
+
+    def test_multisegment_uses_first_and_last_segments(self):
+        sys = System('2body', earth())
+        orbit = OE(a=7000, e=0.01, i=0, omega=0, w=0, nu=0)
+        traj = sys.propagate(orbit, times=[0, 100]).extend(200)
+        assert traj.n_segments == 2
+        np.testing.assert_array_equal(traj.initial_state_raw,
+                                      traj.start_node.post_state)
+        np.testing.assert_array_equal(traj.final_state_raw,
+                                      traj.end_node.pre_state)
+
 class TestTrajectorySpecificMethods:
     """Test methods specific to Trajectory class."""
     

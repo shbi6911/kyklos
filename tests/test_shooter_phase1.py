@@ -30,7 +30,8 @@ from kyklos.shooter import (_parse_free_vars, _component_index,
     _resolve_component_names, _finite_diff, _pack, _unpack, _assemble_F, _assemble_DF)
 from kyklos.shooter import (TerminalConstraint, TargetState, 
     Periodicity, CallableConstraint, _ShootingContext, ShooterResult, 
-    DifferentialCorrector)
+    DifferentialCorrector, ContinuationState)
+from kyklos.exceptions import ConvergenceError
 from kyklos import NullJunctionNode, ImpulsiveJunctionNode
 from kyklos import Trajectory, System, config
 
@@ -1113,20 +1114,21 @@ class TestShooterResult:
     """ShooterResult: dataclass fields, optional defaults, and custom repr."""
 
     def test_required_fields(self):
-        r = ShooterResult(trajectory=None, converged=True, iterations=3,
-                          final_residual=1.5e-12)
-        assert r.trajectory is None and r.converged is True
-        assert r.iterations == 3 and r.final_residual == 1.5e-12
+        r = ShooterResult(last_iterate=None, converged=False, iterations=3,
+                          final_residual=1.5e-3)
+        assert r.last_iterate is None and r.converged is False
+        assert r.iterations == 3 and r.final_residual == 1.5e-3
 
     def test_optional_fields_default_none(self):
-        r = ShooterResult(trajectory=None, converged=True, iterations=3,
+        r = ShooterResult(last_iterate=None, converged=True, iterations=3,
                           final_residual=1e-12)
         assert r.abort_reason is None
         assert r.diagnostics is None
         assert r.iterates is None
+        assert r._continuation is None
 
     def test_optional_fields_settable(self):
-        r = ShooterResult(trajectory=None, converged=False, iterations=5,
+        r = ShooterResult(last_iterate=None, converged=False, iterations=5,
                           final_residual=2.0, abort_reason="cond_fail",
                           diagnostics={'a': 1}, iterates=[1, 2])
         assert r.abort_reason == "cond_fail"
@@ -1136,14 +1138,68 @@ class TestShooterResult:
     def test_repr_converged(self):
         # repr=False on the dataclass, so the custom __repr__ is what runs;
         # final_residual is formatted with three significant decimals (.3e).
-        r = ShooterResult(trajectory=None, converged=True, iterations=4,
+        r = ShooterResult(last_iterate=None, converged=True, iterations=4,
                           final_residual=1.5e-10)
         assert repr(r) == "ShooterResult(converged, iterations=4, final_residual=1.500e-10)"
 
     def test_repr_not_converged(self):
-        r = ShooterResult(trajectory=None, converged=False, iterations=7,
+        r = ShooterResult(last_iterate=None, converged=False, iterations=7,
                           final_residual=3.2e-3)
         assert repr(r) == "ShooterResult(NOT converged, iterations=7, final_residual=3.200e-03)"
+
+class TestShooterResultAccess:
+    """
+    The converged-only properties: trajectory and continuation return their
+    value on a converged result and raise on anything else, so reading them
+    either yields a solution or fails loudly with the reason.
+
+    A bare object() stands in for the Trajectory: the properties only pass
+    the stored object through, so its type is irrelevant here.
+    """
+
+    def test_trajectory_returns_last_iterate_when_converged(self):
+        sentinel = object()
+        r = ShooterResult(last_iterate=sentinel,       # type: ignore[arg-type]
+                          converged=True, iterations=2, final_residual=1e-13)
+        assert r.trajectory is sentinel
+
+    def test_trajectory_raises_when_not_converged(self):
+        r = ShooterResult(last_iterate=object(),       # type: ignore[arg-type]
+                          converged=False, iterations=25,
+                          final_residual=3.2e-3,
+                          abort_reason="max_iter 25 reached")
+        with pytest.raises(ConvergenceError) as excinfo:
+            _ = r.trajectory
+        msg = str(excinfo.value)
+        assert "max_iter 25 reached" in msg     # abort_reason surfaced
+        assert "last_iterate" in msg            # points at the diagnostic
+        assert excinfo.value.recipe is None     # no recipe below that layer
+
+    def test_failed_iterate_stays_readable(self):
+        # The raise guards .trajectory only; the raw iterate is still there.
+        sentinel = object()
+        r = ShooterResult(last_iterate=sentinel,       # type: ignore[arg-type]
+                          converged=False, iterations=25, final_residual=1.0,
+                          abort_reason="cond_fail")
+        assert r.last_iterate is sentinel
+
+    def test_continuation_returns_payload_when_converged(self):
+        payload = ContinuationState(X=np.zeros(3), DH=np.zeros((2, 3)))
+        r = ShooterResult(last_iterate=None, converged=True, iterations=1,
+                          final_residual=1e-13, _continuation=payload)
+        assert r.continuation is payload
+
+    def test_continuation_raises_convergence_error_when_not_converged(self):
+        r = ShooterResult(last_iterate=None, converged=False, iterations=0,
+                          final_residual=1.0, abort_reason="max_iter 0 reached")
+        with pytest.raises(ConvergenceError, match="max_iter 0 reached"):
+            _ = r.continuation
+
+    def test_continuation_raises_value_error_when_not_requested(self):
+        r = ShooterResult(last_iterate=None, converged=True, iterations=1,
+                          final_residual=1e-13)
+        with pytest.raises(ValueError, match="continuation=True"):
+            _ = r.continuation
 
 
 class TestDifferentialCorrectorConfig:
@@ -1271,9 +1327,11 @@ class TestSolveAborts:
         guess = _linear_guess(make_fake_trajectory, _RaisingSystem(), np.ones(6))
         result = DifferentialCorrector().solve(guess, 'all', constraints=[Periodicity()])
         assert not result.converged
-        assert result.trajectory is None          # first propagation failed
+        assert result.last_iterate is None        # first propagation failed
         assert result.abort_reason is not None
         assert "propagation failed" in result.abort_reason
+        with pytest.raises(ConvergenceError, match="propagation failed"):
+            _ = result.trajectory
 
     def test_non_finite_residual(self, make_fake_trajectory):
         guess = _linear_guess(make_fake_trajectory, _NonFiniteSystem(), np.ones(6))
@@ -1308,6 +1366,8 @@ class TestSolveBudget:
         assert result.iterations == 0
         assert result.abort_reason is not None
         assert "max_iter" in result.abort_reason
+        # Budget exhaustion still propagated an iterate, so it is kept.
+        assert result.last_iterate is not None
 
     def test_converged_solve_has_no_abort_reason(self, make_fake_trajectory,
                                                  make_linear_system):

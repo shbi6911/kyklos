@@ -55,21 +55,28 @@ class ConvergenceError(CorrectionError):
     The differential corrector failed to converge.
 
     Raised when the corrector returns no solution (e.g. the initial guess was
-    too far from a periodic orbit, or the Newton iteration diverged).
+    too far from a periodic orbit, or the Newton iteration diverged), and when
+    a converged-only field (trajectory, continuation) is read off a
+    ShooterResult whose solve did not converge.
 
     Attributes
     ----------
-    recipe : str
-        The recipe label the guess was being corrected against.
+    recipe : str or None
+        The recipe label the guess was being corrected against, if known at
+        the point of failure. None when raised below the recipe layer (e.g.
+        by ShooterResult, which has no recipe context).
     """
 
-    def __init__(self, recipe: str, message: str | None = None):
+    def __init__(self, recipe: str | None = None, message: str | None = None):
         self.recipe = recipe
         if message is None:
-            message = (
-                f"Corrector failed to converge for a {recipe!r} guess; the "
-                f"initial guess may be too far from a periodic orbit."
-            )
+            if recipe is not None:
+                message = (
+                    f"Corrector failed to converge for a {recipe!r} guess; "
+                    f"the initial guess may be too far from a periodic orbit."
+                )
+            else:
+                message = "The differential corrector failed to converge."
         super().__init__(message)
 
 

@@ -66,6 +66,7 @@ from kyklos.shooter import (
     _BlockKind,
 )
 from kyklos.continuation import _check_direction, _family_tangent
+from kyklos.exceptions import ConvergenceError
 
 
 # The recipe geometry under test: the planar Lyapunov perpendicular-crossing
@@ -222,19 +223,21 @@ def closed_solve(half_arc_guess):
 class TestContinuationPayload:
     """When the payload appears, and what it carries."""
 
-    def test_absent_unless_requested(self, half_arc_guess):
+    def test_raises_unless_requested(self, half_arc_guess):
         result = DifferentialCorrector().solve(
             half_arc_guess, free_vars=_FREE_VARS,
             constraints=(TargetState(dict(_TARGETS)),),
         )
         assert result.converged
-        assert result.continuation is None
+        with pytest.raises(ValueError, match="continuation=True"):
+            _ = result.continuation
 
-    def test_absent_when_the_solve_does_not_converge(self, half_arc_guess):
+    def test_raises_when_the_solve_does_not_converge(self, half_arc_guess):
         """
         Populated only on convergence, so X and DH always belong to a
-        converged member. A budget of zero steps stops before the first
-        Newton update, leaving a residual above tolerance.
+        converged member; reading it off a failed solve raises. A budget of
+        zero steps stops before the first Newton update, leaving a residual
+        above tolerance.
         """
         result = DifferentialCorrector(max_iter=0).solve(
             half_arc_guess, free_vars=_FREE_VARS,
@@ -242,7 +245,8 @@ class TestContinuationPayload:
             continuation=True,
         )
         assert not result.converged
-        assert result.continuation is None
+        with pytest.raises(ConvergenceError):
+            _ = result.continuation
 
     def test_present_on_a_converged_request(self, square_solve):
         result, _ = square_solve
