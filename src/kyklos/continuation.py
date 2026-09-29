@@ -61,6 +61,7 @@ import numpy as np
 from typing import NamedTuple, Callable, Any, TYPE_CHECKING
 from dataclasses import dataclass
 import warnings
+from time import perf_counter
 
 from .registry import (_RECIPES, _RecipeEntry, available_recipes, 
                        period_convention_for)
@@ -1625,6 +1626,7 @@ def march_family(
     direction: int = 1,
     corrector: DifferentialCorrector | None = None,
     targeter: Any | None = None,
+    verbose: bool = False,
 ) -> OrbitFamily:
     """
     March a family of periodic orbits by pseudo-arclength continuation.
@@ -1669,6 +1671,10 @@ def march_family(
         is built.
     targeter : None
         Reserved for a future stop-condition interface. Must be None.
+    verbose : bool, optional
+        If true, outputs a progress statement to terminal once per loop,
+        (i.e. once per orbit in the family), overwriting previous output
+        in the terminal window.  Defaults to false (does not affect error messages).
 
     Returns
     -------
@@ -1801,7 +1807,16 @@ def march_family(
     )
 
     # ----- March: closed solves at constant ds -----
+    w = len(str(n_steps))   # field width, computed once
+    last_print = 0.0
     for k in range(1, n_steps + 1):
+        if verbose:
+            now = perf_counter()
+            if now - last_print >= 0.1 or k == n_steps:  # ~10 Hz, always show last step
+                print(f"Converging orbit {k:>{w}d} of {n_steps:>{w}d}...",
+                    end="\r", flush=True)
+                last_print = now
+
         ref = ContinuationRef(X_prev=X_prev, t_hat=t_hat, ds=ds)
         # Trivial predictor: the previous member's trajectory is the guess.
         result = solve_recipe(
@@ -1810,6 +1825,8 @@ def march_family(
             continuation=True,
         )
         if not result.converged:
+            if verbose:
+                print()     # end the progress line before the warning
             warnings.warn(
                 f"march_family stopped early: step {k} of {n_steps} did "
                 f"not converge (abort_reason={result.abort_reason!r}). "
@@ -1823,6 +1840,9 @@ def march_family(
         record(result, trajectory, ds)
         X_prev = result.continuation.X
         t_hat = _family_tangent(result.continuation.DH, prev_t_hat=t_hat)
+    else:
+        if verbose and n_steps > 0:
+            print()         # march completed: end the progress line
 
     # ----- Assemble -----
     family = OrbitFamily(

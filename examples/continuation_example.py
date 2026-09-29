@@ -14,19 +14,17 @@ def get_user_inputs(defaults):
         Configuration parameters
     """
 
-    if (not isinstance(defaults['family'], str) or 
-        defaults['family'].strip().lower() not in ['lyapunov', 'halo']):
-        print("Family must be 'lyapunov' or 'halo' ")
+    valid = ('lyapunov', 'halo')
+    raw = defaults['family']
+    family = raw.strip().lower() if isinstance(raw, str) else None
 
+    if family not in valid:
+        print("Family must be 'lyapunov' or 'halo'")
         while True:
-            msg = "Choose 'lyapunov' or 'halo' : "
-            family = input(msg).strip().lower()
-            
-            if family in ['lyapunov', 'halo']:
-                break  # Valid input received, exit the loop
-                
-            print("Invalid choice. Please enter 'lyapunov' or 'halo' ")
-    family = defaults['family']
+            family = input("Choose 'lyapunov' or 'halo' : ").strip().lower()
+            if family in valid:
+                break
+            print("Invalid choice. Please enter 'lyapunov' or 'halo'")
 
     if family == 'lyapunov':
         lagrange = 'L1'
@@ -84,7 +82,7 @@ def get_user_inputs(defaults):
             print("   Error: Please enter a valid number (e.g. 1e-12)")
 
     # Colorbar
-    print(f"\n2. Colorbar Key Parameter")
+    print(f"\n3. Colorbar Key Parameter")
     print(f"   Select one of the following parameters for the plot colorbar:")
     print(f"   Default: {defaults['cbar']} ")
 
@@ -98,14 +96,24 @@ def get_user_inputs(defaults):
             break  # Valid input received, exit the loop
             
         print("Invalid choice. Please enter 'index', 'jacobi', 'period', 'stability'")
+
+    print(f"\n4. Verbosity")
+    print(f"   If verbosity is True a progress counter will display while marching.")
+    print(f"   Default: {defaults['verbose']}. ")
+    change = input("\nChange [Y/n]: ").strip().lower()
+    verbose = defaults['verbose']
+    if change and change == 'y':
+        verbose = True if verbose == False else False
+
     
     # Summary
     print("\n" + "="*70)
     print("Configuration Summary:")
-    print(f"  Family: {family}")
+    print(f"  Family: {family.capitalize()}")
     print(f"  Orbits and Step Size: {n_steps} total orbits at {ds} step size")
     print(f"  Corrector tolerance: {tol}")
     print(f"  Colorbar displays: {cbar}")
+    print(f"  Verbosity: {verbose}")
     print("="*70)
     
     confirm = input("\nProceed with these settings? [Y/n]: ").strip().lower()
@@ -120,7 +128,8 @@ def get_user_inputs(defaults):
         'n_steps': n_steps,
         'ds': ds,
         'tol': tol,
-        'cbar': cbar
+        'cbar': cbar,
+        'verbose': verbose
     }
 
 def initialize():
@@ -152,7 +161,8 @@ def plot_family(inputs):
                     'recipe':inputs['family'],
                     'ds': inputs['ds'],
                     'n_steps': inputs['n_steps'],
-                    'corrector': ky.DifferentialCorrector(tol=inputs['tol'])
+                    'corrector': ky.DifferentialCorrector(tol=inputs['tol']),
+                    'verbose': inputs['verbose']
                     }
 
     print(f"Marching {inputs['lagrange']} {inputs['family'].capitalize()} family "
@@ -187,14 +197,16 @@ if __name__ == "__main__":
                          'n_steps': 300,
                          'ds': 0.01,
                          'tol': 1e-12,
-                         'cbar': 'stability'
+                         'cbar': 'stability',
+                         'verbose': True,
                         }
 
     halo_defaults = {'family':'halo',
                              'n_steps': 425,
                              'ds': 0.005,
                              'tol': 1e-12,
-                             'cbar': 'period'
+                             'cbar': 'period',
+                             'verbose': True,
                             }
 
     lyapunov_inputs = get_user_inputs(lyapunov_defaults)
