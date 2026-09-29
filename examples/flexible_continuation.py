@@ -157,15 +157,18 @@ free_times = [1]
 
 """
 This defines the shooter algorithmic class which converges an orbit using Newton's
-method.  It's stored data is minimal, currently only tolerance and failure
+method.  Its stored data is minimal, currently only tolerance and failure
 thresholds.  Default tolerance is 1e-10.  When using a symmetry solve, only the 
 *half-orbit* is converged to corrector tolerance.  Thus, when the orbit is
-repropagated and periodicity closure is checked (tf - t0 = 0), this can still fail.
-Increasing corrector tolerance usually solves this issue.
+repropagated to full period and periodicity closure is checked (tf - t0 = 0), 
+this can still fail.  Increasing corrector tolerance usually solves this issue.
+Note that closure tolerance is checked by the PeriodicOrbit class constructor, so
+it follows the default periodicity_tol of that class, *not* corrector tolerance.
 """
 dc = DifferentialCorrector(tol=params['tol'])
 
-"""Pseudo arclength continuation requires a previous free-variable vector (X_prev)
+"""
+Pseudo arclength continuation requires a previous free-variable vector (X_prev)
 and a corank-1 Jacobian DH, from whose nullspace we get the tangent vector.  Thus
 to bootstrap continuation we re-solve the existing orbit with a corank-1 solve and
 no continuation closer.  This procedure solves despite the rank deficiency if our
@@ -330,7 +333,7 @@ family.attach_system(system)
 """
 OrbitFamily has its own plot_3d() method paralleling Trajectory.plot_3d().  Because
 OrbitFamily only stores initial states and periods, the orbits must be repropagated
-in order to plot them.  By default these orbits are not stored, but retain_orbits=true
+in order to plot them.  By default these orbits are not stored, but retain_orbits=True
 can be input to the plot_3d() method to retain them.  Previous warnings about memory
 use apply.  The repropagation takes some time, but when using Heyoka this is rarely
 a significant problem!
