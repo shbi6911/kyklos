@@ -30,12 +30,16 @@ period = 3.9520274666159665
 
 """
 To allow some experimentation without code changes, we will define some parameters
-via user input.
+via user input.  These defaults have been selected to demonstrate the capabilities
+of each of these solve formulations.  Feel free to experiment!
 """
 defaults = {'solve':'symmetry',
-            'n_steps':165,
-            'ds':0.01,
-            'tol': 1e-12
+            'symm_args': {'n_steps':165,
+                          'ds':0.01,
+                          'tol':1e-12},
+            'gen_args': {'n_steps':1660,
+                         'ds':0.001,
+                         'tol':1e-12}
             }
 def get_user_inputs(defaults):
     """
@@ -58,20 +62,24 @@ def get_user_inputs(defaults):
                 break
             print("Invalid choice. Please enter 'symmetry' or 'general'")
     else:
+        other = 'symmetry' if defaults['solve'] == 'general' else 'general'
         print(f"Default solve set to {defaults['solve']}. ")
-        confirm = input("\nChange? [Y/n]: ").strip().lower()
+        confirm = input(f"\nChange to {other}? [Y/n]: ").strip().lower()
         if confirm and confirm == 'y':
             solve = 'general' if solve == 'symmetry' else 'symmetry'
+        print(f"Solving using the {solve} formulation.")
+
+    args = defaults['symm_args'] if solve == 'symmetry' else defaults['gen_args']
 
     # Step Size and Number of orbits
     print("\n1. Number of Orbits and Pseudo-Arc Length step size")
-    print(f"   Defaults: {defaults['n_steps']} orbits at step size {defaults['ds']} ")
+    print(f"   Defaults: {args['n_steps']} orbits at step size {args['ds']} ")
     
     while True:
         try:
             n_steps_input = input(f"   Number of orbits "
-                                    f"[{defaults['n_steps']}]: ").strip()
-            n_steps = int(n_steps_input) if n_steps_input else defaults['n_steps']
+                                    f"[{args['n_steps']}]: ").strip()
+            n_steps = int(n_steps_input) if n_steps_input else args['n_steps']
             if n_steps <= 1:
                 print("   Error: Must have positive number of steps")
                 continue
@@ -81,8 +89,8 @@ def get_user_inputs(defaults):
     
     while True:
         try:
-            ds_input = input(f"   Step size [{defaults['ds']}]: ").strip()
-            ds = float(ds_input) if ds_input else defaults['ds']
+            ds_input = input(f"   Step size [{args['ds']}]: ").strip()
+            ds = float(ds_input) if ds_input else args['ds']
             if ds <= 0:
                 print("   Error: Step size must be positive")
                 continue
@@ -91,12 +99,12 @@ def get_user_inputs(defaults):
             print("   Error: Please enter a valid number (e.g., 0.01).")
 
     print(f"\n2. Corrector Tolerance")
-    print(f"   Default: {defaults['tol']}")
+    print(f"   Default: {args['tol']}")
     
     while True:
         try:
-            tol_input = input(f"   Corrector tolerance: [{defaults['tol']}]").strip()
-            tol = float(tol_input) if tol_input else defaults['tol']
+            tol_input = input(f"   Corrector tolerance: [{args['tol']}]").strip()
+            tol = float(tol_input) if tol_input else args['tol']
             if tol <= 0:
                 print("   Error: Must be positive")
                 continue

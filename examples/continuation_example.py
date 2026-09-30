@@ -6,7 +6,7 @@ import kyklos as ky
 # ============================================================================
 def get_user_inputs(defaults):
     """
-    Prompt user for benchmark configuration parameters.
+    Prompt user for continuation configuration parameters.
     
     Returns
     -------
