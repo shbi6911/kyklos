@@ -24,8 +24,6 @@ Unlike periodic_orbit, this module imports System at runtime rather than only
 under TYPE_CHECKING: the family must call the System factory to rebuild its
 own system. That is safe here because nothing imports orbit_family except
 __init__.py and the continuation engine, so no cycle is possible.
-
-Created with the assistance of Claude by Anthropic.
 """
 
 from __future__ import annotations

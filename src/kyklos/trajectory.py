@@ -1,6 +1,69 @@
-'''Development code for an orbital trajectory handling package
-Trajectory class definition
-created with the assistance of Claude by Anthropic'''
+"""
+Trajectories with dense output, and the nodes that join their segments.
+
+This module defines ``Trajectory``, the time-contiguous result of propagating an
+``OrbitalElements`` (or numpy array), in a ``System``, together with the 
+node classes that describe where its segments begin, end, and connect. A trajectory 
+is stored as one or more propagated segments, each backed by a Heyoka continuous 
+output, so the state can be evaluated at any time within the span rather than 
+only at integration steps.
+
+A ``Trajectory`` is normally obtained from ``System.propagate()``, or from
+``Trajectory.extend()``, ``extend_back()``, and ``slice()``, rather than
+constructed directly. Its main capabilities are:
+
+- State access at arbitrary times, either as ``OrbitalElements`` (``state_at``,
+  ``evaluate``, ``sample``) or as raw arrays (the ``_raw`` variants), plus
+  the full integrator state (potentially relevant when propagating with STM).
+- State transition matrices, when propagated with ``with_stm=True``: a
+  composite STM referenced to the trajectory start (``get_stm``) and
+  segment-local STMs (``get_stm_seg``) for multiple shooting.
+- Editing in time: extending forward or backward, slicing by segment or by
+  time interval, and replacing junction nodes.
+- Export and visualization: ``to_dataframe`` for pandas, and Plotly 3D
+  plotting with optional Lagrange points and primary bodies (``plot_3d``,
+  ``add_to_plot``).
+- Promotion to a verified ``PeriodicOrbit`` via ``to_periodic`` for CR3BP
+  trajectories.
+
+Nodes
+-----
+A node marks a point in a trajectory where a state mapping may occur. The
+mapping is trivial for an ordinary continuation point and physical for an
+impulsive maneuver. Every node exposes a pre-state, a post-state, and the
+derived ``delta_v`` and ``state_defect``. Nodes come in two families:
+
+- Boundary nodes sit at the start or end of a trajectory:
+  ``StartBoundaryNode``, ``EndBoundaryNode``, and ``ImpulsiveBoundaryNode``,
+  which preserves the pre-burn state so a trajectory can later be expanded
+  into multiple segments.
+- Junction nodes sit between adjacent segments. ``NullJunctionNode`` is a
+  continuous patch point, ``ImpulsiveJunctionNode`` is a fixed impulsive
+  maneuver with position continuity, and ``FreeJunctionNode`` permits a full
+  state discontinuity. The last is the initial guess for a multiple-shooting
+  patch point: the differential corrector drives its defect to zero and
+  converts it to one of the other two types.
+
+The base state is always ``[x, y, z, vx, vy, vz]``, in km and km/s for
+two-body systems and in nondimensional units for the CR3BP.
+
+Examples
+--------
+Propagate, sample, and retrieve the state transition matrix::
+
+    import kyklos as ky
+
+    system = ky.earth_2body()
+    orbit = ky.OrbitalElements(a=7000.0, e=0.01, i=0.5,
+                               omega=0.0, w=0.0, nu=0.0,
+                               system=system)
+    traj = system.propagate(orbit, [0.0, 5400.0], with_stm=True)
+
+    mid = traj.state_at(2700.0)       # OrbitalElements at the midpoint
+    arr = traj.sample_raw(500)        # (500, 6) array on a uniform grid
+    phi = traj.get_stm(2700.0)        # (6, 6) STM from t0 to 2700 s
+    fig = traj.plot_3d()              # interactive Plotly figure
+"""
 
 from __future__ import annotations
 
@@ -305,8 +368,9 @@ class Trajectory:
     --------
     Basic propagation and state access:
 
-    >>> sys = earth_2body()
-    >>> orbit = OE(a=7000, e=0.01, i=0.5, omega=0, w=0, nu=0)
+    >>> import kyklos as ky
+    >>> sys = ky.earth_2body()
+    >>> orbit = ky.OE(a=7000, e=0.01, i=0.5, omega=0, w=0, nu=0)
     >>> traj = sys.propagate(orbit, [0, 5400])
     >>> state = traj.state_at(2700)          # midpoint state as OrbitalElements
     >>> state = traj(2700)                   # callable syntax, equivalent
@@ -373,7 +437,7 @@ class Trajectory:
                 for k in range(n_segments - 1)
             ]
         else:
-            # Explicitly provided — validate count and times
+            # Explicitly provided -- validate count and times
             if len(junction_nodes) != n_segments - 1:
                 raise ValueError(
                     f"Expected {n_segments - 1} junction node(s) for "
@@ -1406,7 +1470,7 @@ class Trajectory:
         )
         state_at_new_t0 = c_out_back(float(new_t0))[:6].copy()
 
-        # Step 2: Re-propagate forward [new_t0, self.t0] — valid forward propagation.
+        # Step 2: Re-propagate forward [new_t0, self.t0] -- valid forward propagation.
         fwd_seg = self._system.propagate(
             state_at_new_t0, [new_t0, self.t0],
             with_stm=with_stm, stm_order=stm_order, satellite=satellite
@@ -1555,7 +1619,7 @@ class Trajectory:
 
         # Find internal junction indices strictly within (t_start, t_end).
         # If t_start/t_end land on a junction, exclude that junction from
-        # internal nodes — it becomes a boundary node instead.
+        # internal nodes -- it becomes a boundary node instead.
         lo = (start_junc_idx + 1 if start_junc_idx is not None
             else bisect.bisect_right(self._junction_times, t_start))
         hi = (end_junc_idx if end_junc_idx is not None
@@ -2920,9 +2984,9 @@ class Node(ABC):
     
     Subclasses
     ----------
-    BoundaryNode : start or end of a Trajectory
-    JunctionNode : internal node in a Trajectory, shared between
-                   two adjacent segments
+    - ``BoundaryNode`` : start or end of a Trajectory
+    - ``JunctionNode`` : internal node in a Trajectory, shared between
+      two adjacent segments
     
     Notes
     -----
@@ -3127,7 +3191,9 @@ class ImpulsiveBoundaryNode(BoundaryNode):
     Notes
     -----
     Exactly two of pre_state, post_state, delta_v must be provided.
-    Derivation rules:
+
+    Derivation rules::
+
       pre_state  + delta_v   -> post_state = pre_state + [0, 0, 0, delta_v]
       post_state + delta_v   -> pre_state  = post_state - [0, 0, 0, delta_v]
       pre_state  + post_state -> delta_v   = post_state[3:6] - pre_state[3:6]
@@ -3421,13 +3487,15 @@ class ImpulsiveJunctionNode(JunctionNode):
     Notes
     -----
     Exactly two of pre_state, post_state, delta_v must be provided.
-    Derivation rules:
+
+    Derivation rules::
+
       pre_state  + delta_v    -> post_state = pre_state + [0, 0, 0, delta_v]
       post_state + delta_v    -> pre_state  = post_state - [0, 0, 0, delta_v]
       pre_state  + post_state -> delta_v   = post_state[3:6] - pre_state[3:6]
                                  (position continuity enforced)
     
-    The maneuver Jacobian is identity for a fixed burn — the delta_v
+    The maneuver Jacobian is identity for a fixed burn -- the delta_v
     does not depend on the incoming state. For state-dependent maneuvers,
     a future subclass will provide the appropriate Jacobian.
 

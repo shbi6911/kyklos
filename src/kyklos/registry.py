@@ -1,39 +1,48 @@
 """
-Correction recipe registry.
+Registry of periodic-orbit correction recipes.
 
-This module is the lower-level leaf that both the recipe wrapper and any
+This module is a dependency-free leaf that the recipe wrapper and any
 guess-producing code (the planar seeder, bifurcation targeting, user-built
-guesses) depend on. It holds two things:
+guesses) all draw on. It holds two things:
 
-  1. A registry of correction *recipes* -- the invariant family geometry that
-     defines what it means to correct an orbit "as a Lyapunov" or "as a halo":
-     which state components are free, which terminal conditions are targeted,
-     and how the orbit's phase degeneracy is pinned. Recipes are inert data;
-     they carry no algorithm parameters and no problem-specific context.
+1. A registry of correction *recipes*: the invariant family geometry that
+   defines what it means to correct an orbit "as a Lyapunov" or "as a halo".
+   A recipe fixes which start-state components are free, which terminal
+   conditions are targeted, and how the orbit's phase degeneracy is pinned.
+   Recipes are inert data; they carry no algorithm parameters and no
+   problem-specific context.
+2. The phase-pinning vocabulary and the period convention each scheme
+   implies (``period_convention_for``). A symmetric, perpendicular-crossing
+   formulation integrates a half arc, so its free-time guess is half the
+   full period.
 
-Design notes
-------------
-Recipe entries are stored as specs (a plain constraint dict), not as
-constructed corrector-constraint objects, because a continuation scheme must
-be able to *modify* the constraint set at solve-assembly time (e.g. period
-sampling pins time; other schemes pin or release a geometric freedom). You
-cannot cleanly edit a constructed immutable constraint, but you can copy and
-modify a spec dict. The registry therefore holds "data describing recipes,"
-and the wrapper/scheme layer constructs the actual corrector components at
-solve time.
+Only the label vocabulary is public: ``available_recipes()`` lists the
+families that can be corrected, for example to choose the label passed to
+``CorrectorGuess`` or ``march_family``. The recipe entries and the registry
+object are internal.
 
-The determinacy layout (which vars are free, which node times are free) is
-split by design: the *recipe* owns the invariant family geometry below; the
-continuation *scheme* owns a pure transform that edits that layout per step to
-keep the shooting system square. Nothing in this module performs that
-transform -- it only supplies the invariant base.
+Notes
+-----
+Recipes are stored as plain constraint specs (a dict) rather than as
+constructed corrector constraints, because a continuation scheme must be able
+to modify the constraint set when a solve is assembled (for example, period
+sampling pins time, and other schemes pin or release a geometric freedom).
+A constructed constraint is immutable, but a spec can be copied and edited.
+The registry therefore holds data describing recipes, and the layer above it
+builds the actual corrector components at solve time.
 
-Publicness
-----------
-The recipe entries and the registry object are internal machinery
-(underscored). The *label vocabulary* is public, because a user constructing a
-CorrectorGuess must be able to discover which recipes exist: use
-``available_recipes()``.
+The determinacy layout is split by design. The recipe owns the invariant
+family geometry, and the continuation scheme owns a pure transform that edits
+that layout at each step to keep the shooting system square. Nothing in this
+module performs that transform.
+
+Examples
+--------
+List the families that can be corrected::
+
+    import kyklos as ky
+
+    ky.available_recipes()     # ['halo', 'lyapunov']
 """
 
 from __future__ import annotations

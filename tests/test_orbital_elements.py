@@ -316,7 +316,7 @@ class TestRoundtripConversions:
         assert np.allclose(oe_equi_final.elements[:5], equi_orig[:5], 
                           rtol=RTOL, atol=ATOL)
         
-        # Handle L (true longitude) wrapping - can wrap by multiple of 2π
+        # Handle L (true longitude) wrapping - can wrap by multiple of 2*pi
         L_diff = np.abs(oe_equi_final.elements[5] - equi_orig[5])
         L_diff_mod = L_diff % (2*np.pi)
         assert (L_diff_mod < ANGLE_ATOL or 
@@ -337,9 +337,9 @@ class TestRoundtripConversions:
         assert np.allclose(oe_equi_final.elements[:5], equi_orig[:5], 
                           rtol=RTOL, atol=ATOL)
         
-        # L can wrap by any multiple of 2π
+        # L can wrap by any multiple of 2*pi
         L_diff = np.abs(oe_equi_final.elements[5] - equi_orig[5])
-        L_diff_mod = L_diff % (2*np.pi)  # Reduce to [0, 2π]
+        L_diff_mod = L_diff % (2*np.pi)  # Reduce to [0, 2*pi]
         assert (L_diff_mod < ANGLE_ATOL or 
                np.abs(L_diff_mod - 2*np.pi) < ANGLE_ATOL), \
             f"L mismatch: {oe_equi_final.elements[5]} vs {equi_orig[5]} (diff={L_diff})"
@@ -386,7 +386,7 @@ class TestMATLABReference:
         oe = OrbitalElements(kep, OEType.KEPLERIAN, validate=False, mu=MU_EARTH)
         equi_python = oe.to_equinoctial().elements
         
-        # For equinoctial, L might have 2π ambiguity
+        # For equinoctial, L might have 2*pi ambiguity
         assert np.allclose(equi_python[:5], equi_matlab[:5], 
                           rtol=RTOL, atol=ATOL), \
             f"Orbit {orbit_idx} Kep->Equi mismatch (p,f,g,h,k)"
@@ -416,7 +416,7 @@ class TestMATLABReference:
                           rtol=RTOL, atol=ATOL), \
             f"Orbit {orbit_idx} Cart->Kep 'e' mismatch"
         
-        # Angles with 2π wrapping
+        # Angles with 2*pi wrapping
         for idx, name in [(2, 'i'), (3, 'Omega'), (4, 'w'), (5, 'nu')]:
             angle_diff = np.abs(kep_python[idx] - kep_matlab[idx])
             assert (angle_diff < ANGLE_ATOL or 
@@ -710,7 +710,7 @@ class TestUtilities:
         """Test orbital period for eccentric orbit."""
         T = molniya_kep.orbital_period()
         
-        # Molniya: a = 26553 km → T = 12 hours
+        # Molniya: a = 26553 km -> T = 12 hours
         T_hours = T / 3600
         assert 11.5 < T_hours < 12.5
     
@@ -856,7 +856,7 @@ class TestUtilities:
         assert np.isclose(n_equi, n_kep, rtol=1e-10)
     
     def test_mean_motion_period_relationship(self, leo_circular_kep):
-        """Test that mean motion and period are related by n = 2π/T."""
+        """Test that mean motion and period are related by n = 2*pi/T."""
         n = leo_circular_kep.mean_motion()
         T = leo_circular_kep.orbital_period()
         

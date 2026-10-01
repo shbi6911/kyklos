@@ -4,10 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "kyklos"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Python package for orbital mechanics and satellite mission design"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 authors = [
     {name = "Shane Billingsley"},
 ]
@@ -30,6 +30,12 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+# Single source of truth: __version__ in src/kyklos/__init__.py.
+# Setuptools reads the literal without importing the package (which would
+# require Heyoka at build time).
+[tool.setuptools.dynamic]
+version = {attr = "kyklos.__version__"}
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

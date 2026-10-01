@@ -1,6 +1,72 @@
-'''Development code for an orbital trajectory handling package
-Differential corrector (shooting) module
-created with the assistance of Claude Opus by Anthropic'''
+"""
+Differential correction (shooting) for trajectory targeting.
+
+This module provides a system-agnostic differential corrector that adjusts a
+trajectory's free variables until a set of constraints is satisfied. It works
+on a ``Trajectory`` initial guess with one segment (single shooting) or
+several (multiple shooting), and solves by a minimum-norm Newton iteration
+using the state transition matrices propagated with each iterate.
+
+The free-variable vector has the layout::
+
+    X = [ free start-state components | junction post-states | free times ]
+
+and the solver drives the constraint vector F(X) to zero. F stacks one block
+of interior continuity defects (one per junction) followed by one block per
+terminal or free-variable constraint. The problem is described by a few
+pieces, passed to ``DifferentialCorrector.solve``:
+
+- ``free_vars`` : which start-state components the corrector may adjust,
+  as a category ('all', 'position', 'velocity', 'planar') or a list of
+  component names.
+- ``constraints`` : the conditions to enforce (see below).
+- ``free_times`` : which boundary times are also free variables.
+- ``node_specs`` : a ``NodeSpec`` per junction, selecting which of its
+  components are free, which are continuous, and what node type it becomes
+  on convergence (an ordinary patch point or an impulsive maneuver).
+
+Constraints form a small hierarchy rooted at ``Constraint``:
+
+- ``TerminalConstraint`` : conditions on the final state, which depend on the
+  propagated flow through the STM. ``TargetState`` drives named final
+  components to values, ``Periodicity`` enforces final state equal to initial
+  state, ``JacobiConstraint`` targets a CR3BP Jacobi constant, and
+  ``CallableConstraint`` wraps user-supplied functions.
+- ``FreeVarConstraint`` : conditions written directly on X, used to close the
+  underdetermined systems that arise in continuation and phase pinning.
+  ``PseudoArclength``, ``FreeVarPin``, and ``PhaseConstraint`` are provided.
+
+``DifferentialCorrector.solve`` returns a ``ShooterResult``. Reading
+``.trajectory`` from a solve that did not converge raises
+``ConvergenceError``, so failure cannot be mistaken for a solution; check
+``.converged`` first to handle it without an exception. The solver warns or
+aborts when the Jacobian condition number crosses ``cond_warn`` and
+``cond_fail``, and its tolerance and iteration budget default from the package
+``config``.
+
+Examples
+--------
+Correct a planar Earth-Moon Lyapunov guess so that it reaches a perpendicular
+x-z plane crossing at the half period, adjusting only x and vy at the start::
+
+    import numpy as np
+    import kyklos as ky
+
+    system = ky.earth_moon_cr3bp()
+    state0 = np.array([0.79, 0.0, 0.0, 0.0, 0.42, 0.0])
+    guess = system.propagate(state0, [0.0, 1.87])
+    fig = guess.plot_3d()
+
+    corrector = ky.DifferentialCorrector()
+    result = corrector.solve(
+        guess,
+        free_vars=['x', 'vy'],
+        constraints=[ky.TargetState({'y': 0.0, 'vx': 0.0})],
+    )
+    converged = result.trajectory
+    fig = converged.add_to_plot()
+    fig.show()
+"""
 
 from __future__ import annotations
 
@@ -1007,8 +1073,8 @@ class PhaseConstraint(FreeVarConstraint):
  
     The condition is the shooting-method specialization of the variational
     phase condition used by collocation continuation codes. Minimizing the
-    phase mismatch
- 
+    phase mismatch::
+
         J(tau) = integral_0^T |x(t) - x_ref(t - tau)|^2 dt
  
     over a trial shift tau and setting dJ/dtau = 0 at tau = 0 gives the

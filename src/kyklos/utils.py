@@ -1,5 +1,25 @@
 """
-Utility functions and classes for the Kyklos package.
+Small shared helpers: a timing context manager and validation reporting.
+
+``Timer`` measures the wall-clock time of a block of code and, by default,
+prints it on exit; the elapsed seconds are also stored on the object. It is
+the only public item in this module.
+
+``validation_error`` is an internal helper and not part of the public API. It
+gives the package one consistent response to invalid input: it raises an
+exception when ``config.STRICT_VALIDATION`` is True (the default) and issues a
+``UserWarning`` otherwise. Users control this behavior through
+``config.STRICT_VALIDATION`` rather than by calling the helper.
+
+Examples
+--------
+Time a propagation::
+
+    import kyklos as ky
+
+    with ky.Timer("Propagation") as t:
+        traj = ky.earth_2body().propagate(ky.leo_orbit(), [0.0, 5400.0])
+    print(t.elapsed)
 """
 
 from time import perf_counter
@@ -13,12 +33,13 @@ class Timer:
     
     Examples
     --------
-    >>> from kyklos.utils import Timer
-    >>> with Timer("Propagation"):
-    ...     trajectory = sys.propagate(state, 0, 1000)
+    >>> import kyklos as ky
+    >>> sys = ky.earth_2body()
+    >>> with ky.Timer("Propagation"):
+    ...     trajectory = sys.propagate(state, [0, 1000])
     Propagation: 0.123456 s
     
-    >>> with Timer() as t:
+    >>> with ky.Timer() as t:
     ...     # ... code ...
     >>> print(f"Took {t.elapsed:.6f} seconds")
     """

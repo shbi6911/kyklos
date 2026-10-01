@@ -6,10 +6,15 @@
 Kyklos documentation
 ====================
 
-Add your content using ``reStructuredText`` syntax. See the
-`reStructuredText <https://www.sphinx-doc.org/en/master/usage/restructuredtext/index.html>`_
-documentation for details.
+Kyklos is a Python package for spacecraft trajectory propagation, orbital
+mechanics, and mission design, built on the Heyoka Taylor-series integrator.
+It supports two-body dynamics (with J2, J3, and drag perturbations) and the
+circular restricted three-body problem, with multiple-shooting differential
+correction and pseudo-arclength continuation of periodic-orbit families.
 
+New to Kyklos? Start with :doc:`installation` and :doc:`quickstart`. The
+:doc:`modules` page describes how the package is organized, and :doc:`api`
+lists every public class and function.
 
 .. toctree::
    :maxdepth: 2
@@ -17,4 +22,5 @@ documentation for details.
 
    installation
    quickstart
+   modules
    api

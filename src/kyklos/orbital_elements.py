@@ -1,6 +1,55 @@
-'''Development code for an orbital trajectory handling package
-OrbitalElements class definition
-created with the assistance of Claude Sonnet 4.5 by Anthropic'''
+"""
+Orbital element sets and conversions between them.
+
+This module defines ``OrbitalElements``, an immutable container for a
+six-element orbital state, and ``OEType``, the enumeration of the supported
+element sets:
+
+- ``OEType.KEPLERIAN`` : (a, e, i, omega, w, nu), with angles in radians.
+- ``OEType.CARTESIAN`` : (x, y, z, vx, vy, vz), in km and km/s. Cartesian
+  states assume an equatorial frame centered on the system's primary body.
+- ``OEType.EQUINOCTIAL`` : modified equinoctial elements (p, f, g, h, k, L),
+  which remain well behaved for circular and equatorial orbits.
+- ``OEType.CR3BP`` : nondimensional Cartesian coordinates in the rotating
+  frame of a circular restricted three-body system. These are a state
+  representation only and are not converted to the dimensional sets.
+
+An ``OrbitalElements`` object holds the element values, their type, and the
+gravitational parameter needed to interpret them. The preferred way to supply
+that parameter is to pass the ``System`` the state belongs to, which also
+selects the correct mass ratio for CR3BP elements. A bare ``mu`` is provided
+for use when no ``System`` is available, and Earth's value is used if neither
+is given. Elements can be built from named parameters (the type is detected
+from the names), from an array plus a type, or with the validation-free
+constructors ``cartesian``, ``keplerian``, and ``equinoctial`` intended for
+automated processes. ``from_numpy`` and ``from_dataframe`` build lists of
+elements from tabular data.
+
+Because the object is immutable, a change of state or representation always
+produces a new ``OrbitalElements``. The main operations are:
+
+- Conversion among Keplerian, Cartesian, and equinoctial sets, with
+  ``convert_to`` and the shortcuts ``to_cartesian``, ``to_keplerian``, and
+  ``to_equinoctial``.
+- Derived quantities: orbital period, mean motion, specific energy, specific
+  angular momentum, and, for CR3BP states, the Jacobi constant.
+- Batch operations over lists of elements through the ``Batch`` namespace.
+- Equality and hashing that use the tolerances in ``kyklos.config``, so that
+  numerically equivalent states compare equal.
+
+Examples
+--------
+Build a Keplerian orbit from a system and convert it::
+
+    import kyklos as ky
+
+    system = ky.earth_j2()
+    orbit = ky.OrbitalElements(a=7000.0, e=0.01, i=0.5,
+                               omega=0.0, w=0.0, nu=0.0,
+                               system=system)
+    cart = orbit.to_cartesian()
+    period = orbit.orbital_period()      # seconds
+"""
 
 import numpy as np
 from enum import Enum
@@ -37,13 +86,21 @@ class OrbitalElements:
         
         Can be called in two ways:
         
-        1. Array-based (fast for propagation):
-        OrbitalElements([7000, 0.01, 0.5, 0, 0, 0], 'kep', mu=398600.4418)
-        
-        2. Named parameters (readable for setup):
-        OrbitalElements(a=7000, e=0.01, i=0.5, omega=0, w=0, nu=0, mu=398600.4418)
-        OrbitalElements(x=-6045, y=-3490, z=2500, vx=-3.457, vy=6.618, vz=2.533, 
-                        system=earth_2body())
+        1. Array-based (fast for propagation)::
+
+            system = ky.earth_2body()
+            ky.OrbitalElements([7000, 0.01, 0.5, 0, 0, 0], 'kep', system=system)
+
+        2. Named parameters (readable for setup)::
+
+            ky.OrbitalElements(a=7000, e=0.01, i=0.5, omega=0, w=0, nu=0,
+                               system=system)
+            ky.OrbitalElements(x=-6045, y=-3490, z=2500,
+                               vx=-3.457, vy=6.618, vz=2.533,
+                               system=system)
+
+        A ``System`` supplies the gravitational parameter and the frame
+        conventions. When no System is available, pass ``mu=...`` instead.
         
         Parameters
         ----------
@@ -281,7 +338,7 @@ class OrbitalElements:
         if element_type is None:
             # Infer from column names
             cols = set(df.columns)
-            if cols == {'a', 'e', 'i', 'RAAN', 'omega', 'nu'}:
+            if cols == {'a', 'e', 'i', 'omega', 'w', 'nu'}:
                 element_type = OEType.KEPLERIAN
             elif cols == {'x', 'y', 'z', 'vx', 'vy', 'vz'}:
                 element_type = OEType.CARTESIAN
@@ -302,19 +359,31 @@ class OrbitalElements:
     def convert_to(self, target_type):
         """
         Convert orbital elements to a different representation.
-        
-        Parameters:
-        -----------
+
+        Conversions are supported among Keplerian, Cartesian, and
+        equinoctial elements. The result keeps this object's system and
+        gravitational parameter. If target_type matches the current element
+        type, a copy is returned.
+
+        Parameters
+        ----------
         target_type : OEType or str
-            The desired orbital element type to convert to
-            Can be OEType enum or string ('cart', 'kep', 'equi')
-        mu : float, optional
-            Gravitational parameter (km^3/s^2), default is Earth's mu
-            
-        Returns:
-        --------
+            The desired element type: an OEType member, or a string such as
+            'cart', 'kep', or 'equi'.
+
+        Returns
+        -------
         OrbitalElements
-            New OrbitalElements object with elements in target type
+            New OrbitalElements object with elements in the target type.
+
+        Raises
+        ------
+        ValueError
+            If target_type is an unrecognized string, or if the requested
+            conversion is not implemented (any conversion to or from CR3BP
+            elements other than to the same type).
+        TypeError
+            If target_type is neither an OEType nor a string.
         """
         # Convert string to enum if necessary
         target_type = self._parse_element_type(target_type)
@@ -392,7 +461,7 @@ class OrbitalElements:
     def _keplerian_to_equinoctial(self):
         """Convert Keplerian elements to Modified Equinoctial elements
         Uses algorithm from Walker et al, Celestial Mechanics, v.36,pp.409
-        Uses the prograde formulation (singularity at i = 180°).
+        Uses the prograde formulation (singularity at i = 180 deg).
         """
         a, e, i, omega, w, nu = self.elements
         p = a*(1-e**2)
@@ -410,7 +479,7 @@ class OrbitalElements:
         # Extract position and velocity
         rvec = self.elements[:3]
         vvec = self.elements[3:]
-        # calculate angular momentum vector h = r × v
+        # calculate angular momentum vector h = r x v
         hvec = np.cross(rvec,vvec)
         # calculate inclination
         i = np.arctan2(np.sqrt(hvec[0]**2 + hvec[1]**2),hvec[2])
@@ -434,7 +503,7 @@ class OrbitalElements:
     def _cartesian_to_equinoctial(self):
         """
         Convert Cartesian state vector to Modified Equinoctial elements.
-        Uses the prograde formulation (singularity at i = 180°).
+        Uses the prograde formulation (singularity at i = 180 deg).
         """
         # Extract position and velocity
         rvec = self.elements[:3]
@@ -452,7 +521,7 @@ class OrbitalElements:
         # h = -h_y / (1 + h_z), k = h_x / (1 + h_z)
         h_elem = -h_hat[1] / (1 + h_hat[2])
         k_elem = h_hat[0] / (1 + h_hat[2])
-        # Eccentricity vector: e_vec = (v × h)/mu - r_hat
+        # Eccentricity vector: e_vec = (v x h)/mu - r_hat
         evec = np.cross(vvec, h_vec) / self._mu - r_hat
         # Construct f_hat and g_hat basis vectors
         h_sq = h_elem**2
@@ -465,7 +534,7 @@ class OrbitalElements:
         f_elem = np.dot(evec, f_hat)
         g_elem = np.dot(evec, g_hat)
         # For true longitude L, we need position projected onto f_hat and g_hat
-        # r·v gives us information about where we are in the orbit
+        # r dot v gives us information about where we are in the orbit
         rdv = np.dot(rvec, vvec)
         # Velocity perpendicular to radial direction
         v_hat = (r_mag * vvec - rdv * r_hat) / h_mag
@@ -481,7 +550,7 @@ class OrbitalElements:
     def _equinoctial_to_keplerian(self):
         """
         Convert Modified Equinoctial elements to Keplerian elements.
-        Uses the prograde formulation (singularity at i = 180°).
+        Uses the prograde formulation (singularity at i = 180 deg).
         """
         p, f, g, h, k, L = self.elements
         a = p/(1 - f**2 - g**2)
@@ -495,7 +564,7 @@ class OrbitalElements:
     def _equinoctial_to_cartesian(self):
         """
         Convert Modified Equinoctial elements to Cartesian state vector.
-        Uses the prograde formulation (singularity at i = 180°).
+        Uses the prograde formulation (singularity at i = 180 deg).
         """
         p, f, g, h, k, L = self.elements
         # define intermediate quantities
@@ -535,7 +604,7 @@ class OrbitalElements:
 
     @property
     def mu(self):
-        """Gravitational parameter [km³/s²]"""
+        """Gravitational parameter [km^3/s^2]"""
         return self._mu
     
     @property
@@ -741,23 +810,23 @@ class OrbitalElements:
         
         @staticmethod
         def a(orbits):
-            """Get semi-major axis for multiple orbits"""
-            return np.array([o.a() for o in orbits])
+            """Get semi-major axis for multiple orbits (Keplerian only)"""
+            return np.array([o.a for o in orbits])
         
         @staticmethod
         def e(orbits):
-            """Get eccentricity for multiple orbits"""
-            return np.array([o.e() for o in orbits])
+            """Get eccentricity for multiple orbits (Keplerian or equinoctial)"""
+            return np.array([o.e for o in orbits])
 
         @staticmethod
-        def pos(orbits):
-            """Get position for multiple orbits"""
-            return np.array([o.pos() for o in orbits])
+        def position(orbits):
+            """Get position for multiple orbits (Cartesian or CR3BP only)"""
+            return np.array([o.position for o in orbits])
         
         @staticmethod
-        def vel(orbits):
-            """Get velocity for multiple orbits"""
-            return np.array([o.vel() for o in orbits])
+        def velocity(orbits):
+            """Get velocity for multiple orbits (Cartesian or CR3BP only)"""
+            return np.array([o.velocity for o in orbits])
         
         @staticmethod
         def orbital_period(orbits):
@@ -832,7 +901,7 @@ class OrbitalElements:
             Notes
             -----
             Column names depend on element type:
-            - Keplerian: ['a', 'e', 'i', 'RAAN', 'omega', 'nu']
+            - Keplerian: ['a', 'e', 'i', 'omega', 'w', 'nu']
             - Cartesian: ['x', 'y', 'z', 'vx', 'vy', 'vz']
             - Equinoctial: ['p', 'f', 'g', 'h', 'k', 'L']
             - CR3BP: ['x_nd', 'y_nd', 'z_nd', 'vx_nd', 'vy_nd', 'vz_nd']
@@ -901,10 +970,10 @@ class OrbitalElements:
             return (f"Keplerian Elements:\n"
                     f"  a     = {a:12.4f} km\n"
                     f"  e     = {e:12.6f}\n"
-                    f"  i     = {np.degrees(i):12.4f}°\n"
-                    f"  RAAN  = {np.degrees(omega):12.4f}°\n"
-                    f"  ω     = {np.degrees(w):12.4f}°\n"
-                    f"  ν     = {np.degrees(nu):12.4f}°")
+                    f"  i     = {np.degrees(i):12.4f} deg\n"
+                    f"  RAAN  = {np.degrees(omega):12.4f} deg\n"
+                    f"  w     = {np.degrees(w):12.4f} deg\n"
+                    f"  nu    = {np.degrees(nu):12.4f} deg")
         
         elif self.element_type == OEType.CARTESIAN:
             r = self.elements[:3]
@@ -921,7 +990,7 @@ class OrbitalElements:
                     f"  g = {g:12.6f}\n"
                     f"  h = {h:12.6f}\n"
                     f"  k = {k:12.6f}\n"
-                    f"  L = {np.degrees(L):12.4f}°")
+                    f"  L = {np.degrees(L):12.4f} deg")
         
         elif self.element_type == OEType.CR3BP:
             r = self.elements[:3]

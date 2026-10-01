@@ -1,23 +1,64 @@
-"""System class definition for orbital propagation.
+"""
+Dynamical systems for propagation, and the parameter types that define them.
 
-Defines the gravitational environment (equations of motion, system parameters)
-for trajectory propagation. Two concrete system types are provided:
+This module defines ``System``, the object that represents a dynamical model
+and propagates it. A ``System`` holds the equations of motion, the physical
+parameters of its bodies, and the Heyoka integrators built from them. It is
+created through the ``System`` factory, which returns one of two concrete types:
 
-    TwoBodySystem  -- 2-body point-mass gravity with optional J2, J3, drag
-    CR3BPSystem    -- Circular Restricted 3-Body Problem in rotating frame
+- ``TwoBodySystem`` : point-mass gravity about a central body, in km and
+  seconds, with optional J2 and J3 zonal harmonics and atmospheric drag.
+- ``CR3BPSystem`` : the circular restricted three-body problem in the rotating
+  frame of two primaries, in nondimensional units. It provides the
+  characteristic scales (``L_star``, ``T_star``, ``mass_ratio``), conversions
+  between dimensional and nondimensional quantities, the five Lagrange points,
+  and ``planar_seeder`` for linear initial guesses about a collinear point.
 
-Both are constructed through the unified System factory:
+The factory is the only way to construct either type, and instantiating one
+directly raises ``TypeError``. The types are public so that ``isinstance``
+checks can be used where behavior depends on the kind of system.
 
-    sys = System('2body', earth())
-    sys = System('3body', earth(), moon(), distance=384400.0)
+Every system provides:
 
-Direct instantiation of TwoBodySystem or CR3BPSystem raises TypeError.
-Use isinstance() checks where type-specific branching is needed:
+- ``propagate`` : integrate a state, a list of states, or a set of nodes to
+  produce a ``Trajectory`` with dense output. With ``with_stm=True`` the state
+  transition matrix is integrated alongside the state.
+- ``vector_field`` and ``field_jacobian`` : evaluate the equations of motion and
+  their Jacobian at a state or a batch of states.
+- Control over compilation. A system compiles its integrator on construction by
+  default, or defers it with ``compile=False``. The variational integrator and
+  the evaluators are compiled on first use.
 
-    if isinstance(sys, CR3BPSystem):
-        print(sys.L_star)
+The parameter types are small, immutable dataclasses:
 
-Created with the assistance of Claude Sonnet 4.6 by Anthropic.
+- ``BodyParams`` : gravitational parameter, radius, zonal harmonics, and
+  rotation rate for a celestial body, tagged with the provenance of its data.
+  ``BodyParams.modified`` makes an edited copy and re-tags it as user data.
+- ``AtmoParams`` : an exponential atmosphere model. Unlike the rest of the
+  package, it uses SI units (m, kg/m^3).
+- ``SysType`` : the enumeration of base dynamics. Only the two-body and
+  CR3BP types are implemented; an n-body member is reserved.
+- ``SeederResult`` : the linear seed produced by ``CR3BPSystem.planar_seeder``,
+  bundling a state and period estimate with the modal diagnostics behind them.
+
+Systems are immutable after construction. Compiling an integrator is by far the
+most expensive step, so the factories in ``defaults`` cache their systems, and a
+ResourceWarning is issued when more than ``config.INSTANCE_WARNING_THRESHOLD``
+systems exist at once.
+
+Examples
+--------
+Build a two-body Earth system with J2, and a CR3BP system for the Earth-Moon
+pair::
+
+    import kyklos as ky
+
+    j2_system = ky.System('2body', ky.earth(), perturbations=('J2',))
+    cr3bp = ky.System('3body', ky.earth(), ky.moon(), distance=384400.0)
+
+    print(cr3bp.mass_ratio, cr3bp.L_star)
+    seed = cr3bp.planar_seeder('L1')
+    traj = cr3bp.propagate(seed.state, [0.0, seed.period])
 """
 
 import numpy as np
@@ -189,7 +230,7 @@ class AtmoParams:
 
     Notes
     -----
-    AtmosphereParams uses SI units (m, kg/m^3), unlike the rest of the
+    AtmoParams uses SI units (m, kg/m^3), unlike the rest of the
     package which uses km. Conversions are applied internally when
     building the symbolic EOM.
     """
@@ -1320,7 +1361,7 @@ class TwoBodySystem(System):
     Models spacecraft motion under point-mass central body gravity, with
     optional zonal harmonic (J2, J3) and atmospheric drag perturbations.
 
-    Construct via the System factory -- do not instantiate directly:
+    Construct via the System factory -- do not instantiate directly::
 
         sys = System('2body', primary_body)
         sys = System('2body', primary_body, perturbations=('J2',))

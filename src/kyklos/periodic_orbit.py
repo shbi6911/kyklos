@@ -14,21 +14,21 @@ forthcoming Trajectory.to_periodic delegator) acyclic.
 
 Construction
 ------------
-A PeriodicOrbit is built from a converged Trajectory:
+A PeriodicOrbit is built from a converged Trajectory::
 
     po = PeriodicOrbit(traj)                 # period inferred from geometry
     po = PeriodicOrbit(traj, period=T)       # period supplied explicitly
 
 When the period is omitted it is inferred from endpoint geometry:
-  - full-period formulation:  start ~= end                  -> period = span
-  - mirror half-orbit:        both ends are perpendicular
-                              x-z plane crossings            -> period = 2*span
+
+- full-period formulation: start ~= end, so period = span.
+- mirror half-orbit: both ends are perpendicular x-z plane crossings, so
+  period = 2*span.
+
 Closure of the resulting full-period trajectory is the universal periodicity
 certificate; the perpendicular-crossing test only selects the period multiplier.
 For exotic cases (other symmetry planes, multi-revolution families) supply the
 period explicitly.
-
-Created with the assistance of Claude Opus 4.8 by Anthropic.
 """
 
 from __future__ import annotations
@@ -365,7 +365,7 @@ class PeriodicOrbit:
     @property
     def stability_index(self) -> float:
         """
-        Maximum stability index nu = 0.5 * (|lambda_max| + 1 / |lambda_max|).
+        Maximum stability index ``nu = 0.5 * (abs(lambda_max) + 1 / abs(lambda_max))``.
 
         Uses the largest-magnitude Floquet multiplier. nu ~= 1 for a linearly
         stable orbit (all multipliers on the unit circle) and grows with the

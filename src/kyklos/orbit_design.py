@@ -1,11 +1,40 @@
-'''
-Convenience functions to return specific forms of orbits within the 2BP and 
-perturbed 2BP.  Exposed to users with arguments for any Keplerian orbital
-elements not fixed by the orbit type (e=0.0 for circular/synchronous, etc.)
+"""
+Constructors for common Keplerian orbit types around any central body.
 
-These functions work for any input BodyParams, they are used by defaults.py
-to define default Earth orbits.
-'''
+Each function returns Keplerian ``OrbitalElements`` for a named orbit type,
+computed from the physical parameters of a ``BodyParams`` (gravitational
+parameter, radius, rotation rate, J2). The definition of the orbit type fixes
+some elements, and the remaining ones are left as arguments:
+
+- ``circular_orbit`` : circular at a given altitude above the body.
+- ``synchronous_orbit`` : circular, with a period equal to the body's rotation
+  period. The default inclination gives a stationary orbit.
+- ``molniya_orbit`` : half-sidereal-day period at the critical inclination,
+  with the eccentricity set by the chosen perigee altitude.
+- ``sun_synchronous_orbit`` : inclination solved so that the J2 nodal
+  regression matches a target ``node_rate``.
+
+Angles are in radians and lengths in km. These are two-body constructions:
+the returned elements describe an ideal osculating orbit and include no
+perturbations, although J2 is used where the orbit type is defined by it
+(Molniya and sun-synchronous). Where an orbit type depends on a body
+property such as rotation rate or J2, that property must be defined. The
+default Earth orbits in ``defaults`` are built with these functions.
+
+Examples
+--------
+Build orbits around Earth::
+
+    import numpy as np
+    import kyklos as ky
+
+    earth = ky.earth()
+    leo = ky.circular_orbit(earth, altitude=500.0, i=np.radians(45.0))
+    geo = ky.synchronous_orbit(earth)
+    sso = ky.sun_synchronous_orbit(
+        earth, a=earth.radius + 700.0,
+        node_rate=2 * np.pi / (365.2422 * 86400.0))
+"""
 
 import numpy as np
 from .system import BodyParams

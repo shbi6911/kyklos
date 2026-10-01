@@ -1,6 +1,37 @@
-'''Development code for an orbital trajectory handling package
-Satellite class definition
-created with the assistance of Claude Sonnet 4.5 by Anthropic'''
+"""
+Physical properties of a spacecraft for dynamics modeling.
+
+This module defines ``Satellite``, an immutable description of a spacecraft's
+mass, drag properties, and inertia tensor. A ``Satellite`` is passed to
+``System.propagate`` for systems with satellite-dependent perturbations, such
+as atmospheric drag, which need the ballistic properties of the vehicle in
+addition to its state.
+
+A ``Satellite`` is validated on construction (positive mass and drag area,
+a symmetric positive-definite 3x3 inertia tensor) and stores read-only copies
+of its data, so a satellite can be shared safely between propagations. Drag
+enters through the product of the drag coefficient and reference area, exposed
+as ``Cd_A``. For drag-only work, ``Satellite.for_drag_only`` builds a vehicle
+from a mass and a ``Cd_A`` value with a placeholder inertia tensor. The inertia
+tensor and its inverse are stored in the body frame in anticipation of
+attitude dynamics, and richer models such as reflectivity and detailed
+geometry are planned extensions of this class.
+
+Examples
+--------
+Propagate a low orbit under atmospheric drag::
+
+    import kyklos as ky
+
+    system = ky.earth_drag()
+    orbit = ky.OrbitalElements(a=6778.0, e=0.001, i=0.9,
+                               omega=0.0, w=0.0, nu=0.0,
+                               system=system)
+    sat = ky.Satellite.for_drag_only(mass=500.0, Cd_A=4.4, name='demo')
+    traj = system.propagate(orbit, [0.0, 5400.0], satellite=sat)
+    fig = traj.plot_3d()
+    fig.show()
+"""
 
 import numpy as np
 from typing import Optional
@@ -22,7 +53,7 @@ class Satellite:
     cross_section : float
         Reference cross-sectional area for drag [m^2]
     inertia : np.ndarray
-        3x3 inertia tensor [kg⋅m^2] in body frame
+        3x3 inertia tensor [kg*m^2] in body frame
     name : str, optional
         Satellite identifier
     """
@@ -107,12 +138,12 @@ class Satellite:
     
     @property
     def inertia(self) -> np.ndarray:
-        """Inertia tensor [kg⋅m^2] (read-only)"""
+        """Inertia tensor [kg*m^2] (read-only)"""
         return self._inertia
     
     @property
     def inv_inertia(self) -> np.ndarray:
-        """Inverse inertia tensor [kg^-1⋅m^-2] (read-only)"""
+        """Inverse inertia tensor [kg^-1*m^-2] (read-only)"""
         return self._inv_inertia
     
     @property

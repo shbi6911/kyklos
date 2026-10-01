@@ -48,3 +48,6 @@ docs/.doctrees/
 # Experimental/scratch work
 misc/
 Claude outputs/
+
+# Sphinx autosummary output (regenerated on every build)
+docs/source/generated/

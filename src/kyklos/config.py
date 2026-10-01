@@ -1,6 +1,5 @@
 """
-Global Configuration for Kyklos Package
-========================================
+Global configuration for the Kyklos package.
 
 This module provides package-wide configuration settings that users can modify
 to control numerical tolerances, validation behavior, and default plotting options.
@@ -27,10 +26,21 @@ Temporarily modify settings:
 ...     # Relaxed tolerance for this block only
 ...     orbit1 == orbit2
 
+Relax validation, so that suspect input issues a warning instead of raising an
+error (``STRICT_VALIDATION`` is True by default):
+
+>>> with kyklos.temp_config(STRICT_VALIDATION=False):
+...     # Velocity is implausibly large for this position: warns, not raises
+...     orbit = kyklos.OrbitalElements(x=7000.0, y=0.0, z=0.0,
+...                                    vx=0.0, vy=1000.0, vz=0.0)
+
 Notes
 -----
 These settings affect package-wide behavior. Modifying them will impact
 all subsequent operations until changed again or reset.
+
+The SNAP_TO_* thresholds are reserved for planned snapping behavior and
+currently have no effect.
 """
 
 from dataclasses import dataclass
@@ -56,14 +66,20 @@ class KyklosConfig:
         Number of decimal places for rounding when computing hash values.
         Automatically computed to preserve hash contract
     SNAP_TO_ZERO_THRESHOLD : float
-        Values below this threshold are treated as exactly zero.
-        Useful for numerical stability with very small numbers.
+        Reserved: not yet implemented, and currently has no effect.
+        Intended behavior: values with magnitude below this threshold are
+        treated as exactly zero, to remove numerical noise in orbital
+        element conversions.
         Default: 1e-10
     SNAP_TO_CIRCULAR : float
-        Eccentricity below this threshold treated as circular orbit (e=0).
+        Reserved: not yet implemented, and currently has no effect.
+        Intended behavior: eccentricity below this threshold is treated as
+        a circular orbit (e = 0).
         Default: 1e-8
     SNAP_TO_EQUATORIAL : float
-        Inclination below this threshold treated as equatorial (i=0).
+        Reserved: not yet implemented, and currently has no effect.
+        Intended behavior: inclination below this threshold is treated as
+        equatorial (i = 0).
         Default: 1e-8
     STRICT_VALIDATION : bool
         If True, validation failures raise exceptions.
@@ -162,7 +178,7 @@ class KyklosConfig:
     EQUALITY_RTOL: float = 1e-12
     EQUALITY_ATOL: float = 1e-14
     
-    # Snapping behavior thresholds
+    # Snapping behavior thresholds (reserved: not yet implemented, no effect)
     SNAP_TO_ZERO_THRESHOLD: float = 1e-10
     SNAP_TO_CIRCULAR: float = 1e-8
     SNAP_TO_EQUATORIAL: float = 1e-8
@@ -243,7 +259,7 @@ class KyklosConfig:
         lines.append(f"    EQUALITY_RTOL = {self.EQUALITY_RTOL}")
         lines.append(f"    EQUALITY_ATOL = {self.EQUALITY_ATOL}")
         lines.append(f"    HASH_DECIMALS = {self.HASH_DECIMALS}")
-        lines.append("  Snapping Thresholds:")
+        lines.append("  Snapping Thresholds (reserved, no effect yet):")
         lines.append(f"    SNAP_TO_ZERO_THRESHOLD = {self.SNAP_TO_ZERO_THRESHOLD}")
         lines.append(f"    SNAP_TO_CIRCULAR = {self.SNAP_TO_CIRCULAR}")
         lines.append(f"    SNAP_TO_EQUATORIAL = {self.SNAP_TO_EQUATORIAL}")

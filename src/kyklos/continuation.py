@@ -314,20 +314,35 @@ def _check_guess_state(state) -> np.ndarray:
 
 class CorrectorGuess:
     """
-    Validated input to the recipe correction wrapper.
+    Validated, immutable input to ``correct_as()``.
 
-    The single, narrow funnel through which every correction request flows,
-    regardless of origin: a planar seed, a continuation step, a bifurcation
-    orbit, or a hand-built state. It carries only what a corrector actually
-    needs -- a starting state, a period guess, and a family label -- and
-    validates all three at construction so malformed requests fail early and
-    clearly rather than deep inside the corrector.
+    A CorrectorGuess bundles what an isolated correction needs -- a starting
+    state, a period guess, a System, a family recipe, and a variable layout --
+    and checks all of it at construction, so a malformed request fails early
+    and clearly rather than deep inside the corrector.
 
-    It deliberately does NOT carry seeder diagnostics (frequency, saddle rate,
-    etc.): those describe how a *linear seed* was produced and are meaningless
-    for, say, a halo guess perturbed off a bifurcation orbit. A SeederResult
-    can *produce* a CorrectorGuess (via ``from_seeder_result``), but a
-    CorrectorGuess is not a SeederResult.
+    The usual way to get one is from a planar seed::
+
+        seed = cr3bp.planar_seeder('L1')
+        guess = ky.CorrectorGuess.from_seeder_result(seed, cr3bp, 'lyapunov')
+        dc = ky.DifferentialCorrector(tol=1e-12)
+        orbit = ky.correct_as(guess, dc)
+
+    Note that for an orbit close to a Lagrange point (i.e. a planar seed), a
+    corrector with higher tolerance than the default 1e-10 is often required
+    in order to converge to closure.
+
+    It can also be built directly from any state and period estimate (for
+    example, a perturbed copy of an existing orbit), and ``replace()`` makes
+    a modified copy, e.g. for retrying a failed correction.
+
+    ``march_family()`` does not use this class: it works from a converged
+    PeriodicOrbit and builds its own per-step solves.
+
+    A guess deliberately does NOT carry seeder diagnostics (frequency, saddle
+    rate, etc.). Those describe how a linear seed was produced and say
+    nothing about a guess that came from elsewhere. A SeederResult can
+    produce a CorrectorGuess, but a CorrectorGuess is not a SeederResult.
 
     Parameters
     ----------
@@ -335,41 +350,32 @@ class CorrectorGuess:
         Starting state [x, y, z, vx, vy, vz], shape (6,), nondimensional, in
         the rotating frame. Stored as a read-only (6,) array.
     period : float
-        Period guess for the orbit, nondimensional and positive. See
-        ``period_is_half`` for the half- vs full-period convention.
+        Period guess, nondimensional and positive. See ``period_is_half`` for
+        the half- vs full-period convention.
     system : System
-        System to propagate the guess in and feed to the shooter for the solve.
-        Currently restricted to CR3BP systems only.  Matching the system to the
-        guessed state is the responsibility of the caller.
+        System to propagate the guess in. Must be a CR3BP system. Matching
+        the system to the guessed state is the caller's responsibility.
     recipe : str
-        Family label naming the recipe to correct against, e.g. 'lyapunov' or
-        'halo'. Must be a registered recipe (see ``available_recipes()``).
+        Family to correct against, e.g. 'lyapunov' or 'halo'. Must be a
+        registered recipe (see ``available_recipes()``).
     layout : str
-        A label naming the layout of variables used for correction, modifies the base
-        recipe.  For example, a 'lyapunov' can be converged with 'period_locked'
-        layout (the default) or 'x_amplitude_locked'
+        Variable layout for the solve (see ``available_layouts()``), e.g.
+        'period_locked' (converge the member with the guessed period) or
+        'x_amplitude_locked' (converge the member at the guessed x
+        amplitude). Required; ``from_seeder_result`` chooses
+        'x_amplitude_locked'.
     scheme : str or None, optional
-        Continuation scheme label, e.g. 'pseudo_arclength'. None (default)
-        means an isolated solve: the layout stays square and no closer is
-        appended. A non-None label selects the corank-opening transform and
-        the closing constraint the continuation engine applies per step, and
-        is validated against the scheme registry here so a typo fails at
-        guess construction rather than deep inside a march.
-
-        This is the single source of truth for which closer a march uses.
-        correct_as rejects a scheme-bearing guess: opening corank without
-        closing it would leave an underdetermined solve, and closing it needs
-        per-step reference data (X_prev, t_hat, ds) that an isolated
+        Reserved for the continuation engine. Leave as None for an isolated
+        correction. A non-None label is validated against the scheme
+        registry, but ``correct_as()`` raises NotImplementedError for it: a
+        continuation scheme needs per-step reference data that an isolated
         correction does not have.
     period_is_half : bool, optional
-        Convention flag for ``period``. If True, ``period`` is a half period
-        (the time to the next perpendicular crossing), which is what a
-        symmetry recipe's free-time guess wants directly. If False (default),
-        ``period`` is a full period; the wrapper halves it when a symmetry
-        recipe is used. This makes the half- vs full-period distinction
-        explicit rather than a silent assumption: a guess taken from a
-        converged orbit's ``.period`` is a full period and should use the
-        default; a guess from a seeder half-period estimate should pass True.
+        If True, ``period`` is a half period (the time to the next
+        perpendicular crossing). If False (default), it is a full period and
+        is halved internally for symmetry recipes. A guess taken from a
+        converged orbit's ``.period`` is a full period, as is one from
+        ``from_seeder_result``.
 
     Attributes
     ----------
@@ -440,7 +446,7 @@ class CorrectorGuess:
         if layout not in _LAYOUTS:
             raise ValueError(
                 f"Unknown layout label {layout!r}; "
-                f"known recipes are {available_layouts()}."
+                f"known layouts are {available_layouts()}."
             )
 
         # Scheme label: optional, but must be registered when given. See
@@ -625,16 +631,18 @@ class CorrectorGuess:
         convention (period_is_half=False); the wrapper halves it for a symmetry
         recipe.
 
-        This defaults to the x_amplitude_locked layout, which means it should converge
-        an orbit a distance away from the equilibrium point corresponding to the
-        amplitude requested from planar_seeder().  If a period-locked orbit is desired,
-        a CorrectorGuess can be directly constructed from SeederResult data, bypassing
-        this convenience method.
+        The guess uses the 'x_amplitude_locked' layout, so correction holds
+        the x amplitude requested from ``planar_seeder()`` fixed and lets the
+        period float. If a period-locked correction is wanted instead, build
+        a CorrectorGuess directly from the SeederResult's ``.state`` and
+        ``.period`` with ``layout='period_locked'``.
 
         Parameters
         ----------
         result : SeederResult
             A seeder result with ``.state`` and ``.period``.
+        system : CR3BPSystem
+            The CR3BP system the seed was produced in.
         recipe : str
             Family label to correct against, e.g. 'lyapunov'.
 
@@ -655,8 +663,8 @@ class CorrectorGuess:
         return (
             f"CorrectorGuess(recipe={self._recipe!r}, layout={self._layout!r}, "
             f"scheme={self._scheme!r}, "
-            f"period={self._period!r}, period_is_half={self._period_is_half!r} "
-            f"state={self._state!r}), system.mass ratio={self._system.mass_ratio}"
+            f"period={self._period!r}, period_is_half={self._period_is_half!r}, "
+            f"state={self._state!r}, mass_ratio={self._system.mass_ratio})"
         )
 
 # ===========================================================================
@@ -1352,6 +1360,11 @@ def correct_as(
     reference data (X_prev, t_hat, ds) that an isolated correction has no
     source for -- honoring the scheme here would leave an underdetermined
     solve. Marching a scheme is the continuation engine's job.
+
+    A ClosureError from a planar seed near the equilibrium point is usually
+    a tolerance issue rather than a bad guess: pass a corrector with a
+    tighter tolerance than the default, e.g.
+    ``ky.DifferentialCorrector(tol=1e-12)``.
     """
     entry = _RECIPES.get(guess.recipe)
 

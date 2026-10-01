@@ -1,34 +1,48 @@
 """
-Default Orbits and System Configurations
-==============================
+Ready-made bodies, atmosphere, systems, and reference orbits.
 
-Default values for Solar System BodyParams, as well as Standard Atmosphere models
-and some predefined Earth orbits, built using specific orbit design constructors.
+This module collects the default objects most users start from. All of them
+are also available from the top-level ``kyklos`` namespace.
 
-BodyParams factory functions accept a 'source' parameter, which defaults to 'vallado'.
-This pulls values from a local dict drawn from Vallado, Fundamentals of Astrodynamics
-& Applications, Appendix D.
+- Bodies : ``body(name)`` and the per-body functions ``earth()``, ``moon()``,
+  ``mars()`` and so on return ``BodyParams`` for the Solar System bodies,
+  using values from Vallado, Fundamentals of Astrodynamics and Applications,
+  Appendix D (distances in km). Each accepts a ``source`` argument that
+  defaults to 'vallado'; 'spice' is reserved and not yet implemented.
+  ``EARTH_STD_ATMO`` is a standard atmosphere model for drag.
+- Systems : ``earth_2body()``, ``earth_j2()``, ``earth_drag()``,
+  ``earth_moon_cr3bp()``, ``earth_sun_cr3bp()``, ``moon_2body()``,
+  ``moon_j2()``, ``mars_2body()``, and ``mars_j2()`` build common
+  ``System`` objects on demand. Each accepts a ``compile`` argument (default
+  True) that controls whether the Heyoka integrator is compiled immediately
+  or deferred to first use.
+- Earth orbits : ``iss_orbit()``, ``geo_orbit()``, ``leo_orbit()``,
+  ``sso_orbit()``, and ``default_molniya_orbit()`` return Keplerian
+  ``OrbitalElements`` built with the constructors in ``orbit_design``.
+- CR3BP reference orbits : ``lyapunov_orbit()`` and ``gateway_orbit()``
+  return pre-converged ``PeriodicOrbit`` objects in the Earth-Moon system,
+  an easy case (an L1 Lyapunov orbit) and a stiffer one (the Gateway L2 NRHO)
+  for examples and tests.
 
-Factory functions for commonly-used orbital systems. These functions
-create System objects on demand, avoiding memory overhead until needed.
-
-All System functions accept a ``compile`` parameter (default True) to control
-whether the Heyoka integrator is compiled immediately or deferred.
-
-All System factory functions are cached: repeated calls with the same arguments return
-the same System instance rather than constructing a new one. This keeps
-Kyklos from duplicating compiled integrators, which are expensive to
-build. Because System objects are immutable, sharing a single instance
-across callers is safe.  Note that distinct ``compile`` values are cached separately, 
-so a compiled and a deferred System can coexist.
-
-BodyParams objects and calculated orbits are not cached, as they are cheap to construct.
+The System factories and the two CR3BP orbits are cached: repeated calls
+with the same arguments return the same instance, which keeps Kyklos from
+duplicating compiled integrators, the expensive part of building a System.
+This is safe because Systems are immutable. Distinct ``compile`` values are
+cached separately, so a compiled and a deferred System can coexist. Body
+parameters and the Earth orbits are cheap to construct and are not cached.
 
 Examples
 --------
->>> from kyklos import earth_2body, earth_moon_cr3bp
->>> sys = earth_2body()  # Standard 2-body Earth
->>> sys_lazy = earth_j2(compile=False)  # Defer compilation
+Propagate the ISS orbit on a point-mass Earth and load a CR3BP reference
+orbit::
+
+    import kyklos as ky
+
+    system = ky.earth_2body()
+    traj = system.propagate(ky.iss_orbit(), [0.0, 5400.0])
+
+    lazy = ky.earth_j2(compile=False)     # defer compilation
+    lyap = ky.lyapunov_orbit()
 """
 import numpy as np
 import functools
@@ -42,11 +56,12 @@ from .periodic_orbit import PeriodicOrbit
 from .orbit_design import (circular_orbit, synchronous_orbit, molniya_orbit,
                            sun_synchronous_orbit)
 
-"""
-Predefined Solar System bodies
-Values taken from Vallado, Fundamentals of Astrdynamics, Fifth Edition, 2022, Appendix D
-Units referenced to km (i.e. mu = km^3/s^2)
-"""
+
+# Predefined Solar System bodies
+# Values taken from Vallado, Fundamentals of Astrdynamics, 
+# Fifth Edition, 2022, Appendix D
+# Units referenced to km (i.e. mu = km^3/s^2)
+
 
 # Canonical list of available body data sources, not including 'user'
 BodySource = Literal['vallado', 'spice']

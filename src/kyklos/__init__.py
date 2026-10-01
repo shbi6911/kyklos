@@ -1,39 +1,52 @@
 """
-Kyklos: Orbital Mechanics and Satellite Mission Design
-=======================================================
+Kyklos: trajectory propagation and mission design in Python.
 
-A Python package for spacecraft trajectory propagation, orbital mechanics,
-and mission design using high-performance Taylor series integration.
+Kyklos is a package for spacecraft trajectory propagation, orbital mechanics,
+and mission design, built on the Heyoka Taylor-series integrator. It supports
+two-body dynamics (with J2, J3, and drag perturbations) and the circular
+restricted three-body problem (CR3BP), with multiple-shooting differential 
+correction, and pseudo-arclength continuation. The CR3BP toolkit for periodic orbits 
+and their families is the most developed part of the package to date.
 
-Quick Start
------------
-Create a system and propagate an orbit:
+The package is organized around a small set of core objects:
 
->>> from kyklos import earth_j2, OrbitalElements
->>> sys = System('2body', earth(), perturbations=('J2',), compile=compile)
->>> orbit = OE(a=7000, e=0.01, i=0.5, omega=0, w=0, nu=0)
->>> state0 = orbit.to_cartesian()
->>> traj = sys.propagate(state0.elements, [0 5400])
+- ``System`` : the dynamical model (equations of motion, body parameters).
+  Built through the ``System`` factory or the ready-made ``earth_2body()``,
+  ``earth_j2()``, ``earth_moon_cr3bp()`` and related functions.
+- ``OrbitalElements`` : a state in Keplerian, Cartesian, equinoctial, or
+  CR3BP form, with conversions between them.
+- ``Trajectory`` : a time-contiguous segmented integration with Heyoka dense
+  output objects separated by nodes, produced by ``System.propagate()``.
+- ``Satellite`` : physical properties (mass, drag area, inertia) used by
+  satellite-dependent perturbations.
+- ``DifferentialCorrector`` : a multiple-shooting targeter driven by
+  composable constraints.
+- ``PeriodicOrbit`` and ``OrbitFamily`` : verified CR3BP periodic orbits and
+  the families produced by continuation (``correct_as``, ``march_family``).
 
-Available Modules
------------------
-Core Classes
-    OrbitalElements : Coordinate transformations and orbital element handling
-    System : Gravitational environment and equation of motion
-    Satellite : Physical properties (mass, drag, inertia)
-    Trajectory : Time-series orbital state with continuous output
+Examples
+--------
+Propagate a low Earth orbit under J2 for one period and plot (units are km, s, rad)::
 
-Default Systems (Factory Functions)
-    earth_2body : Point-mass Earth
-    earth_j2 : Earth with J2 oblateness
-    earth_drag : Earth with atmospheric drag
-    earth_moon_cr3bp : Earth-Moon circular restricted 3-body problem
-    moon_2body, moon_j2 : Moon systems
-    mars_2body, mars_j2 : Mars systems
+    import kyklos as ky
 
-Celestial Body Parameters
-    earth(), moon(), mars() : Predefined body parameters
-    EARTH_STD_ATMO : Standard atmosphere model
+    system = ky.earth_j2()
+    orbit = ky.OrbitalElements(a=7000.0, e=0.01, i=0.5,
+                               omega=0.0, w=0.0, nu=0.0,
+                               system=system)
+    traj = system.propagate(orbit, [0.0, orbit.orbital_period()])
+    fig = traj.plot_3d()
+    fig.show()
+
+Start from the built-in Earth-Moon L1 Lyapunov orbit and march its family::
+
+    lyap = ky.lyapunov_orbit()
+    print(lyap.period, lyap.stability_index)
+    family = ky.march_family(lyap, 'lyapunov', ds=0.01, n_steps=20)
+    fig = family.plot_3d()
+    fig.show()
+
+See the API reference for the full list of classes and functions.
 """
 
 # Core classes
@@ -92,7 +105,7 @@ from .defaults import (iss_orbit, geo_orbit, leo_orbit, sso_orbit,
 )
 
 # Package metadata
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 __author__ = "Shane Billingsley"
 
 # Define what gets imported with "from kyklos import *"
